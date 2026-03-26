@@ -1,0 +1,35 @@
+# macOS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Rust
+target/
+**/*.rs.bk
+
+# Python / venv
+.venv/
+.query-venv/
+__pycache__/
+*.pyc
+
+# Local datasets and generated geometry caches
+*.ifc
+*.ifc.*
+*.occ-cache/
+
+# Generated outputs / reports
+artifacts/outputs/
+artifacts/test-output/
+artifacts/benchmarks/**
+artifacts/reference-java/**
+artifacts/topology/**
+!artifacts/benchmarks/.gitkeep
+!artifacts/reference-java/.gitkeep
+!artifacts/topology/.gitkeep
+benchmark_results/
+out.ttl
+out_ifcowl.ttl
+
+# Vendored build outputs
+vendor/chijin/target/

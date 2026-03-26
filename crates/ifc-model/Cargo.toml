@@ -1,0 +1,15 @@
+[package]
+name = "ifc-model"
+description = "Typed IFC domain model and relationship indexes"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ifc-step = { workspace = true }
+ifc-schema = { workspace = true }
+rayon = { workspace = true }
+smol_str = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }

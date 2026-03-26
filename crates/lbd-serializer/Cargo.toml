@@ -1,0 +1,15 @@
+[package]
+name = "lbd-serializer"
+description = "Streaming Turtle/TriG/JSON-LD writer for LBD triples"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+crossbeam = { workspace = true }
+lbd-ontology = { workspace = true }
+rio_api = { workspace = true }
+rio_turtle = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }

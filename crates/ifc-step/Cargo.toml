@@ -1,0 +1,21 @@
+[package]
+name = "ifc-step"
+description = "IFC STEP file parser (ISO 10303-21) — zero-copy, parallel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+memmap2 = { workspace = true }
+smol_str = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+rayon = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "parse_step"
+harness = false
