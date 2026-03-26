@@ -1,0 +1,75 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/ifc-step",
+    "crates/ifc-model",
+    "crates/ifc-schema",
+    "crates/lbd-ontology",
+    "crates/lbd-converter",
+    "crates/lbd-topology",
+    "crates/lbd-geometry",
+    "crates/lbd-geometry-kernel",
+    "crates/lbd-serializer",
+    "crates/ifc2lbd-cli",
+    # "crates/ifc2lbd-python",  # enable when PyO3 bindings are needed
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+rust-version = "1.75"
+
+[workspace.dependencies]
+# Parsing
+memmap2 = "0.9"
+smol_str = "0.3"
+
+# Parallelism
+rayon = "1.10"
+crossbeam = "0.8"
+dashmap = "6"
+
+# RDF serialization
+rio_api = "0.8"
+rio_turtle = "0.8"
+
+# Spatial indexing
+rstar = "0.12"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+time = { version = "0.3", features = ["formatting"] }
+percent-encoding = "2"
+unicode-normalization = "0.1"
+
+# Testing
+criterion = { version = "0.5", features = ["html_reports"] }
+
+# Compression
+flate2 = "1"
+
+# Vendored dependencies
+chijin = { path = "vendor/chijin" }
+
+# Workspace crate cross-references
+ifc-step = { path = "crates/ifc-step" }
+ifc-model = { path = "crates/ifc-model" }
+ifc-schema = { path = "crates/ifc-schema" }
+lbd-ontology = { path = "crates/lbd-ontology" }
+lbd-converter = { path = "crates/lbd-converter" }
+lbd-topology = { path = "crates/lbd-topology" }
+lbd-geometry = { path = "crates/lbd-geometry" }
+lbd-serializer = { path = "crates/lbd-serializer" }

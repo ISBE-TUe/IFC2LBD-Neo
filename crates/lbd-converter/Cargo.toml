@@ -1,0 +1,24 @@
+[package]
+name = "lbd-converter"
+description = "Core IFC-to-LBD conversion engine with IfcOWL output and owl:sameAs linking"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ifc-step = { workspace = true }
+ifc-model = { workspace = true }
+ifc-schema = { workspace = true }
+lbd-ontology = { workspace = true }
+lbd-topology = { workspace = true }
+lbd-geometry = { workspace = true }
+smol_str = { workspace = true }
+crossbeam = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+rio_api = { workspace = true }
+rio_turtle = { workspace = true }
+time = { workspace = true }
+percent-encoding = { workspace = true }
+unicode-normalization = { workspace = true }

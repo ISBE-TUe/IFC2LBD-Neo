@@ -1,0 +1,36 @@
+[package]
+name = "ifc2lbd-cli"
+description = "ifc2lbd-neo CLI — high-performance IFC-to-LBD converter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "ifc2lbd-neo"
+path = "src/main.rs"
+
+[[bin]]
+name = "compare-turtle"
+path = "src/bin/compare_turtle.rs"
+
+[dependencies]
+ifc-step = { workspace = true }
+ifc-model = { workspace = true }
+ifc-schema = { workspace = true }
+lbd-ontology = { workspace = true }
+lbd-converter = { workspace = true }
+lbd-topology = { workspace = true }
+lbd-geometry = { workspace = true }
+lbd-serializer = { workspace = true }
+crossbeam = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+rayon = { workspace = true }
+thiserror = { workspace = true }
+rio_api = { workspace = true }
+rio_turtle = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

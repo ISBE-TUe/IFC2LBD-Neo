@@ -1,0 +1,18 @@
+[package]
+name = "lbd-geometry"
+description = "Bounding boxes, R-tree spatial indexing, and BOT interface detection"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ifc-model = { workspace = true }
+ifc-step = { workspace = true }
+lbd-topology = { workspace = true }
+lbd-ontology = { workspace = true }
+rstar = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

@@ -1,0 +1,9 @@
+[package]
+name = "lbd-ontology"
+description = "LBD namespace constants (BOT, PROPS, OPM, PRODUCT, etc.)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
