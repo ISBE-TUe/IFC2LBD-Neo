@@ -301,11 +301,8 @@ fn topology_full_occ_relations(
 
     let mut sorted_element_ids: Vec<EntityId> = unique_elements.iter().copied().collect();
     sorted_element_ids.sort_unstable();
-    let (mesh_bboxes, mesh_wkts, bbox_report) = collect_mesh_bounding_boxes_hybrid(
-        step,
-        sorted_element_ids,
-        bbox_inflation_threshold,
-    );
+    let (mesh_bboxes, mesh_wkts, bbox_report) =
+        collect_mesh_bounding_boxes_hybrid(step, sorted_element_ids, bbox_inflation_threshold);
 
     for (eid, bbox) in mesh_bboxes.iter() {
         prefilter_bboxes.entry(*eid).or_insert(*bbox);
@@ -423,8 +420,12 @@ fn prepare_kernel_cache_args(input_path: &Path) -> anyhow::Result<(Vec<String>, 
     let path = std::env::temp_dir()
         .join("ifc2lbd-neo-occ-cache")
         .join(format!("{safe_stem}_{pid}_{now}"));
-    std::fs::create_dir_all(&path)
-        .with_context(|| format!("failed to create temporary OCC cache dir {}", path.display()))?;
+    std::fs::create_dir_all(&path).with_context(|| {
+        format!(
+            "failed to create temporary OCC cache dir {}",
+            path.display()
+        )
+    })?;
     tracing::info!(
         "topology-full OCC cache dir: {}{}",
         path.display(),
@@ -473,13 +474,16 @@ fn resolve_geometry_kernel_bin() -> anyhow::Result<PathBuf> {
     }
 
     tracing::info!("building lbd-geometry-kernel once (auto-discovery path)");
-    let status = Command::new("cargo")
+    let mut cargo_build = Command::new("cargo");
+    cargo_build
         .arg("build")
         .arg("-p")
         .arg("lbd-geometry-kernel")
         .arg("--bin")
         .arg("lbd-geometry-kernel")
-        .current_dir(&workspace_root)
+        .current_dir(&workspace_root);
+    configure_pyo3_python_env(&mut cargo_build);
+    let status = cargo_build
         .status()
         .context("failed to start cargo build for lbd-geometry-kernel")?;
     if !status.success() {
@@ -497,6 +501,37 @@ fn resolve_geometry_kernel_bin() -> anyhow::Result<PathBuf> {
             "lbd-geometry-kernel build finished but binary was not found at {}",
             built.display()
         )
+    }
+}
+
+fn configure_pyo3_python_env(cmd: &mut Command) {
+    if std::env::var_os("PYO3_PYTHON").is_some() {
+        return;
+    }
+    if let Some(python) = detect_python3_executable() {
+        tracing::info!("using detected python for pyo3: {}", python.display());
+        cmd.env("PYO3_PYTHON", python);
+    }
+}
+
+fn detect_python3_executable() -> Option<PathBuf> {
+    let output = Command::new("python3")
+        .arg("-c")
+        .arg("import sys; print(sys.executable)")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if path.is_empty() {
+        return None;
+    }
+    let resolved = PathBuf::from(path);
+    if resolved.is_file() {
+        Some(resolved)
+    } else {
+        None
     }
 }
 
@@ -1032,7 +1067,8 @@ fn collect_mesh_bounding_boxes_hybrid(
         .par_iter()
         .filter_map(|&eid| {
             let world_t = transform::element_world_transform(step, eid);
-            let local_mesh = mesh::extract_element_mesh(step, eid, &transform::Transform4::identity());
+            let local_mesh =
+                mesh::extract_element_mesh(step, eid, &transform::Transform4::identity());
             if local_mesh.is_empty() {
                 return None;
             }
@@ -1057,7 +1093,15 @@ fn collect_mesh_bounding_boxes_hybrid(
                     } else {
                         1.0
                     };
-                    Some((eid, exact_world_bbox, wkt, inflation, final_inflation, true, true))
+                    Some((
+                        eid,
+                        exact_world_bbox,
+                        wkt,
+                        inflation,
+                        final_inflation,
+                        true,
+                        true,
+                    ))
                 } else {
                     let final_inflation = if local_volume > 1e-12 {
                         exact_world_volume / local_volume
