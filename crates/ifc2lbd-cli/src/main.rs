@@ -15,14 +15,14 @@ use clap::{Parser, ValueEnum};
 use ifc_model::build_model;
 use ifc_model::IfcModel;
 use ifc_step::{parse_step_file, EntityId, StepFile, StepValue};
-use lbd_converter::{stream_step_and_model, ConvertOptions};
+use lbd_converter::{stream_step_and_model, stream_topology_model, ConvertOptions};
 use lbd_geometry::{
     derive_relations_with_exact_kernel_subprocess_batch, BoundingBox, ExactCheckOptions,
     GeometryRelation, GeometryRelationKind, SubprocessKernelExecutionOptions,
 };
 use lbd_serializer::{
-    serialize_lbd_batches_to_writer, serialize_nquads_merged_batches_to_writer,
-    serialize_turtle_batches_to_writer,
+    serialize_lbd_batches_to_writer, serialize_nquads_batches_to_writer,
+    serialize_nquads_merged_batches_to_writer, serialize_turtle_batches_to_writer,
 };
 use rayon::prelude::*;
 use serde::Serialize;
@@ -36,7 +36,11 @@ const SERIALIZER_BUFFER_BYTES: usize = 1024 * 1024;
 const CORE_CHUNK_BLOCK_LINES: u64 = 4096;
 const CORE_CHUNK_BATCH_BYTES: usize = 4 * 1024 * 1024;
 const MIN_CORE_CHUNK_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_CORE_CHUNK_BYTES: u64 = 512 * 1024 * 1024;
 const IFC_TO_NQ_ESTIMATE_MULTIPLIER: u64 = 32;
+const IFCOWL_TO_NQ_ESTIMATE_MULTIPLIER: u64 = 28;
+const LBD_TO_NQ_ESTIMATE_MULTIPLIER: u64 = 2;
+const TOPOLOGY_FULL_TO_NQ_ESTIMATE_MULTIPLIER: u64 = 1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 enum OutputFormat {
@@ -156,6 +160,7 @@ struct Args {
 }
 
 fn main() -> anyhow::Result<()> {
+    let run_start = Instant::now();
     tracing_subscriber::fmt().with_env_filter("info").init();
     let args = Args::parse();
     validate_args(&args)?;
@@ -176,44 +181,27 @@ fn main() -> anyhow::Result<()> {
         .clone()
         .unwrap_or_else(|| format!("{normalized_base}/ifcowl"));
 
+    let parse_start = Instant::now();
     let step = parse_step_file(&args.input)
         .with_context(|| format!("failed to parse STEP file {}", args.input.display()))?;
+    tracing::info!(
+        "phase parse_step_file completed in {:.3}s",
+        parse_start.elapsed().as_secs_f64()
+    );
+    let build_start = Instant::now();
     let model = build_model(&step).context("failed to build IFC model")?;
+    tracing::info!(
+        "phase build_model completed in {:.3}s",
+        build_start.elapsed().as_secs_f64()
+    );
 
     let topology_enabled = args.topology || args.topology_full;
     let derive_adjacency = args.topology_full;
+    let topology_graph_iri = format!("{normalized_base}/topology");
+
     let mut geometry_bounding_boxes: Option<Arc<HashMap<EntityId, BoundingBox>>> = None;
     let mut geometry_wkts: Option<Arc<HashMap<EntityId, String>>> = None;
-    let geometry_relations = if derive_adjacency {
-        let full_start = Instant::now();
-        let (relations, mesh_bboxes, mesh_wkts, bbox_report) = topology_full_occ_relations(
-            &model,
-            &step,
-            &args.input,
-            args.geometry_tolerance,
-            args.bbox_inflation_threshold,
-        )?;
-        tracing::info!(
-            "topology-full OCC produced {} relations in {:.3}s",
-            relations.len(),
-            full_start.elapsed().as_secs_f64(),
-        );
-        if let Some(path) = args.bbox_report.as_ref() {
-            let report_json = serde_json::to_string_pretty(&bbox_report)
-                .context("failed to serialize bbox report JSON")?;
-            std::fs::write(path, report_json)
-                .with_context(|| format!("failed to write bbox report {}", path.display()))?;
-        }
-        if args.bbox {
-            geometry_bounding_boxes = Some(arc_bounding_boxes_from_raw(mesh_bboxes));
-            geometry_wkts = Some(Arc::new(mesh_wkts));
-        }
-        Some(Arc::new(relations))
-    } else {
-        None
-    };
-
-    if args.bbox && geometry_bounding_boxes.is_none() {
+    if args.bbox {
         let bbox_start = Instant::now();
         let (mesh_bboxes, mesh_wkts, bbox_report) = collect_mesh_bounding_boxes_hybrid(
             &step,
@@ -241,14 +229,27 @@ fn main() -> anyhow::Result<()> {
         geometry_wkts = Some(Arc::new(mesh_wkts));
     }
 
-    let options = ConvertOptions {
+    let chunked_nquads_with_parallel_topology =
+        output_format == OutputFormat::Nquads && topology_enabled;
+
+    let base_options = ConvertOptions {
         base_uri: args.base_uri,
         emit_ifcowl_links: emit_ifcowl,
-        enable_topology: topology_enabled,
-        enable_topology_extension: args.topology_full,
-        geometry_relations,
-        geometry_bounding_boxes,
-        geometry_wkts,
+        enable_topology: if chunked_nquads_with_parallel_topology {
+            false
+        } else {
+            topology_enabled
+        },
+        enable_topology_extension: if chunked_nquads_with_parallel_topology {
+            false
+        } else {
+            args.topology_full
+        },
+        topology_only: false,
+        suppress_non_topology_fallback: chunked_nquads_with_parallel_topology,
+        geometry_relations: None,
+        geometry_bounding_boxes: geometry_bounding_boxes.clone(),
+        geometry_wkts: geometry_wkts.clone(),
         geometry_tolerance: args.geometry_tolerance,
     };
 
@@ -262,28 +263,64 @@ fn main() -> anyhow::Result<()> {
     } else {
         (None, None)
     };
+    let (topology_sender, mut topology_receiver) = if chunked_nquads_with_parallel_topology {
+        let (sender, receiver) = crossbeam::channel::bounded(SERIALIZER_CHANNEL_CAPACITY);
+        (Some(sender), Some(receiver))
+    } else {
+        (None, None)
+    };
 
     let lbd_target = args.output_file.clone();
-    let lbd_base_uri = options.base_uri.clone();
+    let lbd_base_uri = base_options.base_uri.clone();
     let lbd_graph_iri_thread = lbd_graph_iri.clone();
     let ifcowl_graph_iri_thread = ifcowl_graph_iri.clone();
+    let topology_graph_iri_thread = topology_graph_iri.clone();
     let quad_chunking_mode = args.quad_chunking;
     let quad_chunk_size_lines = args.quad_chunk_size_lines;
     let quad_chunk_size_bytes = args.quad_chunk_size_bytes;
     let quad_chunk_prefix = args.quad_chunk_prefix.clone();
     let quad_chunk_min_count = args.quad_chunk_min_count;
-    let quad_chunk_core_count = resolve_effective_core_chunk_count(
+    let ifcowl_chunk_core_count = resolve_effective_core_chunk_count_for_estimated_bytes(
         args.quad_chunking,
         args.quad_chunk_core_count,
         args.quad_chunk_min_count,
-        input_file_size_bytes,
+        input_file_size_bytes.saturating_mul(IFCOWL_TO_NQ_ESTIMATE_MULTIPLIER),
     );
+    let lbd_chunk_core_count = resolve_effective_core_chunk_count_for_estimated_bytes(
+        args.quad_chunking,
+        args.quad_chunk_core_count,
+        args.quad_chunk_min_count,
+        input_file_size_bytes.saturating_mul(LBD_TO_NQ_ESTIMATE_MULTIPLIER),
+    );
+    let topology_chunk_core_count = resolve_effective_core_chunk_count_for_estimated_bytes(
+        args.quad_chunking,
+        args.quad_chunk_core_count,
+        args.quad_chunk_min_count,
+        if args.topology_full {
+            input_file_size_bytes.saturating_mul(TOPOLOGY_FULL_TO_NQ_ESTIMATE_MULTIPLIER)
+        } else {
+            (input_file_size_bytes / 8).max(1)
+        },
+    );
+    if args.quad_chunking == QuadChunkingMode::Cores {
+        tracing::info!(
+            "core chunk targets (auto): ifcowl={}, lbd={}, topology={}",
+            ifcowl_chunk_core_count.unwrap_or(1),
+            lbd_chunk_core_count.unwrap_or(1),
+            topology_chunk_core_count.unwrap_or(1),
+        );
+    }
     let merged_ifcowl_receiver = if output_format == OutputFormat::Nquads {
         Some(
             ifcowl_receiver
                 .take()
                 .ok_or_else(|| anyhow::anyhow!("nquads mode requires IfcOWL receiver channel"))?,
         )
+    } else {
+        None
+    };
+    let merged_topology_receiver = if output_format == OutputFormat::Nquads {
+        topology_receiver.take()
     } else {
         None
     };
@@ -311,56 +348,139 @@ fn main() -> anyhow::Result<()> {
                     .ok_or_else(|| anyhow::anyhow!("missing IfcOWL receiver for nquads mode"))?;
                 if quad_chunking_mode != QuadChunkingMode::None {
                     let output_dir = resolve_quad_chunk_output_dir(lbd_target.as_deref());
-                    let mut chunk_writer = QuadChunkWriter::new(
+                    let mut lbd_chunk_writer = QuadChunkWriter::new(
                         output_dir,
-                        quad_chunk_prefix.clone(),
+                        format!("{}-lbd", quad_chunk_prefix),
                         quad_chunking_mode,
                         quad_chunk_size_lines,
                         quad_chunk_size_bytes,
                         quad_chunk_min_count,
-                        quad_chunk_core_count,
+                        lbd_chunk_core_count,
                     )?;
-                    serialize_nquads_merged_batches_to_writer(
+                    let mut ifcowl_chunk_writer = QuadChunkWriter::new(
+                        resolve_quad_chunk_output_dir(lbd_target.as_deref()),
+                        format!("{}-ifcowl", quad_chunk_prefix),
+                        quad_chunking_mode,
+                        quad_chunk_size_lines,
+                        quad_chunk_size_bytes,
+                        quad_chunk_min_count,
+                        ifcowl_chunk_core_count,
+                    )?;
+                    let mut topology_chunk_writer = if merged_topology_receiver.is_some() {
+                        Some(QuadChunkWriter::new(
+                            resolve_quad_chunk_output_dir(lbd_target.as_deref()),
+                            format!("{}-topology", quad_chunk_prefix),
+                            quad_chunking_mode,
+                            quad_chunk_size_lines,
+                            quad_chunk_size_bytes,
+                            quad_chunk_min_count,
+                            topology_chunk_core_count,
+                        )?)
+                    } else {
+                        None
+                    };
+
+                    let ifcowl_graph = ifcowl_graph_iri_thread.clone();
+                    let ifcowl_thread = thread::spawn(move || -> anyhow::Result<()> {
+                        serialize_nquads_batches_to_writer(
+                            ifcowl_receiver,
+                            &mut ifcowl_chunk_writer,
+                            &ifcowl_graph,
+                        )
+                        .context("failed to write IfcOWL chunked N-Quads output")?;
+                        ifcowl_chunk_writer
+                            .finish()
+                            .context("failed to finalize IfcOWL quad chunk manifest")?;
+                        Ok(())
+                    });
+                    let topology_thread = if let Some(receiver) = merged_topology_receiver {
+                        let topology_graph = topology_graph_iri_thread.clone();
+                        let mut writer = topology_chunk_writer
+                            .take()
+                            .ok_or_else(|| anyhow::anyhow!("missing topology chunk writer"))?;
+                        Some(thread::spawn(move || -> anyhow::Result<()> {
+                            serialize_nquads_batches_to_writer(receiver, &mut writer, &topology_graph)
+                                .context("failed to write topology chunked N-Quads output")?;
+                            writer
+                                .finish()
+                                .context("failed to finalize topology quad chunk manifest")?;
+                            Ok(())
+                        }))
+                    } else {
+                        None
+                    };
+
+                    serialize_nquads_batches_to_writer(
                         lbd_receiver,
-                        ifcowl_receiver,
-                        &mut chunk_writer,
+                        &mut lbd_chunk_writer,
                         &lbd_graph_iri_thread,
-                        &ifcowl_graph_iri_thread,
                     )
-                    .context("failed to write chunked N-Quads output")?;
-                    chunk_writer
+                    .context("failed to write LBD chunked N-Quads output")?;
+                    lbd_chunk_writer
                         .finish()
-                        .context("failed to finalize quad chunk manifest")?;
+                        .context("failed to finalize LBD quad chunk manifest")?;
+
+                    ifcowl_thread
+                        .join()
+                        .map_err(|_| anyhow::anyhow!("IfcOWL chunk writer thread panicked"))??;
+                    if let Some(handle) = topology_thread {
+                        handle
+                            .join()
+                            .map_err(|_| anyhow::anyhow!("topology chunk writer thread panicked"))??;
+                    }
                 } else {
                     match lbd_target {
                         Some(path) => {
                             let file = File::create(&path).with_context(|| {
                                 format!("failed to create output file {}", path.display())
                             })?;
-                            let writer = BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, file);
+                            let mut writer =
+                                BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, file);
                             serialize_nquads_merged_batches_to_writer(
                                 lbd_receiver,
                                 ifcowl_receiver,
-                                writer,
+                                &mut writer,
                                 &lbd_graph_iri_thread,
                                 &ifcowl_graph_iri_thread,
                             )
                             .with_context(|| {
                                 format!("failed to write N-Quads to {}", path.display())
                             })?;
+                            if let Some(topology_receiver) = merged_topology_receiver {
+                                serialize_nquads_batches_to_writer(
+                                    topology_receiver,
+                                    &mut writer,
+                                    &topology_graph_iri_thread,
+                                )
+                                .with_context(|| {
+                                    format!(
+                                        "failed to append topology N-Quads to {}",
+                                        path.display()
+                                    )
+                                })?;
+                            }
                         }
                         None => {
                             let stdout = std::io::stdout();
                             let handle = stdout.lock();
-                            let writer = BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, handle);
+                            let mut writer =
+                                BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, handle);
                             serialize_nquads_merged_batches_to_writer(
                                 lbd_receiver,
                                 ifcowl_receiver,
-                                writer,
+                                &mut writer,
                                 &lbd_graph_iri_thread,
                                 &ifcowl_graph_iri_thread,
                             )
                             .context("failed to write N-Quads to stdout")?;
+                            if let Some(topology_receiver) = merged_topology_receiver {
+                                serialize_nquads_batches_to_writer(
+                                    topology_receiver,
+                                    &mut writer,
+                                    &topology_graph_iri_thread,
+                                )
+                                .context("failed to append topology N-Quads to stdout")?;
+                            }
                         }
                     }
                 }
@@ -375,7 +495,7 @@ fn main() -> anyhow::Result<()> {
             .take()
             .ok_or_else(|| anyhow::anyhow!("missing IfcOWL receiver for turtle sidecar mode"))?;
         let path = resolve_ifcowl_path(args.output_file.as_deref(), &args.input);
-        let ifcowl_base = options.base_uri.clone();
+        let ifcowl_base = base_options.base_uri.clone();
         ifcowl_thread = Some(thread::spawn(move || -> anyhow::Result<()> {
             let file = File::create(&path).with_context(|| {
                 format!("failed to create IfcOWL output file {}", path.display())
@@ -387,17 +507,144 @@ fn main() -> anyhow::Result<()> {
         }));
     }
 
-    stream_step_and_model(
-        &step,
-        &model,
-        &options,
-        &converter_lbd_sender,
-        ifcowl_sender.as_ref(),
-    )
-    .context("failed to stream conversion output")?;
+    let producer_start = Instant::now();
+    if chunked_nquads_with_parallel_topology {
+        let topology_sender_clone = topology_sender
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("missing topology sender for parallel topology mode"))?;
+        let topology_base = base_options.base_uri.clone();
+        let input_path = args.input.clone();
+        let bbox_inflation_threshold = args.bbox_inflation_threshold;
+        let geometry_tolerance = args.geometry_tolerance;
+        let bbox_report_path = args.bbox_report.clone();
+        let topology_only_mode = args.topology_full;
+        std::thread::scope(|scope| -> anyhow::Result<()> {
+            let topology_handle = scope.spawn(|| -> anyhow::Result<()> {
+                let geometry_relations = if topology_only_mode {
+                    let full_start = Instant::now();
+                    let (relations, _mesh_bboxes, _mesh_wkts, bbox_report) = topology_full_occ_relations(
+                        &model,
+                        &step,
+                        &input_path,
+                        geometry_tolerance,
+                        bbox_inflation_threshold,
+                    )?;
+                    tracing::info!(
+                        "topology-full OCC produced {} relations in {:.3}s",
+                        relations.len(),
+                        full_start.elapsed().as_secs_f64(),
+                    );
+                    if !args.bbox {
+                        if let Some(path) = bbox_report_path.as_ref() {
+                            let report_json = serde_json::to_string_pretty(&bbox_report)
+                                .context("failed to serialize bbox report JSON")?;
+                            std::fs::write(path, report_json).with_context(|| {
+                                format!("failed to write bbox report {}", path.display())
+                            })?;
+                        }
+                    }
+                    Some(Arc::new(relations))
+                } else {
+                    None
+                };
+                let topology_options = ConvertOptions {
+                    base_uri: topology_base,
+                    emit_ifcowl_links: false,
+                    enable_topology: true,
+                    enable_topology_extension: args.topology_full,
+                    topology_only: true,
+                    suppress_non_topology_fallback: false,
+                    geometry_relations,
+                    geometry_bounding_boxes: None,
+                    geometry_wkts: None,
+                    geometry_tolerance,
+                };
+                stream_topology_model(&model, &topology_options, &topology_sender_clone)
+                    .context("failed to stream topology output")?;
+                Ok(())
+            });
+
+            stream_step_and_model(
+                &step,
+                &model,
+                &base_options,
+                &converter_lbd_sender,
+                ifcowl_sender.as_ref(),
+            )
+            .context("failed to stream conversion output")?;
+
+            topology_handle
+                .join()
+                .map_err(|_| anyhow::anyhow!("topology producer thread panicked"))??;
+            Ok(())
+        })?;
+    } else {
+        let options = if derive_adjacency {
+            let full_start = Instant::now();
+            let (relations, _mesh_bboxes, _mesh_wkts, bbox_report) = topology_full_occ_relations(
+                &model,
+                &step,
+                &args.input,
+                args.geometry_tolerance,
+                args.bbox_inflation_threshold,
+            )?;
+            tracing::info!(
+                "topology-full OCC produced {} relations in {:.3}s",
+                relations.len(),
+                full_start.elapsed().as_secs_f64(),
+            );
+            if let Some(path) = args.bbox_report.as_ref() {
+                let report_json = serde_json::to_string_pretty(&bbox_report)
+                    .context("failed to serialize bbox report JSON")?;
+                std::fs::write(path, report_json)
+                    .with_context(|| format!("failed to write bbox report {}", path.display()))?;
+            }
+            ConvertOptions {
+                base_uri: base_options.base_uri.clone(),
+                emit_ifcowl_links: emit_ifcowl,
+                enable_topology: topology_enabled,
+                enable_topology_extension: args.topology_full,
+                topology_only: false,
+                suppress_non_topology_fallback: false,
+                geometry_relations: Some(Arc::new(relations)),
+                geometry_bounding_boxes: geometry_bounding_boxes.clone(),
+                geometry_wkts: geometry_wkts.clone(),
+                geometry_tolerance: args.geometry_tolerance,
+            }
+        } else {
+            ConvertOptions {
+                base_uri: base_options.base_uri.clone(),
+                emit_ifcowl_links: emit_ifcowl,
+                enable_topology: topology_enabled,
+                enable_topology_extension: args.topology_full,
+                topology_only: false,
+                suppress_non_topology_fallback: false,
+                geometry_relations: None,
+                geometry_bounding_boxes: geometry_bounding_boxes.clone(),
+                geometry_wkts: geometry_wkts.clone(),
+                geometry_tolerance: args.geometry_tolerance,
+            }
+        };
+
+        stream_step_and_model(
+            &step,
+            &model,
+            &options,
+            &converter_lbd_sender,
+            ifcowl_sender.as_ref(),
+        )
+        .context("failed to stream conversion output")?;
+    }
+    tracing::info!(
+        "phase triple_production completed in {:.3}s",
+        producer_start.elapsed().as_secs_f64()
+    );
     drop(converter_lbd_sender);
     drop(ifcowl_sender);
+    drop(topology_sender);
 
+    let serializer_join_start = Instant::now();
     lbd_thread
         .join()
         .map_err(|_| anyhow::anyhow!("LBD serializer thread panicked"))??;
@@ -407,6 +654,14 @@ fn main() -> anyhow::Result<()> {
             .join()
             .map_err(|_| anyhow::anyhow!("IfcOWL serializer thread panicked"))??;
     }
+    tracing::info!(
+        "phase serializer_join completed in {:.3}s",
+        serializer_join_start.elapsed().as_secs_f64()
+    );
+    tracing::info!(
+        "run completed in {:.3}s",
+        run_start.elapsed().as_secs_f64()
+    );
 
     Ok(())
 }
@@ -1646,6 +1901,22 @@ fn resolve_effective_core_chunk_count(
     min_chunk_count: usize,
     input_file_size_bytes: u64,
 ) -> Option<usize> {
+    let estimated_nq_bytes =
+        (input_file_size_bytes.saturating_mul(IFC_TO_NQ_ESTIMATE_MULTIPLIER)).max(1);
+    resolve_effective_core_chunk_count_for_estimated_bytes(
+        mode,
+        requested_core_count,
+        min_chunk_count,
+        estimated_nq_bytes,
+    )
+}
+
+fn resolve_effective_core_chunk_count_for_estimated_bytes(
+    mode: QuadChunkingMode,
+    requested_core_count: Option<usize>,
+    min_chunk_count: usize,
+    estimated_nq_bytes: u64,
+) -> Option<usize> {
     if mode != QuadChunkingMode::Cores {
         return requested_core_count;
     }
@@ -1655,10 +1926,13 @@ fn resolve_effective_core_chunk_count(
     let requested = requested_core_count
         .unwrap_or(available_cores)
         .max(min_chunk_count);
-    let estimated_nq_bytes =
-        (input_file_size_bytes.saturating_mul(IFC_TO_NQ_ESTIMATE_MULTIPLIER)).max(1);
+    let min_chunks_by_max_size =
+        ((estimated_nq_bytes + (MAX_CORE_CHUNK_BYTES - 1)) / MAX_CORE_CHUNK_BYTES).max(1)
+            as usize;
     let max_chunks_by_min_size = (estimated_nq_bytes / MIN_CORE_CHUNK_BYTES).max(1) as usize;
-    let effective = requested.min(max_chunks_by_min_size).max(min_chunk_count);
+    let floor = min_chunk_count.max(min_chunks_by_max_size);
+    let ceiling = max_chunks_by_min_size.max(floor);
+    let effective = requested.clamp(floor, ceiling);
     Some(effective)
 }
 
@@ -1780,7 +2054,9 @@ impl QuadChunkWriter {
         } else {
             self.close_current_file()?;
         }
-        let manifest_path = self.output_dir.join("quad_chunks.manifest.json");
+        let manifest_path = self
+            .output_dir
+            .join(format!("{}.manifest.json", self.chunk_prefix));
         let manifest = QuadChunkManifest {
             chunking: match self.mode {
                 QuadChunkingMode::None => "none".to_string(),
@@ -2182,7 +2458,7 @@ mod tests {
 
         let c0 = out_dir.join("test.part-000.nq");
         let c1 = out_dir.join("test.part-001.nq");
-        let manifest = out_dir.join("quad_chunks.manifest.json");
+        let manifest = out_dir.join("test.manifest.json");
         assert!(c0.exists());
         assert!(c1.exists());
         assert!(manifest.exists());

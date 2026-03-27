@@ -19,13 +19,13 @@ use lbd_ontology::{
     bot_contains_zone, bot_has_sub_element, bot_interface, bot_interface_of,
     bot_intersecting_element, bot_site, bot_space, bot_storey, express_has_boolean,
     express_has_double, express_has_integer, express_has_logical, express_has_string,
-    express_logical_value, furn_class, geo_as_wkt, geo_geometry,
-    geo_wkt_literal, lbd_has_bounding_box, lbd_has_property_set, lbd_has_quantity_set,
-    lbd_project, lbd_property_set, lbd_quantity_set, list_has_contents, list_has_next,
+    express_logical_value, furn_class, geo_as_wkt, geo_geometry, geo_wkt_literal,
+    lbd_has_bounding_box, lbd_has_property_set, lbd_has_quantity_set, lbd_project,
+    lbd_property_set, lbd_quantity_set, list_has_contents, list_has_next,
     opm_current_property_state, opm_current_property_state_predicate, opm_has_property_state,
     opm_property, owl_imports, owl_object_property, owl_ontology, props_property,
-    prov_generated_at_time, rdf_member, rdf_type, rdfs_comment, rdfs_label,
-    schema_value, smls_unit, unit_iri, Object, Triple, EXPRESS, XSD,
+    prov_generated_at_time, rdf_member, rdf_type, rdfs_comment, rdfs_label, schema_value,
+    smls_unit, unit_iri, Object, Triple, EXPRESS, XSD,
 };
 #[cfg(test)]
 use lbd_ontology::{bot_has_building, bot_has_site, owl_same_as};
@@ -46,6 +46,8 @@ pub struct ConvertOptions {
     pub emit_ifcowl_links: bool,
     pub enable_topology: bool,
     pub enable_topology_extension: bool,
+    pub topology_only: bool,
+    pub suppress_non_topology_fallback: bool,
     pub geometry_relations: Option<Arc<Vec<GeometryRelation>>>,
     pub geometry_bounding_boxes: Option<Arc<HashMap<EntityId, BoundingBox>>>,
     pub geometry_wkts: Option<Arc<HashMap<EntityId, String>>>,
@@ -59,6 +61,8 @@ impl Default for ConvertOptions {
             emit_ifcowl_links: true,
             enable_topology: false,
             enable_topology_extension: false,
+            topology_only: false,
+            suppress_non_topology_fallback: false,
             geometry_relations: None,
             geometry_bounding_boxes: None,
             geometry_wkts: None,
@@ -127,6 +131,21 @@ pub fn stream_step_and_model(
     }
 }
 
+pub fn stream_topology_model(
+    model: &IfcModel,
+    options: &ConvertOptions,
+    sender: &Sender<Vec<Triple>>,
+) -> Result<(), StreamError> {
+    let mut topology_options = options.clone();
+    topology_options.topology_only = true;
+    stream_lbd(
+        model,
+        &topology_options,
+        &normalize_base_uri(&topology_options.base_uri),
+        sender,
+    )
+}
+
 fn convert_lbd(model: &IfcModel, options: &ConvertOptions, base: &str) -> Vec<Triple> {
     let mut triples = Vec::new();
     emit_lbd(model, options, base, |triple| {
@@ -182,9 +201,10 @@ where
     let mut emitted_lbd_property_sets = HashSet::new();
     let mut emitted_lbd_quantity_sets = HashSet::new();
 
-    emit_geometry_declarations(&mut emit)?;
-
-    modules::core_entities::emit_core_entities(model, options, base, &mut emit)?;
+    if !options.topology_only {
+        emit_geometry_declarations(&mut emit)?;
+        modules::core_entities::emit_core_entities(model, options, base, &mut emit)?;
+    }
 
     let mut topology = options.enable_topology.then(|| {
         if options.enable_topology_extension {
@@ -344,7 +364,7 @@ where
                 }
             }
         }
-    } else {
+    } else if !options.topology_only && !options.suppress_non_topology_fallback {
         let mut emitted_storey_contains = HashSet::new();
         let mut contained_pairs: Vec<_> = model
             .rel_contained
@@ -444,6 +464,10 @@ where
                 }
             }
         }
+    }
+
+    if options.topology_only {
+        return Ok(());
     }
 
     let mut property_object_ids: Vec<_> = model.property_sets_for_object.keys().copied().collect();
@@ -1099,7 +1123,7 @@ struct IfcOwlEmitter<'a> {
     base: &'a str,
     namespace: &'a str,
     lookup: &'a IfcOwlSchemaLookup,
-    entity_subjects: HashMap<EntityId, String>,
+    entity_subjects: &'a HashMap<EntityId, String>,
     triples: Vec<Triple>,
     node_counter: u64,
     /// ID of the entity currently being emitted; used for stable IRI generation.
@@ -1114,8 +1138,9 @@ impl<'a> IfcOwlEmitter<'a> {
         base: &'a str,
         namespace: &'a str,
         lookup: &'a IfcOwlSchemaLookup,
-        max_entity_id: EntityId,
-        entity_subjects: HashMap<EntityId, String>,
+        node_counter_start: EntityId,
+        entity_subjects: &'a HashMap<EntityId, String>,
+        emit_header: bool,
     ) -> Self {
         let mut emitter = Self {
             base,
@@ -1123,12 +1148,14 @@ impl<'a> IfcOwlEmitter<'a> {
             lookup,
             entity_subjects,
             triples: Vec::new(),
-            node_counter: max_entity_id,
+            node_counter: node_counter_start,
             current_entity_id: 0,
             entity_local_counter: 0,
             scalar_cache: HashMap::new(),
         };
-        emitter.emit_ontology_header();
+        if emit_header {
+            emitter.emit_ontology_header();
+        }
         emitter
     }
 
@@ -2693,8 +2720,11 @@ mod tests {
                 emit_ifcowl_links: true,
                 enable_topology: false,
                 enable_topology_extension: false,
+                topology_only: false,
+                suppress_non_topology_fallback: false,
                 geometry_relations: None,
                 geometry_bounding_boxes: None,
+                geometry_wkts: None,
                 geometry_tolerance: 1e-6,
             },
         );
@@ -3073,8 +3103,11 @@ mod tests {
                 emit_ifcowl_links: true,
                 enable_topology: true,
                 enable_topology_extension: false,
+                topology_only: false,
+                suppress_non_topology_fallback: false,
                 geometry_relations: None,
                 geometry_bounding_boxes: None,
+                geometry_wkts: None,
                 geometry_tolerance: 1e-6,
             },
         );
@@ -3118,8 +3151,11 @@ mod tests {
                 emit_ifcowl_links: true,
                 enable_topology: false,
                 enable_topology_extension: false,
+                topology_only: false,
+                suppress_non_topology_fallback: false,
                 geometry_relations: None,
                 geometry_bounding_boxes: None,
+                geometry_wkts: None,
                 geometry_tolerance: 1e-6,
             },
         );
@@ -3143,8 +3179,11 @@ mod tests {
                 emit_ifcowl_links: true,
                 enable_topology: true,
                 enable_topology_extension: false,
+                topology_only: false,
+                suppress_non_topology_fallback: false,
                 geometry_relations: None,
                 geometry_bounding_boxes: None,
+                geometry_wkts: None,
                 geometry_tolerance: 1e-6,
             },
         );
@@ -3234,6 +3273,8 @@ mod tests {
             emit_ifcowl_links: true,
             enable_topology: true,
             enable_topology_extension: false,
+            topology_only: false,
+            suppress_non_topology_fallback: false,
             geometry_relations: None,
             geometry_bounding_boxes: Some(Arc::new(HashMap::from([(
                 4131_u64,
@@ -3246,6 +3287,7 @@ mod tests {
                     z_max: 3.0,
                 },
             )]))),
+            geometry_wkts: None,
             geometry_tolerance: 1e-6,
         };
         let result = convert_step_and_model(&step, &model, &options);
