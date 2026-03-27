@@ -1277,7 +1277,10 @@ fn build_shapes_in_memory_from_ifc(
         still_need_ifcopenshell.push(id);
     }
     if from_fallback_bbox > 0 {
-        eprintln!("Used CLI fallback bboxes for {} entities", from_fallback_bbox);
+        eprintln!(
+            "Used CLI fallback bboxes for {} entities",
+            from_fallback_bbox
+        );
     }
 
     if !still_need_ifcopenshell.is_empty() {

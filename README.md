@@ -27,7 +27,7 @@ Key flags:
 - `--quad-chunk-core-count <N>` (when `quad-chunking=cores`, override auto core count)
 - `--ifcowl` (writes `<output_stem>_ifcowl.ttl`)
 - `--topology` (IFC-relation topology only)
-- `--topology-full` (advanced mode; currently voxel geometry adjacency)
+- `--topology-full` (advanced mode; OCC exact-geometry topology checks)
 - `--bbox` (emit bounding-box geometries as WKT)
 
 ## Modes
@@ -60,14 +60,48 @@ Output behavior:
   - `--output` writes one `.nq` stream with two named graphs (LBD + IfcOWL).
   - `--ifcowl` is not required; IfcOWL emission is enabled automatically for two-graph output.
   - Graph IRIs default to `<base-uri>/lbd` and `<base-uri>/ifcowl`, overridable with `--lbd-graph-iri` and `--ifcowl-graph-iri`.
-  - When `--quad-chunking` is enabled, output is written as multiple `.nq` chunk files plus `quad_chunks.manifest.json` in the output directory.
+  - When `--quad-chunking` is enabled, output is written as parallel per-graph chunk streams.
+  - With `--topology`/`--topology-full`, topology triples are emitted to a separate third named graph stream (`<base-uri>/topology`) and chunked independently.
+  - Chunk files use per-stream prefixes: `<prefix>-lbd.part-000.nq`, `<prefix>-ifcowl.part-000.nq`, `<prefix>-topology.part-000.nq`, ...
+  - Each stream writes its own manifest: `<prefix>-lbd.manifest.json`, `<prefix>-ifcowl.manifest.json`, `<prefix>-topology.manifest.json`.
   - `lines`: rotate by line count; `bytes`: rotate by byte threshold (line-safe).
-  - `cores`: auto-create chunks by available parallelism, but cap chunk count so estimated chunk size stays at least ~64 MiB (unless overridden with `--quad-chunk-core-count`).
-  - `cores` writing uses batched buffered output with a dedicated writer thread to reduce chunking overhead on large exports.
-- Topology triples are emitted in the LBD file when `--topology` or `--topology-full` is enabled.
+  - `cores`: auto-create chunks by available parallelism and clamp chunk sizing to about `64–512 MiB` per chunk (unless overridden with `--quad-chunk-core-count`).
+  - `cores` writing uses batched buffered output with dedicated writer threads to reduce chunking overhead on large exports.
+- In chunked N-Quads mode, topology triples are emitted as a separate topology graph stream; in Turtle mode they remain part of the LBD output.
 - Bounding boxes are emitted only when `--bbox` is set.
 - BBoxes are emitted as geometry resources linked via `lbd:hasBoundingBox` and `geo:hasGeometry`, with `geo:asWKT` (`POLYHEDRALSURFACE Z`).
 - Hidden dev tuning is available for bbox fallback threshold: `--bbox-inflation-threshold` (default `1.5`).
+
+## Oxigraph Streaming Load
+
+For fastest ingest with chunked N-Quads:
+
+1. Convert with chunking enabled (all three graphs are chunked independently):
+```bash
+ifc2lbd-neo model.ifc \
+  --output out.nq \
+  --output-format nquads \
+  --quad-chunking cores \
+  --topology-full \
+  --bbox
+```
+
+2. Stream each manifest in file order into Oxigraph (load starts immediately, no final merge step needed):
+```bash
+jq -r '.files[].file' out-ifcowl.manifest.json | while read -r f; do
+  oxigraph_server load --file "$f" --format nquads
+done
+jq -r '.files[].file' out-lbd.manifest.json | while read -r f; do
+  oxigraph_server load --file "$f" --format nquads
+done
+jq -r '.files[].file' out-topology.manifest.json | while read -r f; do
+  oxigraph_server load --file "$f" --format nquads
+done
+```
+
+Notes:
+- Keep chunks in the `64–512 MiB` range for good parallel ingest behavior.
+- If a stream is small, auto mode may emit fewer chunks by design.
 
 ## Code Map
 

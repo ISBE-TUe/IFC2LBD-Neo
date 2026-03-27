@@ -16,7 +16,14 @@ pub(crate) fn convert_ifcowl(step: &StepFile, base: &str, schema: StepSchema) ->
     let lookup = ifcowl_lookup(schema);
     let max_entity_id = ids.iter().copied().max().unwrap_or(0);
     let entity_subjects = ifcowl_entity_subjects(step, base, lookup);
-    let mut emitter = IfcOwlEmitter::new(base, &namespace, lookup, max_entity_id, entity_subjects);
+    let mut emitter = IfcOwlEmitter::new(
+        base,
+        &namespace,
+        lookup,
+        max_entity_id,
+        &entity_subjects,
+        true,
+    );
 
     for id in ids {
         let entity = &step.entities[&id];
@@ -38,26 +45,97 @@ pub(crate) fn stream_ifcowl(
     let lookup = ifcowl_lookup(schema);
     let max_entity_id = ids.iter().copied().max().unwrap_or(0);
     let entity_subjects = ifcowl_entity_subjects(step, base, lookup);
-    let mut emitter = IfcOwlEmitter::new(base, &namespace, lookup, max_entity_id, entity_subjects);
+    let available_cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    let max_workers = available_cores.clamp(1, IFCOWL_MAX_WORKERS);
+    let workers_by_size = (ids.len() / IFCOWL_MIN_ENTITIES_PER_WORKER).max(1);
+    let worker_count = max_workers.min(workers_by_size);
 
-    for id in ids {
-        let entity = &step.entities[&id];
-        emitter.emit_entity(id, entity);
-        if emitter.pending_len() >= STREAM_BATCH_SIZE {
+    if worker_count <= 1 {
+        let mut emitter = IfcOwlEmitter::new(
+            base,
+            &namespace,
+            lookup,
+            max_entity_id,
+            &entity_subjects,
+            true,
+        );
+        for id in ids {
+            let entity = &step.entities[&id];
+            emitter.emit_entity(id, entity);
+            if emitter.pending_len() >= STREAM_BATCH_SIZE {
+                sender
+                    .send(emitter.take_triples())
+                    .map_err(|_| StreamError::ChannelClosed)?;
+            }
+        }
+        let remaining = emitter.take_triples();
+        if !remaining.is_empty() {
             sender
-                .send(emitter.take_triples())
+                .send(remaining)
                 .map_err(|_| StreamError::ChannelClosed)?;
         }
+        return Ok(());
     }
 
-    let remaining = emitter.take_triples();
-    if !remaining.is_empty() {
-        sender
-            .send(remaining)
-            .map_err(|_| StreamError::ChannelClosed)?;
-    }
+    let chunk_size = ids.len().div_ceil(worker_count);
+    let (batch_sender, batch_receiver) = crossbeam::channel::bounded::<Vec<Triple>>(32);
+    std::thread::scope(|scope| -> Result<(), StreamError> {
+        let mut handles = Vec::new();
+        for (worker_index, chunk) in ids.chunks(chunk_size).enumerate() {
+            let step_ref = step;
+            let namespace_ref = namespace.as_str();
+            let lookup_ref = lookup;
+            let base_ref = base;
+            let subjects_ref = &entity_subjects;
+            let local_sender = batch_sender.clone();
+            let handle = scope.spawn(move || -> Result<(), StreamError> {
+                let node_start = max_entity_id
+                    .saturating_add((worker_index as u64 + 1) * IFCOWL_NODE_COUNTER_STRIDE);
+                let mut emitter = IfcOwlEmitter::new(
+                    base_ref,
+                    namespace_ref,
+                    lookup_ref,
+                    node_start,
+                    subjects_ref,
+                    worker_index == 0,
+                );
+                for id in chunk {
+                    let entity = &step_ref.entities[id];
+                    emitter.emit_entity(*id, entity);
+                    if emitter.pending_len() >= STREAM_BATCH_SIZE {
+                        local_sender
+                            .send(emitter.take_triples())
+                            .map_err(|_| StreamError::ChannelClosed)?;
+                    }
+                }
+                let remaining = emitter.take_triples();
+                if !remaining.is_empty() {
+                    local_sender
+                        .send(remaining)
+                        .map_err(|_| StreamError::ChannelClosed)?;
+                }
+                Ok(())
+            });
+            handles.push(handle);
+        }
+        drop(batch_sender);
+
+        for batch in batch_receiver {
+            sender.send(batch).map_err(|_| StreamError::ChannelClosed)?;
+        }
+        for handle in handles {
+            handle.join().map_err(|_| StreamError::ChannelClosed)??;
+        }
+        Ok(())
+    })?;
     Ok(())
 }
+
+const IFCOWL_MIN_ENTITIES_PER_WORKER: usize = 50_000;
+const IFCOWL_MAX_WORKERS: usize = 16;
+const IFCOWL_NODE_COUNTER_STRIDE: u64 = 1_000_000_000;
 
 fn deduplicate_triples(triples: Vec<Triple>) -> Vec<Triple> {
     let mut seen = HashSet::new();
