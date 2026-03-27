@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::io::BufWriter;
+use std::io::{BufWriter, Write};
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -33,11 +33,23 @@ mod voxel;
 
 const SERIALIZER_CHANNEL_CAPACITY: usize = 32;
 const SERIALIZER_BUFFER_BYTES: usize = 1024 * 1024;
+const CORE_CHUNK_BLOCK_LINES: u64 = 4096;
+const CORE_CHUNK_BATCH_BYTES: usize = 4 * 1024 * 1024;
+const MIN_CORE_CHUNK_BYTES: u64 = 64 * 1024 * 1024;
+const IFC_TO_NQ_ESTIMATE_MULTIPLIER: u64 = 32;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 enum OutputFormat {
     Turtle,
     Nquads,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum QuadChunkingMode {
+    None,
+    Lines,
+    Bytes,
+    Cores,
 }
 
 #[derive(Debug, Parser)]
@@ -73,6 +85,30 @@ struct Args {
     /// Override named graph IRI for IfcOWL triples in `nquads` mode.
     #[arg(long = "ifcowl-graph-iri")]
     ifcowl_graph_iri: Option<String>,
+
+    /// Emit N-Quads in chunked files (valid only with `--output-format nquads`).
+    #[arg(long = "quad-chunking", value_enum, default_value_t = QuadChunkingMode::None)]
+    quad_chunking: QuadChunkingMode,
+
+    /// Lines per chunk when `--quad-chunking lines`.
+    #[arg(long = "quad-chunk-size-lines", default_value_t = 2_000_000)]
+    quad_chunk_size_lines: usize,
+
+    /// Bytes per chunk when `--quad-chunking bytes`.
+    #[arg(long = "quad-chunk-size-bytes", default_value_t = 268_435_456)]
+    quad_chunk_size_bytes: usize,
+
+    /// Prefix for chunk output filenames: `<prefix>.part-000.nq`, ...
+    #[arg(long = "quad-chunk-prefix", default_value = "out")]
+    quad_chunk_prefix: String,
+
+    /// Minimum number of chunk files to emit.
+    #[arg(long = "quad-chunk-min-count", default_value_t = 1)]
+    quad_chunk_min_count: usize,
+
+    /// Override chunk count when `--quad-chunking cores` (default: available parallelism).
+    #[arg(long = "quad-chunk-core-count")]
+    quad_chunk_core_count: Option<usize>,
 
     /// Emit full IfcOWL-compatible output and links in a separate sidecar file.
     #[arg(long = "ifcowl", default_value_t = false)]
@@ -122,11 +158,9 @@ struct Args {
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().with_env_filter("info").init();
     let args = Args::parse();
+    validate_args(&args)?;
     let output_format = args.output_format;
-
-    if args.topology && args.topology_full {
-        anyhow::bail!("use either --topology or --topology-full, not both");
-    }
+    let input_file_size_bytes = std::fs::metadata(&args.input).map(|m| m.len()).unwrap_or(0);
 
     let emit_ifcowl = args.ifcowl || output_format == OutputFormat::Nquads;
     if output_format == OutputFormat::Nquads && !args.ifcowl {
@@ -233,6 +267,17 @@ fn main() -> anyhow::Result<()> {
     let lbd_base_uri = options.base_uri.clone();
     let lbd_graph_iri_thread = lbd_graph_iri.clone();
     let ifcowl_graph_iri_thread = ifcowl_graph_iri.clone();
+    let quad_chunking_mode = args.quad_chunking;
+    let quad_chunk_size_lines = args.quad_chunk_size_lines;
+    let quad_chunk_size_bytes = args.quad_chunk_size_bytes;
+    let quad_chunk_prefix = args.quad_chunk_prefix.clone();
+    let quad_chunk_min_count = args.quad_chunk_min_count;
+    let quad_chunk_core_count = resolve_effective_core_chunk_count(
+        args.quad_chunking,
+        args.quad_chunk_core_count,
+        args.quad_chunk_min_count,
+        input_file_size_bytes,
+    );
     let merged_ifcowl_receiver = if output_format == OutputFormat::Nquads {
         Some(
             ifcowl_receiver
@@ -264,35 +309,59 @@ fn main() -> anyhow::Result<()> {
             OutputFormat::Nquads => {
                 let ifcowl_receiver = merged_ifcowl_receiver
                     .ok_or_else(|| anyhow::anyhow!("missing IfcOWL receiver for nquads mode"))?;
-                match lbd_target {
-                    Some(path) => {
-                        let file = File::create(&path).with_context(|| {
-                            format!("failed to create output file {}", path.display())
-                        })?;
-                        let writer = BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, file);
-                        serialize_nquads_merged_batches_to_writer(
-                            lbd_receiver,
-                            ifcowl_receiver,
-                            writer,
-                            &lbd_graph_iri_thread,
-                            &ifcowl_graph_iri_thread,
-                        )
-                        .with_context(|| {
-                            format!("failed to write N-Quads to {}", path.display())
-                        })?;
-                    }
-                    None => {
-                        let stdout = std::io::stdout();
-                        let handle = stdout.lock();
-                        let writer = BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, handle);
-                        serialize_nquads_merged_batches_to_writer(
-                            lbd_receiver,
-                            ifcowl_receiver,
-                            writer,
-                            &lbd_graph_iri_thread,
-                            &ifcowl_graph_iri_thread,
-                        )
-                        .context("failed to write N-Quads to stdout")?;
+                if quad_chunking_mode != QuadChunkingMode::None {
+                    let output_dir = resolve_quad_chunk_output_dir(lbd_target.as_deref());
+                    let mut chunk_writer = QuadChunkWriter::new(
+                        output_dir,
+                        quad_chunk_prefix.clone(),
+                        quad_chunking_mode,
+                        quad_chunk_size_lines,
+                        quad_chunk_size_bytes,
+                        quad_chunk_min_count,
+                        quad_chunk_core_count,
+                    )?;
+                    serialize_nquads_merged_batches_to_writer(
+                        lbd_receiver,
+                        ifcowl_receiver,
+                        &mut chunk_writer,
+                        &lbd_graph_iri_thread,
+                        &ifcowl_graph_iri_thread,
+                    )
+                    .context("failed to write chunked N-Quads output")?;
+                    chunk_writer
+                        .finish()
+                        .context("failed to finalize quad chunk manifest")?;
+                } else {
+                    match lbd_target {
+                        Some(path) => {
+                            let file = File::create(&path).with_context(|| {
+                                format!("failed to create output file {}", path.display())
+                            })?;
+                            let writer = BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, file);
+                            serialize_nquads_merged_batches_to_writer(
+                                lbd_receiver,
+                                ifcowl_receiver,
+                                writer,
+                                &lbd_graph_iri_thread,
+                                &ifcowl_graph_iri_thread,
+                            )
+                            .with_context(|| {
+                                format!("failed to write N-Quads to {}", path.display())
+                            })?;
+                        }
+                        None => {
+                            let stdout = std::io::stdout();
+                            let handle = stdout.lock();
+                            let writer = BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, handle);
+                            serialize_nquads_merged_batches_to_writer(
+                                lbd_receiver,
+                                ifcowl_receiver,
+                                writer,
+                                &lbd_graph_iri_thread,
+                                &ifcowl_graph_iri_thread,
+                            )
+                            .context("failed to write N-Quads to stdout")?;
+                        }
                     }
                 }
             }
@@ -1539,16 +1608,453 @@ fn normalize_base_for_graph_iri(base_uri: &str) -> String {
     base_uri.trim_end_matches('/').to_string()
 }
 
+fn validate_args(args: &Args) -> anyhow::Result<()> {
+    if args.topology && args.topology_full {
+        anyhow::bail!("use either --topology or --topology-full, not both");
+    }
+    if args.output_format != OutputFormat::Nquads && args.quad_chunking != QuadChunkingMode::None {
+        anyhow::bail!("quad chunking flags require --output-format nquads");
+    }
+    if args.quad_chunk_size_lines == 0 {
+        anyhow::bail!("--quad-chunk-size-lines must be > 0");
+    }
+    if args.quad_chunk_size_bytes == 0 {
+        anyhow::bail!("--quad-chunk-size-bytes must be > 0");
+    }
+    if args.quad_chunk_min_count == 0 {
+        anyhow::bail!("--quad-chunk-min-count must be > 0");
+    }
+    if args.quad_chunk_core_count.is_some_and(|count| count == 0) {
+        anyhow::bail!("--quad-chunk-core-count must be > 0 when provided");
+    }
+    if args.quad_chunking != QuadChunkingMode::Cores && args.quad_chunk_core_count.is_some() {
+        anyhow::bail!("--quad-chunk-core-count is only valid with --quad-chunking cores");
+    }
+    Ok(())
+}
+
+fn resolve_quad_chunk_output_dir(output_file: Option<&Path>) -> PathBuf {
+    output_file
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn resolve_effective_core_chunk_count(
+    mode: QuadChunkingMode,
+    requested_core_count: Option<usize>,
+    min_chunk_count: usize,
+    input_file_size_bytes: u64,
+) -> Option<usize> {
+    if mode != QuadChunkingMode::Cores {
+        return requested_core_count;
+    }
+    let available_cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    let requested = requested_core_count
+        .unwrap_or(available_cores)
+        .max(min_chunk_count);
+    let estimated_nq_bytes =
+        (input_file_size_bytes.saturating_mul(IFC_TO_NQ_ESTIMATE_MULTIPLIER)).max(1);
+    let max_chunks_by_min_size = (estimated_nq_bytes / MIN_CORE_CHUNK_BYTES).max(1) as usize;
+    let effective = requested.min(max_chunks_by_min_size).max(min_chunk_count);
+    Some(effective)
+}
+
+#[derive(Debug, Serialize)]
+struct QuadChunkManifest {
+    chunking: String,
+    chunk_size_lines: u64,
+    chunk_size_bytes: u64,
+    chunk_prefix: String,
+    min_chunk_count: u64,
+    core_chunk_count: u64,
+    files: Vec<QuadChunkEntry>,
+    total_lines: u64,
+    total_triples_estimate: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct QuadChunkEntry {
+    file: String,
+    bytes: u64,
+    lines: u64,
+}
+
+#[derive(Debug)]
+struct QuadChunkWriter {
+    output_dir: PathBuf,
+    chunk_prefix: String,
+    mode: QuadChunkingMode,
+    lines_per_chunk: u64,
+    bytes_per_chunk: u64,
+    min_chunk_count: u64,
+    core_chunk_count: u64,
+    current_index: usize,
+    current_file: Option<BufWriter<File>>,
+    current_bytes: u64,
+    current_lines: u64,
+    pending_buffer: Vec<u8>,
+    manifest_entries: Vec<QuadChunkEntry>,
+    total_lines: u64,
+    core_current_writer: usize,
+    core_lines_in_block: u64,
+    core_sender: Option<crossbeam::channel::Sender<CoreChunkWriteMsg>>,
+    core_writer_thread: Option<thread::JoinHandle<anyhow::Result<()>>>,
+    core_pending_buffers: Vec<Vec<u8>>,
+    core_bytes: Vec<u64>,
+    core_lines: Vec<u64>,
+}
+
+#[derive(Debug)]
+enum CoreChunkWriteMsg {
+    Data { index: usize, bytes: Vec<u8> },
+}
+
+impl QuadChunkWriter {
+    fn new(
+        output_dir: PathBuf,
+        chunk_prefix: String,
+        mode: QuadChunkingMode,
+        lines_per_chunk: usize,
+        bytes_per_chunk: usize,
+        min_chunk_count: usize,
+        core_count_override: Option<usize>,
+    ) -> anyhow::Result<Self> {
+        std::fs::create_dir_all(&output_dir).with_context(|| {
+            format!(
+                "failed to create quad chunk output dir {}",
+                output_dir.display()
+            )
+        })?;
+        let available_cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+        let selected_cores = core_count_override.unwrap_or(available_cores);
+        let core_chunk_count = if mode == QuadChunkingMode::Cores {
+            selected_cores.max(min_chunk_count) as u64
+        } else {
+            0
+        };
+
+        let mut writer = Self {
+            output_dir,
+            chunk_prefix,
+            mode,
+            lines_per_chunk: lines_per_chunk as u64,
+            bytes_per_chunk: bytes_per_chunk as u64,
+            min_chunk_count: min_chunk_count as u64,
+            core_chunk_count,
+            current_index: 0,
+            current_file: None,
+            current_bytes: 0,
+            current_lines: 0,
+            pending_buffer: Vec::new(),
+            manifest_entries: Vec::new(),
+            total_lines: 0,
+            core_current_writer: 0,
+            core_lines_in_block: 0,
+            core_sender: None,
+            core_writer_thread: None,
+            core_pending_buffers: Vec::new(),
+            core_bytes: Vec::new(),
+            core_lines: Vec::new(),
+        };
+        if writer.mode == QuadChunkingMode::Cores {
+            writer.start_core_chunk_writer_thread(core_chunk_count as usize)?;
+        }
+        Ok(writer)
+    }
+
+    fn finish(&mut self) -> anyhow::Result<()> {
+        if !self.pending_buffer.is_empty() {
+            if !self.pending_buffer.ends_with(b"\n") {
+                self.pending_buffer.push(b'\n');
+            }
+            self.consume_complete_lines()?;
+        }
+        if self.mode == QuadChunkingMode::Cores {
+            self.flush_core_pending_buffers()?;
+            self.close_core_chunk_files()?;
+        } else {
+            self.close_current_file()?;
+        }
+        let manifest_path = self.output_dir.join("quad_chunks.manifest.json");
+        let manifest = QuadChunkManifest {
+            chunking: match self.mode {
+                QuadChunkingMode::None => "none".to_string(),
+                QuadChunkingMode::Lines => "lines".to_string(),
+                QuadChunkingMode::Bytes => "bytes".to_string(),
+                QuadChunkingMode::Cores => "cores".to_string(),
+            },
+            chunk_size_lines: self.lines_per_chunk,
+            chunk_size_bytes: self.bytes_per_chunk,
+            chunk_prefix: self.chunk_prefix.clone(),
+            min_chunk_count: self.min_chunk_count,
+            core_chunk_count: self.core_chunk_count,
+            files: self.manifest_entries.clone(),
+            total_lines: self.total_lines,
+            total_triples_estimate: self.total_lines,
+        };
+        let manifest_json = serde_json::to_string_pretty(&manifest)
+            .context("failed to serialize quad chunk manifest JSON")?;
+        std::fs::write(&manifest_path, manifest_json)
+            .with_context(|| format!("failed to write manifest {}", manifest_path.display()))?;
+        Ok(())
+    }
+
+    fn write_complete_line(&mut self, line: &[u8]) -> anyhow::Result<()> {
+        if self.mode == QuadChunkingMode::Cores {
+            return self.write_round_robin_line(line);
+        }
+        if self.current_file.is_none() {
+            self.open_next_chunk_file()?;
+        }
+        let line_len = line.len() as u64;
+        if self.should_rotate(line_len) {
+            self.close_current_file()?;
+            self.open_next_chunk_file()?;
+        }
+        if let Some(file) = self.current_file.as_mut() {
+            file.write_all(line)?;
+        }
+        self.current_bytes += line_len;
+        self.current_lines += 1;
+        self.total_lines += 1;
+        Ok(())
+    }
+
+    fn consume_complete_lines(&mut self) -> anyhow::Result<()> {
+        loop {
+            let Some(pos) = self.pending_buffer.iter().position(|&b| b == b'\n') else {
+                break;
+            };
+            let line = self.pending_buffer[..=pos].to_vec();
+            self.pending_buffer.drain(..=pos);
+            self.write_complete_line(&line)?;
+        }
+        Ok(())
+    }
+
+    fn should_rotate(&self, next_line_len: u64) -> bool {
+        if self.current_file.is_none() || self.current_lines == 0 {
+            return false;
+        }
+        match self.mode {
+            QuadChunkingMode::None => false,
+            QuadChunkingMode::Lines => self.current_lines >= self.lines_per_chunk,
+            QuadChunkingMode::Bytes => self.current_bytes + next_line_len > self.bytes_per_chunk,
+            QuadChunkingMode::Cores => false,
+        }
+    }
+
+    fn open_next_chunk_file(&mut self) -> anyhow::Result<()> {
+        let file_name = format!("{}.part-{:03}.nq", self.chunk_prefix, self.current_index);
+        let path = self.output_dir.join(file_name);
+        let file = File::create(&path)
+            .with_context(|| format!("failed to create quad chunk {}", path.display()))?;
+        self.current_file = Some(BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, file));
+        self.current_bytes = 0;
+        self.current_lines = 0;
+        self.current_index += 1;
+        Ok(())
+    }
+
+    fn close_current_file(&mut self) -> anyhow::Result<()> {
+        if let Some(mut file) = self.current_file.take() {
+            file.flush()?;
+            let file_name = format!(
+                "{}.part-{:03}.nq",
+                self.chunk_prefix,
+                self.current_index - 1
+            );
+            self.manifest_entries.push(QuadChunkEntry {
+                file: file_name,
+                bytes: self.current_bytes,
+                lines: self.current_lines,
+            });
+            self.current_bytes = 0;
+            self.current_lines = 0;
+        }
+        Ok(())
+    }
+
+    fn start_core_chunk_writer_thread(&mut self, count: usize) -> anyhow::Result<()> {
+        let mut paths = Vec::with_capacity(count);
+        self.core_bytes = vec![0; count];
+        self.core_lines = vec![0; count];
+        self.core_pending_buffers = (0..count)
+            .map(|_| Vec::with_capacity(CORE_CHUNK_BATCH_BYTES))
+            .collect();
+        for i in 0..count {
+            let file_name = format!("{}.part-{:03}.nq", self.chunk_prefix, i);
+            let path = self.output_dir.join(&file_name);
+            paths.push(path);
+        }
+        let (sender, receiver) = crossbeam::channel::bounded::<CoreChunkWriteMsg>(64);
+        let writer_thread = thread::spawn(move || -> anyhow::Result<()> {
+            let mut writers = Vec::with_capacity(paths.len());
+            for path in &paths {
+                let file = File::create(path)
+                    .with_context(|| format!("failed to create quad chunk {}", path.display()))?;
+                writers.push(BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, file));
+            }
+            for msg in receiver {
+                match msg {
+                    CoreChunkWriteMsg::Data { index, bytes } => {
+                        let writer = writers.get_mut(index).ok_or_else(|| {
+                            anyhow::anyhow!("invalid chunk index {} in writer thread", index)
+                        })?;
+                        writer.write_all(&bytes)?;
+                    }
+                }
+            }
+            for writer in &mut writers {
+                writer.flush()?;
+            }
+            Ok(())
+        });
+        self.core_sender = Some(sender);
+        self.core_writer_thread = Some(writer_thread);
+        Ok(())
+    }
+
+    fn write_round_robin_line(&mut self, line: &[u8]) -> anyhow::Result<()> {
+        if self.core_pending_buffers.is_empty() {
+            return Ok(());
+        }
+        let idx = self.core_current_writer % self.core_pending_buffers.len();
+        self.core_pending_buffers[idx].extend_from_slice(line);
+        let line_len = line.len() as u64;
+        self.core_bytes[idx] += line_len;
+        self.core_lines[idx] += 1;
+        self.total_lines += 1;
+        if self.core_pending_buffers[idx].len() >= CORE_CHUNK_BATCH_BYTES {
+            self.flush_core_buffer(idx)?;
+        }
+        self.core_lines_in_block += 1;
+        if self.core_lines_in_block >= CORE_CHUNK_BLOCK_LINES
+            && !self.core_pending_buffers.is_empty()
+        {
+            self.core_current_writer =
+                (self.core_current_writer + 1) % self.core_pending_buffers.len();
+            self.core_lines_in_block = 0;
+        }
+        Ok(())
+    }
+
+    fn close_core_chunk_files(&mut self) -> anyhow::Result<()> {
+        self.core_sender.take();
+        if let Some(handle) = self.core_writer_thread.take() {
+            handle
+                .join()
+                .map_err(|_| anyhow::anyhow!("core chunk writer thread panicked"))??;
+        }
+        for idx in 0..self.core_bytes.len() {
+            let file_name = format!("{}.part-{:03}.nq", self.chunk_prefix, idx);
+            self.manifest_entries.push(QuadChunkEntry {
+                file: file_name,
+                bytes: self.core_bytes[idx],
+                lines: self.core_lines[idx],
+            });
+        }
+        Ok(())
+    }
+
+    fn flush_core_buffer(&mut self, index: usize) -> anyhow::Result<()> {
+        let bytes = std::mem::take(
+            self.core_pending_buffers
+                .get_mut(index)
+                .ok_or_else(|| anyhow::anyhow!("invalid pending buffer index {}", index))?,
+        );
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        let sender = self
+            .core_sender
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("missing core chunk sender"))?;
+        sender
+            .send(CoreChunkWriteMsg::Data { index, bytes })
+            .map_err(|_| anyhow::anyhow!("core chunk writer channel closed"))?;
+        Ok(())
+    }
+
+    fn flush_core_pending_buffers(&mut self) -> anyhow::Result<()> {
+        for idx in 0..self.core_pending_buffers.len() {
+            self.flush_core_buffer(idx)?;
+        }
+        Ok(())
+    }
+}
+
+impl Write for QuadChunkWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+
+        let mut cursor = 0usize;
+        if !self.pending_buffer.is_empty() {
+            if let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+                self.pending_buffer.extend_from_slice(&buf[..=pos]);
+                let line = std::mem::take(&mut self.pending_buffer);
+                self.write_complete_line(&line)
+                    .map_err(std::io::Error::other)?;
+                cursor = pos + 1;
+            } else {
+                self.pending_buffer.extend_from_slice(buf);
+                return Ok(buf.len());
+            }
+        }
+
+        while cursor < buf.len() {
+            let remainder = &buf[cursor..];
+            let Some(pos) = remainder.iter().position(|&b| b == b'\n') else {
+                break;
+            };
+            let end = cursor + pos + 1;
+            self.write_complete_line(&buf[cursor..end])
+                .map_err(std::io::Error::other)?;
+            cursor = end;
+        }
+
+        if cursor < buf.len() {
+            self.pending_buffer.extend_from_slice(&buf[cursor..]);
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        if let Some(file) = self.current_file.as_mut() {
+            file.flush()?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Args, OutputFormat};
+    use super::{
+        resolve_effective_core_chunk_count, validate_args, Args, OutputFormat, QuadChunkWriter,
+        QuadChunkingMode,
+    };
     use clap::Parser;
-    use std::path::Path;
+    use std::io::Write;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn cli_defaults_are_minimal() {
         let args = Args::try_parse_from(["ifc2lbd-neo", "input.ifc"]).expect("parse");
         assert_eq!(args.output_format, OutputFormat::Turtle);
+        assert_eq!(args.quad_chunking, QuadChunkingMode::None);
+        assert_eq!(args.quad_chunk_size_lines, 2_000_000);
+        assert_eq!(args.quad_chunk_size_bytes, 268_435_456);
+        assert_eq!(args.quad_chunk_prefix, "out");
+        assert_eq!(args.quad_chunk_min_count, 1);
+        assert!(args.quad_chunk_core_count.is_none());
         assert!(args.lbd_graph_iri.is_none());
         assert!(args.ifcowl_graph_iri.is_none());
         assert!(!args.ifcowl);
@@ -1572,6 +2078,18 @@ mod tests {
             "https://graphs.example.test/lbd",
             "--ifcowl-graph-iri",
             "https://graphs.example.test/ifcowl",
+            "--quad-chunking",
+            "cores",
+            "--quad-chunk-size-lines",
+            "999",
+            "--quad-chunk-size-bytes",
+            "4096",
+            "--quad-chunk-prefix",
+            "ingest",
+            "--quad-chunk-min-count",
+            "3",
+            "--quad-chunk-core-count",
+            "12",
             "--ifcowl",
             "--topology-full",
             "--bbox",
@@ -1588,9 +2106,140 @@ mod tests {
             args.ifcowl_graph_iri.as_deref(),
             Some("https://graphs.example.test/ifcowl")
         );
+        assert_eq!(args.quad_chunking, QuadChunkingMode::Cores);
+        assert_eq!(args.quad_chunk_size_lines, 999);
+        assert_eq!(args.quad_chunk_size_bytes, 4096);
+        assert_eq!(args.quad_chunk_prefix, "ingest");
+        assert_eq!(args.quad_chunk_min_count, 3);
+        assert_eq!(args.quad_chunk_core_count, Some(12));
         assert!(args.ifcowl);
         assert!(!args.topology);
         assert!(args.topology_full);
         assert!(args.bbox);
+    }
+
+    #[test]
+    fn chunking_requires_nquads_output() {
+        let args = Args::try_parse_from(["ifc2lbd-neo", "input.ifc", "--quad-chunking", "lines"])
+            .expect("parse");
+        let err = validate_args(&args).expect_err("must reject chunking with turtle output");
+        assert!(err
+            .to_string()
+            .contains("quad chunking flags require --output-format nquads"));
+    }
+
+    #[test]
+    fn core_count_flag_requires_cores_mode() {
+        let args = Args::try_parse_from([
+            "ifc2lbd-neo",
+            "input.ifc",
+            "--output-format",
+            "nquads",
+            "--quad-chunking",
+            "bytes",
+            "--quad-chunk-core-count",
+            "8",
+        ])
+        .expect("parse");
+        let err = validate_args(&args).expect_err("must reject core-count override in bytes mode");
+        assert!(err
+            .to_string()
+            .contains("--quad-chunk-core-count is only valid with --quad-chunking cores"));
+    }
+
+    #[test]
+    fn core_chunk_count_is_capped_by_min_chunk_size_estimate() {
+        // 10 MiB IFC => estimate 320 MiB => max 5 chunks at 64 MiB minimum.
+        let effective = resolve_effective_core_chunk_count(
+            QuadChunkingMode::Cores,
+            Some(28),
+            1,
+            10 * 1024 * 1024,
+        )
+        .expect("effective");
+        assert_eq!(effective, 5);
+    }
+
+    #[test]
+    fn quad_chunk_writer_rotates_and_writes_manifest() {
+        let out_dir = unique_temp_dir("quad_chunk_writer_test");
+        std::fs::create_dir_all(&out_dir).expect("mkdir");
+
+        let mut writer = QuadChunkWriter::new(
+            out_dir.clone(),
+            "test".to_string(),
+            QuadChunkingMode::Lines,
+            2,
+            1024,
+            1,
+            None,
+        )
+        .expect("new writer");
+        writer
+            .write_all(b"<s1> <p> <o> <g> .\n<s2> <p> <o> <g> .\n<s3> <p> <o> <g> .\n")
+            .expect("write");
+        writer.finish().expect("finish");
+
+        let c0 = out_dir.join("test.part-000.nq");
+        let c1 = out_dir.join("test.part-001.nq");
+        let manifest = out_dir.join("quad_chunks.manifest.json");
+        assert!(c0.exists());
+        assert!(c1.exists());
+        assert!(manifest.exists());
+        let c0_lines = std::fs::read_to_string(c0).expect("chunk0").lines().count();
+        let c1_lines = std::fs::read_to_string(c1).expect("chunk1").lines().count();
+        assert_eq!(c0_lines, 2);
+        assert_eq!(c1_lines, 1);
+
+        std::fs::remove_dir_all(&out_dir).ok();
+    }
+
+    #[test]
+    fn quad_chunk_writer_cores_mode_writes_target_chunk_count() {
+        let out_dir = unique_temp_dir("quad_chunk_writer_cores_test");
+        std::fs::create_dir_all(&out_dir).expect("mkdir");
+
+        let mut writer = QuadChunkWriter::new(
+            out_dir.clone(),
+            "core".to_string(),
+            QuadChunkingMode::Cores,
+            2_000_000,
+            268_435_456,
+            1,
+            Some(3),
+        )
+        .expect("new writer");
+        writer
+            .write_all(b"<s1> <p> <o> <g> .\n<s2> <p> <o> <g> .\n<s3> <p> <o> <g> .\n")
+            .expect("write");
+        writer.finish().expect("finish");
+
+        for idx in 0..3 {
+            let path = out_dir.join(format!("core.part-{idx:03}.nq"));
+            assert!(path.exists(), "missing {}", path.display());
+        }
+        let line_counts: Vec<usize> = (0..3)
+            .map(|idx| out_dir.join(format!("core.part-{idx:03}.nq")))
+            .map(|path| {
+                std::fs::read_to_string(path)
+                    .expect("chunk")
+                    .lines()
+                    .count()
+            })
+            .collect();
+        let total_lines: usize = line_counts.iter().sum();
+        assert_eq!(total_lines, 3);
+        let non_empty = line_counts.iter().filter(|count| **count > 0).count();
+        assert_eq!(non_empty, 1);
+
+        std::fs::remove_dir_all(&out_dir).ok();
+    }
+
+    fn unique_temp_dir(prefix: &str) -> PathBuf {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        std::env::temp_dir().join(format!("{prefix}_{now}"))
     }
 }
