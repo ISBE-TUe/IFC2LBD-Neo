@@ -11,7 +11,7 @@ use std::time::Instant;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use ifc_model::build_model;
 use ifc_model::IfcModel;
 use ifc_step::{parse_step_file, EntityId, StepFile, StepValue};
@@ -20,7 +20,10 @@ use lbd_geometry::{
     derive_relations_with_exact_kernel_subprocess_batch, BoundingBox, ExactCheckOptions,
     GeometryRelation, GeometryRelationKind, SubprocessKernelExecutionOptions,
 };
-use lbd_serializer::{serialize_lbd_batches_to_writer, serialize_turtle_batches_to_writer};
+use lbd_serializer::{
+    serialize_lbd_batches_to_writer, serialize_nquads_merged_batches_to_writer,
+    serialize_turtle_batches_to_writer,
+};
 use rayon::prelude::*;
 use serde::Serialize;
 
@@ -30,6 +33,12 @@ mod voxel;
 
 const SERIALIZER_CHANNEL_CAPACITY: usize = 32;
 const SERIALIZER_BUFFER_BYTES: usize = 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum OutputFormat {
+    Turtle,
+    Nquads,
+}
 
 #[derive(Debug, Parser)]
 #[command(name = "ifc2lbd-neo")]
@@ -52,6 +61,18 @@ struct Args {
         default_value = "https://lbd.example.com/"
     )]
     base_uri: String,
+
+    /// Output syntax. `nquads` writes LBD+IfcOWL into one `.nq` stream with named graphs.
+    #[arg(long = "output-format", value_enum, default_value_t = OutputFormat::Turtle)]
+    output_format: OutputFormat,
+
+    /// Override named graph IRI for LBD triples in `nquads` mode.
+    #[arg(long = "lbd-graph-iri")]
+    lbd_graph_iri: Option<String>,
+
+    /// Override named graph IRI for IfcOWL triples in `nquads` mode.
+    #[arg(long = "ifcowl-graph-iri")]
+    ifcowl_graph_iri: Option<String>,
 
     /// Emit full IfcOWL-compatible output and links in a separate sidecar file.
     #[arg(long = "ifcowl", default_value_t = false)]
@@ -101,10 +122,25 @@ struct Args {
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().with_env_filter("info").init();
     let args = Args::parse();
+    let output_format = args.output_format;
 
     if args.topology && args.topology_full {
         anyhow::bail!("use either --topology or --topology-full, not both");
     }
+
+    let emit_ifcowl = args.ifcowl || output_format == OutputFormat::Nquads;
+    if output_format == OutputFormat::Nquads && !args.ifcowl {
+        tracing::info!("nquads mode enabled: forcing IfcOWL emission into named graph output");
+    }
+    let normalized_base = normalize_base_for_graph_iri(&args.base_uri);
+    let lbd_graph_iri = args
+        .lbd_graph_iri
+        .clone()
+        .unwrap_or_else(|| format!("{normalized_base}/lbd"));
+    let ifcowl_graph_iri = args
+        .ifcowl_graph_iri
+        .clone()
+        .unwrap_or_else(|| format!("{normalized_base}/ifcowl"));
 
     let step = parse_step_file(&args.input)
         .with_context(|| format!("failed to parse STEP file {}", args.input.display()))?;
@@ -173,7 +209,7 @@ fn main() -> anyhow::Result<()> {
 
     let options = ConvertOptions {
         base_uri: args.base_uri,
-        emit_ifcowl_links: args.ifcowl,
+        emit_ifcowl_links: emit_ifcowl,
         enable_topology: topology_enabled,
         enable_topology_extension: args.topology_full,
         geometry_relations,
@@ -186,32 +222,90 @@ fn main() -> anyhow::Result<()> {
         crossbeam::channel::bounded(SERIALIZER_CHANNEL_CAPACITY);
     let lbd_receiver = converter_lbd_receiver;
 
+    let (ifcowl_sender, mut ifcowl_receiver) = if emit_ifcowl {
+        let (sender, receiver) = crossbeam::channel::bounded(SERIALIZER_CHANNEL_CAPACITY);
+        (Some(sender), Some(receiver))
+    } else {
+        (None, None)
+    };
+
     let lbd_target = args.output_file.clone();
     let lbd_base_uri = options.base_uri.clone();
+    let lbd_graph_iri_thread = lbd_graph_iri.clone();
+    let ifcowl_graph_iri_thread = ifcowl_graph_iri.clone();
+    let merged_ifcowl_receiver = if output_format == OutputFormat::Nquads {
+        Some(
+            ifcowl_receiver
+                .take()
+                .ok_or_else(|| anyhow::anyhow!("nquads mode requires IfcOWL receiver channel"))?,
+        )
+    } else {
+        None
+    };
     let lbd_thread = thread::spawn(move || -> anyhow::Result<()> {
-        match lbd_target {
-            Some(path) => {
-                let file = File::create(&path)
-                    .with_context(|| format!("failed to create output file {}", path.display()))?;
-                let writer = BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, file);
-                serialize_lbd_batches_to_writer(lbd_receiver, writer, &lbd_base_uri)
-                    .with_context(|| format!("failed to write Turtle to {}", path.display()))?;
-            }
-            None => {
-                let stdout = std::io::stdout();
-                let handle = stdout.lock();
-                let writer = BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, handle);
-                serialize_lbd_batches_to_writer(lbd_receiver, writer, &lbd_base_uri)
-                    .context("failed to write Turtle to stdout")?;
+        match output_format {
+            OutputFormat::Turtle => match lbd_target {
+                Some(path) => {
+                    let file = File::create(&path).with_context(|| {
+                        format!("failed to create output file {}", path.display())
+                    })?;
+                    let writer = BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, file);
+                    serialize_lbd_batches_to_writer(lbd_receiver, writer, &lbd_base_uri)
+                        .with_context(|| format!("failed to write Turtle to {}", path.display()))?;
+                }
+                None => {
+                    let stdout = std::io::stdout();
+                    let handle = stdout.lock();
+                    let writer = BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, handle);
+                    serialize_lbd_batches_to_writer(lbd_receiver, writer, &lbd_base_uri)
+                        .context("failed to write Turtle to stdout")?;
+                }
+            },
+            OutputFormat::Nquads => {
+                let ifcowl_receiver = merged_ifcowl_receiver
+                    .ok_or_else(|| anyhow::anyhow!("missing IfcOWL receiver for nquads mode"))?;
+                match lbd_target {
+                    Some(path) => {
+                        let file = File::create(&path).with_context(|| {
+                            format!("failed to create output file {}", path.display())
+                        })?;
+                        let writer = BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, file);
+                        serialize_nquads_merged_batches_to_writer(
+                            lbd_receiver,
+                            ifcowl_receiver,
+                            writer,
+                            &lbd_graph_iri_thread,
+                            &ifcowl_graph_iri_thread,
+                        )
+                        .with_context(|| {
+                            format!("failed to write N-Quads to {}", path.display())
+                        })?;
+                    }
+                    None => {
+                        let stdout = std::io::stdout();
+                        let handle = stdout.lock();
+                        let writer = BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, handle);
+                        serialize_nquads_merged_batches_to_writer(
+                            lbd_receiver,
+                            ifcowl_receiver,
+                            writer,
+                            &lbd_graph_iri_thread,
+                            &ifcowl_graph_iri_thread,
+                        )
+                        .context("failed to write N-Quads to stdout")?;
+                    }
+                }
             }
         }
         Ok(())
     });
 
     let mut ifcowl_thread = None;
-    let ifcowl_sender = if args.ifcowl {
+    if output_format == OutputFormat::Turtle && emit_ifcowl {
+        let receiver = ifcowl_receiver
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("missing IfcOWL receiver for turtle sidecar mode"))?;
         let path = resolve_ifcowl_path(args.output_file.as_deref(), &args.input);
-        let (sender, receiver) = crossbeam::channel::bounded(SERIALIZER_CHANNEL_CAPACITY);
         let ifcowl_base = options.base_uri.clone();
         ifcowl_thread = Some(thread::spawn(move || -> anyhow::Result<()> {
             let file = File::create(&path).with_context(|| {
@@ -222,10 +316,7 @@ fn main() -> anyhow::Result<()> {
                 .with_context(|| format!("failed to write IfcOWL Turtle to {}", path.display()))?;
             Ok(())
         }));
-        Some(sender)
-    } else {
-        None
-    };
+    }
 
     stream_step_and_model(
         &step,
@@ -1444,15 +1535,22 @@ fn resolve_ifcowl_path(output_file: Option<&Path>, input_file: &Path) -> PathBuf
     PathBuf::from(format!("{stem}_ifcowl.ttl"))
 }
 
+fn normalize_base_for_graph_iri(base_uri: &str) -> String {
+    base_uri.trim_end_matches('/').to_string()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::Args;
+    use super::{Args, OutputFormat};
     use clap::Parser;
     use std::path::Path;
 
     #[test]
     fn cli_defaults_are_minimal() {
         let args = Args::try_parse_from(["ifc2lbd-neo", "input.ifc"]).expect("parse");
+        assert_eq!(args.output_format, OutputFormat::Turtle);
+        assert!(args.lbd_graph_iri.is_none());
+        assert!(args.ifcowl_graph_iri.is_none());
         assert!(!args.ifcowl);
         assert!(!args.topology);
         assert!(!args.topology_full);
@@ -1468,6 +1566,12 @@ mod tests {
             "out.ttl",
             "--base-uri",
             "https://example.test/base/",
+            "--output-format",
+            "nquads",
+            "--lbd-graph-iri",
+            "https://graphs.example.test/lbd",
+            "--ifcowl-graph-iri",
+            "https://graphs.example.test/ifcowl",
             "--ifcowl",
             "--topology-full",
             "--bbox",
@@ -1475,6 +1579,15 @@ mod tests {
         .expect("parse");
         assert_eq!(args.output_file.as_deref(), Some(Path::new("out.ttl")));
         assert_eq!(args.base_uri, "https://example.test/base/");
+        assert_eq!(args.output_format, OutputFormat::Nquads);
+        assert_eq!(
+            args.lbd_graph_iri.as_deref(),
+            Some("https://graphs.example.test/lbd")
+        );
+        assert_eq!(
+            args.ifcowl_graph_iri.as_deref(),
+            Some("https://graphs.example.test/ifcowl")
+        );
         assert!(args.ifcowl);
         assert!(!args.topology);
         assert!(args.topology_full);

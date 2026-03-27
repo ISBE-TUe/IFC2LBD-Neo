@@ -1,21 +1,24 @@
 # IFC2LBD-Neo
 
-Rust workspace for converting IFC STEP files into LBD Turtle (plus optional IfcOWL and topology sidecar output).
+Rust workspace for converting IFC STEP files into LBD Turtle or N-Quads (plus optional IfcOWL sidecar in Turtle mode).
 
 ## Run
 
 ```bash
 cargo run -p ifc2lbd-cli --bin ifc2lbd-neo -- \
   path/to/model.ifc \
-  --output out/lbd.ttl \
+  --output out/lbd.nq \
   --base-uri https://example.test/base/ \
-  --ifcowl \
+  --output-format nquads \
   --topology
 ```
 
 Key flags:
 - `--output` (alias: `--target-file`)
 - `--base-uri` (alias: `--url`)
+- `--output-format <turtle|nquads>` (default: `turtle`)
+- `--lbd-graph-iri` (nquads mode, default: `<base-uri>/lbd`)
+- `--ifcowl-graph-iri` (nquads mode, default: `<base-uri>/ifcowl`)
 - `--ifcowl` (writes `<output_stem>_ifcowl.ttl`)
 - `--topology` (IFC-relation topology only)
 - `--topology-full` (advanced mode; currently voxel geometry adjacency)
@@ -27,6 +30,8 @@ Key flags:
   - `ifc2lbd-neo model.ifc --output out.ttl`
 - LBD + IfcOWL sidecar:
   - `ifc2lbd-neo model.ifc --output out.ttl --ifcowl`
+- Single-file N-Quads (LBD + IfcOWL named graphs):
+  - `ifc2lbd-neo model.ifc --output out.nq --output-format nquads`
 - Topology from IFC relations only:
   - `ifc2lbd-neo model.ifc --output out.ttl --topology`
 - Full topology mode:
@@ -38,7 +43,13 @@ Key flags:
 
 Output behavior:
 - `--output` always writes the LBD file.
-- `--ifcowl` always writes a separate sidecar file named `<output_stem>_ifcowl.ttl`.
+- In `turtle` mode:
+  - `--output` writes LBD Turtle.
+  - `--ifcowl` writes a separate sidecar file named `<output_stem>_ifcowl.ttl`.
+- In `nquads` mode:
+  - `--output` writes one `.nq` stream with two named graphs (LBD + IfcOWL).
+  - `--ifcowl` is not required; IfcOWL emission is enabled automatically for two-graph output.
+  - Graph IRIs default to `<base-uri>/lbd` and `<base-uri>/ifcowl`, overridable with `--lbd-graph-iri` and `--ifcowl-graph-iri`.
 - Topology triples are emitted in the LBD file when `--topology` or `--topology-full` is enabled.
 - Bounding boxes are emitted only when `--bbox` is set.
 - BBoxes are emitted as geometry resources linked via `lbd:hasBoundingBox` and `geo:hasGeometry`, with `geo:asWKT` (`POLYHEDRALSURFACE Z`).
@@ -51,7 +62,7 @@ Output behavior:
 - `crates/lbd-topology`: topology graph derivation.
 - `crates/lbd-geometry`: bbox/exact-kernel topology enrichment.
 - `crates/lbd-converter`: IFC model -> LBD/IfcOWL triples.
-- `crates/lbd-serializer`: streaming Turtle serialization.
+- `crates/lbd-serializer`: streaming Turtle and N-Quads serialization.
 - `crates/ifc2lbd-cli`: executable entrypoint and CLI orchestration.
 
 ## Validation

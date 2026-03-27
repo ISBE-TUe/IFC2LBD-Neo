@@ -4,6 +4,7 @@ use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::io::{self, Write};
+use std::thread;
 
 use crossbeam::channel::Receiver;
 use lbd_ontology::{Object, Triple, PREFIXES};
@@ -116,6 +117,69 @@ pub fn serialize_lbd_batches_to_writer<W: Write>(
         triples.append(&mut batch);
     }
     write_grouped_turtle(&triples, &mut writer, Some(instance_base), true)
+}
+
+pub fn serialize_nquads_batches_to_writer<W: Write>(
+    receiver: Receiver<Vec<Triple>>,
+    mut writer: W,
+    graph_iri: &str,
+) -> Result<(), SerializerError> {
+    for batch in receiver {
+        write_nquads_batch(&mut writer, &batch, graph_iri)?;
+    }
+    Ok(())
+}
+
+pub fn serialize_nquads_merged_batches_to_writer<W: Write>(
+    lbd_receiver: Receiver<Vec<Triple>>,
+    ifcowl_receiver: Receiver<Vec<Triple>>,
+    mut writer: W,
+    lbd_graph_iri: &str,
+    ifcowl_graph_iri: &str,
+) -> Result<(), SerializerError> {
+    let (merged_sender, merged_receiver) = crossbeam::channel::unbounded::<(bool, Vec<Triple>)>();
+
+    let lbd_sender = merged_sender.clone();
+    let lbd_forwarder = thread::spawn(move || {
+        for batch in lbd_receiver {
+            if lbd_sender.send((false, batch)).is_err() {
+                break;
+            }
+        }
+    });
+
+    let ifcowl_sender = merged_sender.clone();
+    let ifcowl_forwarder = thread::spawn(move || {
+        for batch in ifcowl_receiver {
+            if ifcowl_sender.send((true, batch)).is_err() {
+                break;
+            }
+        }
+    });
+
+    drop(merged_sender);
+
+    let mut write_result = Ok(());
+    for (is_ifcowl, batch) in merged_receiver {
+        let graph_iri = if is_ifcowl {
+            ifcowl_graph_iri
+        } else {
+            lbd_graph_iri
+        };
+        if let Err(err) = write_nquads_batch(&mut writer, &batch, graph_iri) {
+            write_result = Err(err);
+            break;
+        }
+    }
+
+    lbd_forwarder
+        .join()
+        .expect("LBD merge forwarder thread panicked");
+    ifcowl_forwarder
+        .join()
+        .expect("IfcOWL merge forwarder thread panicked");
+
+    write_result
 }
 
 fn compare_triples(left: &Triple, right: &Triple) -> Ordering {
@@ -338,6 +402,51 @@ fn ensure_trailing_slash(base: &str) -> &str {
     }
 }
 
+fn write_nquads_batch<W: Write>(
+    writer: &mut W,
+    triples: &[Triple],
+    graph_iri: &str,
+) -> Result<(), SerializerError> {
+    for triple in triples {
+        write_nquad_line(writer, triple, graph_iri)?;
+    }
+    Ok(())
+}
+
+fn write_nquad_line<W: Write>(
+    writer: &mut W,
+    triple: &Triple,
+    graph_iri: &str,
+) -> Result<(), SerializerError> {
+    writer.write_all(b"<")?;
+    writer.write_all(triple.subject.as_bytes())?;
+    writer.write_all(b"> <")?;
+    writer.write_all(triple.predicate.as_bytes())?;
+    writer.write_all(b"> ")?;
+    write_nquad_object(writer, &triple.object)?;
+    writer.write_all(b" <")?;
+    writer.write_all(graph_iri.as_bytes())?;
+    writer.write_all(b"> .\n")?;
+    Ok(())
+}
+
+fn write_nquad_object<W: Write>(writer: &mut W, object: &Object) -> io::Result<()> {
+    match object {
+        Object::Iri(iri) => {
+            writer.write_all(b"<")?;
+            writer.write_all(iri.as_bytes())?;
+            writer.write_all(b">")
+        }
+        Object::Literal(value) => writer.write_all(escape_literal(value).as_bytes()),
+        Object::TypedLiteral { value, datatype } => {
+            writer.write_all(escape_literal(value).as_bytes())?;
+            writer.write_all(b"^^<")?;
+            writer.write_all(datatype.as_bytes())?;
+            writer.write_all(b">")
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -451,5 +560,69 @@ mod tests {
 
         let occurrences = ttl.matches("<https://example.test/o>").count();
         assert_eq!(occurrences, 1);
+    }
+
+    #[test]
+    fn test_serialize_nquads_batches_to_writer() {
+        let (sender, receiver) = crossbeam::channel::bounded(2);
+        sender
+            .send(vec![Triple {
+                subject: "https://example.test/project/1".to_string(),
+                predicate: rdf_type(),
+                object: Object::Iri("https://linkedbuildingdata.org/LBD#Project".to_string()),
+            }])
+            .unwrap();
+        drop(sender);
+
+        let mut buffer = Vec::new();
+        serialize_nquads_batches_to_writer(receiver, &mut buffer, "https://example.test/g/lbd")
+            .unwrap();
+        let nq = String::from_utf8(buffer).unwrap();
+
+        assert!(nq.contains(
+            "<https://example.test/project/1> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <https://linkedbuildingdata.org/LBD#Project> <https://example.test/g/lbd> ."
+        ));
+    }
+
+    #[test]
+    fn test_serialize_nquads_merged_batches_to_writer() {
+        let (lbd_sender, lbd_receiver) = crossbeam::channel::bounded(2);
+        let (ifc_sender, ifc_receiver) = crossbeam::channel::bounded(2);
+
+        lbd_sender
+            .send(vec![Triple {
+                subject: "https://example.test/s1".to_string(),
+                predicate: "https://example.test/p".to_string(),
+                object: Object::Literal("x".to_string()),
+            }])
+            .unwrap();
+        ifc_sender
+            .send(vec![Triple {
+                subject: "https://example.test/s2".to_string(),
+                predicate: "https://example.test/p".to_string(),
+                object: Object::TypedLiteral {
+                    value: "3".to_string(),
+                    datatype: "http://www.w3.org/2001/XMLSchema#integer".to_string(),
+                },
+            }])
+            .unwrap();
+        drop(lbd_sender);
+        drop(ifc_sender);
+
+        let mut buffer = Vec::new();
+        serialize_nquads_merged_batches_to_writer(
+            lbd_receiver,
+            ifc_receiver,
+            &mut buffer,
+            "https://example.test/g/lbd",
+            "https://example.test/g/ifcowl",
+        )
+        .unwrap();
+        let nq = String::from_utf8(buffer).unwrap();
+
+        assert!(nq.contains(
+            "<https://example.test/s1> <https://example.test/p> \"x\" <https://example.test/g/lbd> ."
+        ));
+        assert!(nq.contains("<https://example.test/s2> <https://example.test/p> \"3\"^^<http://www.w3.org/2001/XMLSchema#integer> <https://example.test/g/ifcowl> ."));
     }
 }
