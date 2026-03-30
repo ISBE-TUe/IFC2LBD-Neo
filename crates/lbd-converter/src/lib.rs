@@ -930,7 +930,8 @@ fn ifcowl_namespace(schema: StepSchema) -> String {
         StepSchema::Ifc2x3 => "https://standards.buildingsmart.org/IFC/DEV/IFC2x3/TC1/OWL#",
         StepSchema::Ifc4 => "https://standards.buildingsmart.org/IFC/DEV/IFC4/ADD2/OWL#",
         StepSchema::Ifc4x1 => "https://standards.buildingsmart.org/IFC/DEV/IFC4_1/OWL#",
-        StepSchema::Ifc4x3 => "https://standards.buildingsmart.org/IFC/DEV/IFC4_3/RC1/OWL#",
+        StepSchema::Ifc4x3Rc1 => "https://standards.buildingsmart.org/IFC/DEV/IFC4_3/RC1/OWL#",
+        StepSchema::Ifc4x3Add2 => "https://w3id.org/ifc/IFC4X3_ADD2#",
     }
     .to_string()
 }
@@ -973,7 +974,8 @@ fn ifcowl_lookup(schema: StepSchema) -> &'static IfcOwlSchemaLookup {
     static IFC2X3: OnceLock<IfcOwlSchemaLookup> = OnceLock::new();
     static IFC4: OnceLock<IfcOwlSchemaLookup> = OnceLock::new();
     static IFC4X1: OnceLock<IfcOwlSchemaLookup> = OnceLock::new();
-    static IFC4X3: OnceLock<IfcOwlSchemaLookup> = OnceLock::new();
+    static IFC4X3_RC1: OnceLock<IfcOwlSchemaLookup> = OnceLock::new();
+    static IFC4X3_ADD2: OnceLock<IfcOwlSchemaLookup> = OnceLock::new();
 
     match schema {
         StepSchema::Ifc2x3 => IFC2X3.get_or_init(|| {
@@ -994,10 +996,16 @@ fn ifcowl_lookup(schema: StepSchema) -> &'static IfcOwlSchemaLookup {
                 include_str!("../resources/IFC4x1.ttl"),
             )
         }),
-        StepSchema::Ifc4x3 => IFC4X3.get_or_init(|| {
+        StepSchema::Ifc4x3Rc1 => IFC4X3_RC1.get_or_init(|| {
             build_ifcowl_lookup(
                 include_str!("../resources/proplistIFC4x3_RC1.csv"),
                 include_str!("../resources/IFC4x3_RC1.ttl"),
+            )
+        }),
+        StepSchema::Ifc4x3Add2 => IFC4X3_ADD2.get_or_init(|| {
+            build_ifcowl_lookup(
+                include_str!("../resources/proplistIFC4x3_ADD2.csv"),
+                include_str!("../resources/IFC4x3_ADD2.ttl"),
             )
         }),
     }
