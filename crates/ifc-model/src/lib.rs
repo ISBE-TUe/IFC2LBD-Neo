@@ -915,7 +915,7 @@ mod tests {
 
     #[test]
     fn test_duplex_topology_relationships_present() {
-        let step = parse_step_file(&duplex_path()).unwrap();
+        let step = parse_step_file(duplex_path().as_ref().unwrap().as_path()).unwrap();
         let model = build_model(&step).unwrap();
 
         assert!(model
