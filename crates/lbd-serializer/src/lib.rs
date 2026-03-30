@@ -70,7 +70,7 @@ fn write_iri_compact<W: Write>(
     }
     if let Some(base) = instance_base {
         let base = ensure_trailing_slash(base);
-        if let Some(local) = iri.strip_prefix(base) {
+        if let Some(local) = iri.strip_prefix(base.as_str()) {
             if is_valid_prefixed_local(local) {
                 writer.write_all(b"inst:")?;
                 return writer.write_all(local.as_bytes());
@@ -319,7 +319,7 @@ fn mark_used_prefixes_for_iri(
 ) {
     if let Some(base) = instance_base {
         let base = ensure_trailing_slash(base);
-        if iri.starts_with(base) {
+        if iri.starts_with(base.as_str()) {
             out.insert("inst");
             return;
         }
@@ -338,7 +338,7 @@ fn compact_iri<'a>(iri: &'a str, instance_base: Option<&'a str>) -> Cow<'a, str>
     }
     if let Some(base) = instance_base {
         let base = ensure_trailing_slash(base);
-        if let Some(local) = iri.strip_prefix(base) {
+        if let Some(local) = iri.strip_prefix(base.as_str()) {
             if is_valid_prefixed_local(local) {
                 return Cow::Owned(format!("inst:{local}"));
             }
@@ -394,13 +394,23 @@ fn is_valid_prefixed_local(local: &str) -> bool {
     chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
 }
 
+
+fn ensure_trailing_slash(base: &str) -> String {
+    if base.ends_with('/') {
+        base.to_owned()
+    } else {
+        format!("{}/", base)
+    }
+}
+
+/*  Original implementation was
 fn ensure_trailing_slash(base: &str) -> &str {
     if base.ends_with('/') {
         base
     } else {
-        base
+        base   // TODO: check this  (JO)
     }
-}
+}*/
 
 fn write_nquads_batch<W: Write>(
     writer: &mut W,
