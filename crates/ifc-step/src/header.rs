@@ -6,7 +6,8 @@ pub enum StepSchema {
     Ifc2x3,
     Ifc4,
     Ifc4x1,
-    Ifc4x3,
+    Ifc4x3Rc1,
+    Ifc4x3Add2,
 }
 
 impl StepSchema {
@@ -16,11 +17,16 @@ impl StepSchema {
         // Normalize various schema strings to our supported versions
         if upper.contains("IFC2X3") {
             Ok(StepSchema::Ifc2x3)
+        } else if upper.contains("IFC4X3_ADD2") {
+            Ok(StepSchema::Ifc4x3Add2)
+        } else if upper.contains("IFC4X3_RC1") {
+            Ok(StepSchema::Ifc4x3Rc1)
         } else if upper.contains("IFC4X3") {
-            Ok(StepSchema::Ifc4x3)
+            // Unsuffixed IFC4X3 is treated as the modern ADD2 line.
+            Ok(StepSchema::Ifc4x3Add2)
         } else if upper.contains("IFC4X2") {
             // IFC4x2 maps to IFC4x3 (closest supported)
-            Ok(StepSchema::Ifc4x3)
+            Ok(StepSchema::Ifc4x3Rc1)
         } else if upper.contains("IFC4X1") {
             Ok(StepSchema::Ifc4x1)
         } else if upper.contains("IFC4") {
@@ -37,7 +43,8 @@ impl std::fmt::Display for StepSchema {
             StepSchema::Ifc2x3 => write!(f, "IFC2X3"),
             StepSchema::Ifc4 => write!(f, "IFC4"),
             StepSchema::Ifc4x1 => write!(f, "IFC4X1"),
-            StepSchema::Ifc4x3 => write!(f, "IFC4X3"),
+            StepSchema::Ifc4x3Rc1 => write!(f, "IFC4X3_RC1"),
+            StepSchema::Ifc4x3Add2 => write!(f, "IFC4X3_ADD2"),
         }
     }
 }
@@ -221,7 +228,19 @@ mod tests {
     #[test]
     fn test_parse_ifc4x3() {
         let schema = StepSchema::from_header_str("IFC4X3_RC1").unwrap();
-        assert_eq!(schema, StepSchema::Ifc4x3);
+        assert_eq!(schema, StepSchema::Ifc4x3Rc1);
+    }
+
+    #[test]
+    fn test_parse_ifc4x3_add2() {
+        let schema = StepSchema::from_header_str("IFC4X3_ADD2").unwrap();
+        assert_eq!(schema, StepSchema::Ifc4x3Add2);
+    }
+
+    #[test]
+    fn test_parse_ifc4x3_unsuffixed_defaults_to_add2() {
+        let schema = StepSchema::from_header_str("IFC4X3").unwrap();
+        assert_eq!(schema, StepSchema::Ifc4x3Add2);
     }
 
     #[test]
@@ -250,7 +269,7 @@ ENDSEC;
 END-ISO-10303-21;";
 
         let header = parse_header(data).unwrap();
-        assert_eq!(header.schema, StepSchema::Ifc4x3);
+        assert_eq!(header.schema, StepSchema::Ifc4x3Add2);
         assert_eq!(
             header.description,
             vec![
