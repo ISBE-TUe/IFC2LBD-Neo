@@ -145,4 +145,4 @@ python3 scripts/run_release_benchmarks.py
 
 ## Known Current Gap
 
-- `--topology-full` currently uses voxel geometry adjacency; OCC-exact full mode is planned but not wired yet.
+- `--topology-full` is now wired through the OCC exact-kernel path from the CLI, but parts of the converter implementation are still more monolithic than the target module layout described above.

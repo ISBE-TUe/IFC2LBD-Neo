@@ -17,14 +17,18 @@ __pycache__/
 *.ifc
 *.ifc.*
 *.occ-cache/
+*.nq
 
 # Generated outputs / reports
+artifacts/**/*.ttl
 artifacts/outputs/
 artifacts/test-output/
 artifacts/benchmarks/**
+artifacts/paper-benchmarks/**
 artifacts/reference-java/**
 artifacts/topology/**
 !artifacts/benchmarks/.gitkeep
+!artifacts/paper-benchmarks/.gitkeep
 !artifacts/reference-java/.gitkeep
 !artifacts/topology/.gitkeep
 benchmark_results/

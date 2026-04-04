@@ -5,6 +5,7 @@ Use this folder entry point first.
 ## Current Docs (Read These First)
 
 - [Status Matrix](./current/status.md)
+- [Paper Plan](./current/paper-plan.md)
 - [Converter Pipeline](./current/converter-pipeline.md)
 - [Full Topology Workflow](./current/topology-full-workflow.md)
 - [Contributing](./current/contributing.md)

@@ -19,7 +19,7 @@ Relevant flags:
   - no geometry-derived bounding boxes
 - `--topology-full` enabled:
   - build topology graph
-  - derive adjacency candidates with voxel workflow in CLI
+  - derive geometry relations with the OCC exact-kernel subprocess workflow in CLI
   - pass `geometry_relations` to converter
 - `--bbox` enabled:
   - emit bbox geometry resources in LBD:
@@ -40,7 +40,7 @@ sequenceDiagram
     participant C as ifc2lbd-cli
     participant S as ifc-step
     participant M as ifc-model
-    participant V as voxel pipeline
+    participant G as OCC exact-kernel path
     participant X as lbd-converter
     participant T as lbd-topology
     participant L as LBD serializer
@@ -53,8 +53,8 @@ sequenceDiagram
     M-->>C: IfcModel
 
     alt topology-full
-        C->>V: voxel_adjacency_relations(model, step)
-        V-->>C: geometry_relations + mesh_bboxes
+        C->>G: topology_full_occ_relations(model, step, input)
+        G-->>C: geometry_relations + mesh_bboxes + mesh_wkts
     end
 
     C->>X: stream_step_and_model(step, model, ConvertOptions)
@@ -74,7 +74,7 @@ sequenceDiagram
 ## Current Internal Steps (Full Topology)
 
 1. CLI parses IFC STEP and builds typed IFC model.
-2. CLI optionally computes voxel adjacency relations.
+2. CLI optionally computes OCC exact-kernel geometry relations for `--topology-full`.
 3. CLI builds `ConvertOptions` and streams to converter.
 4. Converter emits core entities.
 5. Converter builds topology graph from IFC relations:
@@ -88,4 +88,4 @@ sequenceDiagram
 
 ## Important Current Nuance
 
-`--topology-full` currently uses voxel adjacency logic and merges those relations as core topology evidence in converter. OCC-exact full mode is planned but not wired yet.
+`--topology-full` currently uses the OCC exact-kernel subprocess path and merges those relations as core topology evidence in converter. The voxel helper code still exists in the CLI as legacy/exploratory implementation material, but it is not the active main path for `--topology-full`.
