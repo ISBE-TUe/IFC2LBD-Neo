@@ -6,6 +6,7 @@ This file defines which docs are authoritative today.
 
 - `README.md`
 - `docs/README.md`
+- `docs/current/paper-plan.md`
 - `docs/current/converter-pipeline.md`
 - `docs/current/topology-full-workflow.md`
 - `docs/current/contributing.md`
