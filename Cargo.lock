@@ -673,6 +673,7 @@ dependencies = [
  "lbd-pipeline",
  "lbd-serializer",
  "lbd-topology",
+ "plugin-topology-full",
  "rayon",
  "rio_api",
  "rio_turtle",
@@ -1050,6 +1051,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "51bae2ac328883f7acdfea3d66a7c35751187f870bc81f94563733a154d7a670"
 dependencies = [
  "plotters-backend",
+]
+
+[[package]]
+name = "plugin-topology-full"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ifc-model",
+ "ifc-step",
+ "lbd-geometry",
+ "serde",
+ "serde_json",
+ "tracing",
 ]
 
 [[package]]

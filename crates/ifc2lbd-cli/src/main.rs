@@ -15,7 +15,8 @@ use clap::{Parser, ValueEnum};
 use ifc_model::build_model;
 use ifc_model::IfcModel;
 use ifc_step::{parse_step_file, EntityId, StepFile, StepValue};
-use lbd_converter::{stream_step_and_model, stream_topology_model, ConvertOptions};
+use lbd_converter::ConvertOptions;
+use lbd_pipeline::FailurePolicy;
 use lbd_geometry::{
     derive_relations_with_exact_kernel_subprocess_batch, BoundingBox, ExactCheckOptions,
     GeometryRelation, GeometryRelationKind, SubprocessKernelExecutionOptions,
@@ -29,6 +30,8 @@ use serde::Serialize;
 
 mod mesh;
 mod pipeline_plugins;
+mod producer_plugins;
+mod topology_plugin;
 mod transform;
 mod voxel;
 
@@ -166,6 +169,18 @@ struct Args {
     /// List built-in pipeline plugins and exit.
     #[arg(long = "list-plugins", default_value_t = false)]
     list_plugins: bool,
+
+    /// Enable one or more plugins by id. Can be provided multiple times.
+    #[arg(long = "enable-plugin")]
+    enable_plugin: Vec<String>,
+
+    /// Set plugin config values as `<plugin-id>:<key>=<value>`.
+    #[arg(long = "plugin-config")]
+    plugin_config: Vec<String>,
+
+    /// Show resolved plugin activation plan and exit.
+    #[arg(long = "show-pipeline-plan", default_value_t = false)]
+    show_pipeline_plan: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -184,6 +199,18 @@ fn main() -> anyhow::Result<()> {
         print_pipeline_plugins(&built_in_registry);
         return Ok(());
     }
+    let requested_plugins = build_requested_plugin_list(&args);
+    let activation_plan = built_in_registry
+        .resolve_activation(&requested_plugins)
+        .map_err(|error| anyhow::anyhow!("plugin activation failed: {}", error))?;
+    validate_activation_plan_with_args(&args, &activation_plan)?;
+    let plugin_configs = parse_plugin_configs(&args.plugin_config)
+        .map_err(|error| anyhow::anyhow!("invalid --plugin-config: {}", error))?;
+    validate_plugin_configs(&activation_plan, &plugin_configs)?;
+    if args.show_pipeline_plan {
+        print_pipeline_plan(&built_in_registry, &activation_plan, &plugin_configs);
+        return Ok(());
+    }
     let input_path = args
         .input
         .as_ref()
@@ -192,7 +219,23 @@ fn main() -> anyhow::Result<()> {
     let output_format = args.output_format;
     let input_file_size_bytes = std::fs::metadata(input_path).map(|m| m.len()).unwrap_or(0);
 
-    let emit_ifcowl = args.ifcowl || output_format == OutputFormat::Nquads;
+    let active_plugins: HashSet<&str> = activation_plan
+        .enabled_ids
+        .iter()
+        .map(|id| id.as_str())
+        .collect();
+    let mut active_producer_ids: Vec<String> = activation_plan
+        .enabled_ids
+        .iter()
+        .filter_map(|id| built_in_registry.plugin(id).map(|p| p.manifest()))
+        .filter(|m| m.stage == lbd_pipeline::PipelineStage::Produce)
+        .map(|m| m.id.to_string())
+        .collect();
+    active_producer_ids.sort();
+    tracing::info!("active producer plugins: {}", active_producer_ids.join(", "));
+    let emit_ifcowl = args.ifcowl
+        || output_format == OutputFormat::Nquads
+        || active_plugins.contains(pipeline_plugins::IFCOWL_PRODUCER_ID);
     if output_format == OutputFormat::Nquads && !args.ifcowl {
         tracing::info!("nquads mode enabled: forcing IfcOWL emission into named graph output");
     }
@@ -220,10 +263,20 @@ fn main() -> anyhow::Result<()> {
         build_start.elapsed().as_secs_f64()
     );
 
-    let topology_enabled = args.topology || args.topology_full;
-    let topology_plugin_id =
-        pipeline_plugins::selected_topology_producer_id(args.topology, args.topology_full);
-    let derive_adjacency = args.topology_full;
+    let active_topology_plugin_ids: Vec<String> = activation_plan
+        .enabled_ids
+        .iter()
+        .filter_map(|id| built_in_registry.plugin(id).map(|plugin| (id, plugin.manifest())))
+        .filter(|(_, manifest)| {
+            manifest.stage == lbd_pipeline::PipelineStage::Produce
+                && manifest.outputs.iter().any(|output| *output == "topology-triples")
+        })
+        .map(|(id, _)| id.clone())
+        .collect();
+    let topology_enabled = !active_topology_plugin_ids.is_empty();
+    let derive_adjacency = active_topology_plugin_ids
+        .iter()
+        .any(|id| topology_plugin::plugin_requires_geometry_relations(id));
     let topology_graph_iri = format!("{normalized_base}/topology");
 
     let mut geometry_bounding_boxes: Option<Arc<HashMap<EntityId, BoundingBox>>> = None;
@@ -256,31 +309,36 @@ fn main() -> anyhow::Result<()> {
         geometry_wkts = Some(Arc::new(mesh_wkts));
     }
 
-    let parallel_topology_plugin =
-        output_format == OutputFormat::Nquads && topology_plugin_id.is_some();
-    if let Some(plugin_id) = topology_plugin_id {
+    let producer_plan =
+        build_producer_execution_plan(output_format, active_topology_plugin_ids.len());
+    if active_topology_plugin_ids.len() > 1 && !producer_plan.parallel_topology_plugin {
+        anyhow::bail!(
+            "multiple topology producer plugins require `--output-format nquads` so they can run in parallel"
+        );
+    }
+    if !active_topology_plugin_ids.is_empty() {
         tracing::info!(
-            "topology producer plugin selected: {} (parallel_nquads_mode={})",
-            plugin_id,
-            parallel_topology_plugin
+            "topology producer plugins selected: {} (parallel_nquads_mode={})",
+            active_topology_plugin_ids.join(", "),
+            producer_plan.parallel_topology_plugin
         );
     }
 
     let base_options = ConvertOptions {
         base_uri: args.base_uri,
         emit_ifcowl_links: emit_ifcowl,
-        enable_topology: if parallel_topology_plugin {
+        enable_topology: if producer_plan.parallel_topology_plugin {
             false
         } else {
             topology_enabled
         },
-        enable_topology_extension: if parallel_topology_plugin {
+        enable_topology_extension: if producer_plan.parallel_topology_plugin {
             false
         } else {
-            args.topology_full
+            derive_adjacency
         },
         topology_only: false,
-        suppress_non_topology_fallback: parallel_topology_plugin,
+        suppress_non_topology_fallback: producer_plan.parallel_topology_plugin,
         geometry_relations: None,
         geometry_bounding_boxes: geometry_bounding_boxes.clone(),
         geometry_wkts: geometry_wkts.clone(),
@@ -297,7 +355,7 @@ fn main() -> anyhow::Result<()> {
     } else {
         (None, None)
     };
-    let (topology_sender, mut topology_receiver) = if parallel_topology_plugin {
+    let (topology_sender, mut topology_receiver) = if producer_plan.parallel_topology_plugin {
         let (sender, receiver) = crossbeam::channel::bounded(SERIALIZER_CHANNEL_CAPACITY);
         (Some(sender), Some(receiver))
     } else {
@@ -310,7 +368,7 @@ fn main() -> anyhow::Result<()> {
     let ifcowl_graph_iri_thread = ifcowl_graph_iri.clone();
     let topology_graph_iri_thread = topology_graph_iri.clone();
     let quad_chunking_mode = args.quad_chunking;
-    let grafeo_direct_stream = args.grafeo_direct_stream;
+    let grafeo_direct_stream = active_plugins.contains(pipeline_plugins::GRAFEO_EXPORT_ID);
     let quad_chunk_size_lines = args.quad_chunk_size_lines;
     let quad_chunk_size_bytes = args.quad_chunk_size_bytes;
     let quad_chunk_prefix = args.quad_chunk_prefix.clone();
@@ -331,7 +389,7 @@ fn main() -> anyhow::Result<()> {
         args.quad_chunking,
         args.quad_chunk_core_count,
         args.quad_chunk_min_count,
-        if args.topology_full {
+        if derive_adjacency {
             input_file_size_bytes.saturating_mul(TOPOLOGY_FULL_TO_NQ_ESTIMATE_MULTIPLIER)
         } else {
             (input_file_size_bytes / 8).max(1)
@@ -557,7 +615,10 @@ fn main() -> anyhow::Result<()> {
     }
 
     let producer_start = Instant::now();
-    if parallel_topology_plugin {
+    if producer_plan.parallel_topology_plugin {
+        let model_ref = &model;
+        let step_ref = &step;
+        let converter_lbd_sender_clone = converter_lbd_sender.clone();
         let topology_sender_clone = topology_sender
             .as_ref()
             .cloned()
@@ -567,102 +628,95 @@ fn main() -> anyhow::Result<()> {
         let bbox_inflation_threshold = args.bbox_inflation_threshold;
         let geometry_tolerance = args.geometry_tolerance;
         let bbox_report_path = args.bbox_report.clone();
-        let topology_only_mode = args.topology_full;
         let ifcowl_sender_clone = ifcowl_sender.clone();
-        run_producer_plugin_tasks(vec![
-            (
-                "builtin-core-conversion",
-                Box::new(|| {
-                    stream_step_and_model(
-                        &step,
-                        &model,
-                        &base_options,
-                        &converter_lbd_sender,
-                        ifcowl_sender_clone.as_ref(),
-                    )
-                    .context("failed to stream conversion output")?;
-                    Ok(())
-                }),
-            ),
-            (
-                topology_plugin_id
-                    .expect("parallel topology mode requires a selected topology plugin"),
-                Box::new(|| {
-                    let geometry_relations = if topology_only_mode {
-                        let full_start = Instant::now();
-                        let (relations, _mesh_bboxes, _mesh_wkts, bbox_report) =
-                            topology_full_occ_relations(
-                                &model,
-                                &step,
-                                &input_path_buf,
-                                geometry_tolerance,
-                                bbox_inflation_threshold,
-                            )?;
-                        tracing::info!(
-                            "topology-full OCC produced {} relations in {:.3}s",
-                            relations.len(),
-                            full_start.elapsed().as_secs_f64(),
-                        );
-                        if !args.bbox {
-                            if let Some(path) = bbox_report_path.as_ref() {
-                                let report_json = serde_json::to_string_pretty(&bbox_report)
-                                    .context("failed to serialize bbox report JSON")?;
-                                std::fs::write(path, report_json).with_context(|| {
-                                    format!("failed to write bbox report {}", path.display())
-                                })?;
-                            }
-                        }
-                        Some(Arc::new(relations))
-                    } else {
-                        None
-                    };
+        let mut producer_tasks = vec![ProducerTaskSpec {
+            plugin_id: "builtin-core-conversion".to_string(),
+            failure_policy: FailurePolicy::Required,
+            task: Box::new(move || {
+                producer_plugins::run_core_conversion_plugin(
+                    step_ref,
+                    model_ref,
+                    &base_options,
+                    &converter_lbd_sender_clone,
+                    ifcowl_sender_clone.as_ref(),
+                )
+                .context("failed to run core conversion producer plugin")?;
+                Ok(())
+            }),
+        }];
+        for plugin_id in &active_topology_plugin_ids {
+            let plugin_id = plugin_id.clone();
+            let failure_policy = resolve_failure_policy(&built_in_registry, &plugin_id);
+            let topology_sender_clone = topology_sender_clone.clone();
+            let topology_base = topology_base.clone();
+            let input_path_buf = input_path_buf.clone();
+            let bbox_report_path = bbox_report_path.clone();
+            producer_tasks.push(ProducerTaskSpec {
+                plugin_id: plugin_id.clone(),
+                failure_policy,
+                task: Box::new(move || {
+                    let topology_execution = topology_plugin::run_topology_plugin(
+                        &plugin_id,
+                        &topology_plugin::TopologyExecutionContext {
+                            model: model_ref,
+                            step: step_ref,
+                            input_path: &input_path_buf,
+                            geometry_tolerance,
+                            bbox_inflation_threshold,
+                            bbox_report_path: bbox_report_path.as_deref(),
+                            write_report: !args.bbox,
+                        },
+                    )?;
                     let topology_options = ConvertOptions {
                         base_uri: topology_base,
                         emit_ifcowl_links: false,
                         enable_topology: true,
-                        enable_topology_extension: args.topology_full,
+                        enable_topology_extension: topology_execution.enable_topology_extension,
                         topology_only: true,
                         suppress_non_topology_fallback: false,
-                        geometry_relations,
+                        geometry_relations: topology_execution.geometry_relations,
                         geometry_bounding_boxes: None,
                         geometry_wkts: None,
                         geometry_tolerance,
                     };
-                    stream_topology_model(&model, &topology_options, &topology_sender_clone)
-                        .context("failed to stream topology output")?;
+                    producer_plugins::run_topology_producer_plugin(
+                        model_ref,
+                        &topology_options,
+                        &topology_sender_clone,
+                    )
+                    .with_context(|| {
+                        format!("failed to run topology producer plugin `{}`", plugin_id)
+                    })?;
                     Ok(())
                 }),
-            ),
-        ])?;
+            });
+        }
+        run_producer_plugin_tasks(producer_tasks)?;
     } else {
         let options = if derive_adjacency {
-            let full_start = Instant::now();
-            let (relations, _mesh_bboxes, _mesh_wkts, bbox_report) = topology_full_occ_relations(
-                &model,
-                &step,
-                input_path,
-                args.geometry_tolerance,
-                args.bbox_inflation_threshold,
+            let topology_execution = topology_plugin::run_topology_plugin(
+                active_topology_plugin_ids
+                    .first()
+                    .map(String::as_str)
+                    .ok_or_else(|| anyhow::anyhow!("missing topology plugin selection"))?,
+                &topology_plugin::TopologyExecutionContext {
+                    model: &model,
+                    step: &step,
+                    input_path,
+                    geometry_tolerance: args.geometry_tolerance,
+                    bbox_inflation_threshold: args.bbox_inflation_threshold,
+                    bbox_report_path: args.bbox_report.as_deref(),
+                    write_report: true,
+                },
             )?;
-            tracing::info!(
-                "topology-full OCC produced {} relations in {:.3}s",
-                relations.len(),
-                full_start.elapsed().as_secs_f64(),
-            );
-            if let Some(path) = args.bbox_report.as_ref() {
-                let report_json = serde_json::to_string_pretty(&bbox_report)
-                    .context("failed to serialize bbox report JSON")?;
-                std::fs::write(path, report_json)
-                    .with_context(|| format!("failed to write bbox report {}", path.display()))?;
-            }
             ConvertOptions {
                 base_uri: base_options.base_uri.clone(),
                 emit_ifcowl_links: emit_ifcowl,
                 enable_topology: topology_enabled,
-                enable_topology_extension: args.topology_full,
+                enable_topology_extension: topology_execution.enable_topology_extension,
                 topology_only: false,
                 suppress_non_topology_fallback: false,
-                geometry_relations: Some(Arc::new(relations)),
+                geometry_relations: topology_execution.geometry_relations,
                 geometry_bounding_boxes: geometry_bounding_boxes.clone(),
                 geometry_wkts: geometry_wkts.clone(),
                 geometry_tolerance: args.geometry_tolerance,
@@ -672,7 +726,7 @@ fn main() -> anyhow::Result<()> {
                 base_uri: base_options.base_uri.clone(),
                 emit_ifcowl_links: emit_ifcowl,
                 enable_topology: topology_enabled,
-                enable_topology_extension: args.topology_full,
+                enable_topology_extension: derive_adjacency,
                 topology_only: false,
                 suppress_non_topology_fallback: false,
                 geometry_relations: None,
@@ -682,14 +736,14 @@ fn main() -> anyhow::Result<()> {
             }
         };
 
-        stream_step_and_model(
+        producer_plugins::run_core_conversion_plugin(
             &step,
             &model,
             &options,
             &converter_lbd_sender,
             ifcowl_sender.as_ref(),
         )
-        .context("failed to stream conversion output")?;
+        .context("failed to run core conversion producer plugin")?;
     }
     tracing::info!(
         "phase triple_production completed in {:.3}s",
@@ -724,35 +778,251 @@ fn main() -> anyhow::Result<()> {
 fn print_pipeline_plugins(registry: &lbd_pipeline::PluginRegistry) {
     for manifest in registry.manifests() {
         println!(
-            "{:?}\t{}\t{}\tparallel={:?}\twasm={}",
+            "{:?}\t{}\t{}\tparallel={:?}\tfailure={:?}\twasm={}",
             manifest.stage,
             manifest.id,
             manifest.display_name,
             manifest.parallelism,
+            manifest.failure_policy,
             manifest.wasm_compatible
         );
     }
 }
 
+fn print_pipeline_plan(
+    registry: &lbd_pipeline::PluginRegistry,
+    plan: &lbd_pipeline::ActivationPlan,
+    configs: &HashMap<String, HashMap<String, String>>,
+) {
+    println!("Enabled plugins:");
+    for id in &plan.enabled_ids {
+        if let Some(plugin) = registry.plugin(id) {
+            let manifest = plugin.manifest();
+            println!(
+                "  {:?}\t{}\t{}\tparallel={:?}\tfailure={:?}\twasm={}",
+                manifest.stage, manifest.id, manifest.display_name, manifest.parallelism, manifest.failure_policy, manifest.wasm_compatible
+            );
+        } else {
+            println!("  unknown\t{}\t(unregistered)", id);
+        }
+        if let Some(entries) = configs.get(id) {
+            for (key, value) in entries {
+                println!("    config\t{}={}", key, value);
+            }
+        }
+    }
+}
+
+fn build_requested_plugin_list(args: &Args) -> Vec<String> {
+    let mut requested: Vec<String> = Vec::new();
+    let explicit: HashSet<&str> = args.enable_plugin.iter().map(|id| id.as_str()).collect();
+    let has_explicit_serializer = explicit.contains(pipeline_plugins::TURTLE_SERIALIZER_ID)
+        || explicit.contains(pipeline_plugins::NQUADS_SERIALIZER_ID);
+    let has_explicit_export = explicit.contains(pipeline_plugins::FILE_EXPORT_ID)
+        || explicit.contains(pipeline_plugins::STDOUT_EXPORT_ID)
+        || explicit.contains(pipeline_plugins::GRAFEO_EXPORT_ID);
+    let has_explicit_topology = explicit.contains(pipeline_plugins::TOPOLOGY_LITE_PRODUCER_ID)
+        || explicit.contains(pipeline_plugins::TOPOLOGY_FULL_PRODUCER_ID);
+
+    requested.push(pipeline_plugins::LBD_PRODUCER_ID.to_string());
+    if args.ifcowl || args.output_format == OutputFormat::Nquads {
+        requested.push(pipeline_plugins::IFCOWL_PRODUCER_ID.to_string());
+    }
+    if !has_explicit_serializer {
+        if args.output_format == OutputFormat::Nquads {
+            requested.push(pipeline_plugins::NQUADS_SERIALIZER_ID.to_string());
+        } else {
+            requested.push(pipeline_plugins::TURTLE_SERIALIZER_ID.to_string());
+        }
+    }
+    if !has_explicit_export {
+        if args.grafeo_direct_stream {
+            requested.push(pipeline_plugins::GRAFEO_EXPORT_ID.to_string());
+        } else if args.output_file.is_some() || args.quad_chunking != QuadChunkingMode::None {
+            requested.push(pipeline_plugins::FILE_EXPORT_ID.to_string());
+        } else {
+            requested.push(pipeline_plugins::STDOUT_EXPORT_ID.to_string());
+        }
+    }
+    if !has_explicit_topology {
+        if let Some(topology_plugin_id) =
+            pipeline_plugins::selected_topology_producer_id(args.topology, args.topology_full)
+        {
+            requested.push(topology_plugin_id.to_string());
+        }
+    }
+    requested.extend(args.enable_plugin.clone());
+
+    let mut deduped = Vec::new();
+    let mut seen = HashSet::new();
+    for id in requested {
+        if seen.insert(id.clone()) {
+            deduped.push(id);
+        }
+    }
+    deduped
+}
+
+fn parse_plugin_configs(
+    values: &[String],
+) -> Result<HashMap<String, HashMap<String, String>>, String> {
+    let mut by_plugin: HashMap<String, HashMap<String, String>> = HashMap::new();
+    for raw in values {
+        let (plugin, rest) = raw
+            .split_once(':')
+            .ok_or_else(|| format!("expected `<plugin-id>:<key>=<value>`, got `{}`", raw))?;
+        let (key, value) = rest
+            .split_once('=')
+            .ok_or_else(|| format!("expected `<key>=<value>` in `{}`", raw))?;
+        if plugin.is_empty() || key.is_empty() {
+            return Err(format!(
+                "plugin id and key must be non-empty in plugin config `{}`",
+                raw
+            ));
+        }
+        by_plugin
+            .entry(plugin.to_string())
+            .or_default()
+            .insert(key.to_string(), value.to_string());
+    }
+    Ok(by_plugin)
+}
+
+fn validate_plugin_configs(
+    plan: &lbd_pipeline::ActivationPlan,
+    configs: &HashMap<String, HashMap<String, String>>,
+) -> anyhow::Result<()> {
+    let active: HashSet<&str> = plan.enabled_ids.iter().map(|id| id.as_str()).collect();
+    for plugin_id in configs.keys() {
+        if !active.contains(plugin_id.as_str()) {
+            anyhow::bail!(
+                "plugin config provided for `{}` but plugin is not active; add `--enable-plugin {}`",
+                plugin_id,
+                plugin_id
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_activation_plan_with_args(
+    args: &Args,
+    plan: &lbd_pipeline::ActivationPlan,
+) -> anyhow::Result<()> {
+    let active: HashSet<&str> = plan.enabled_ids.iter().map(|id| id.as_str()).collect();
+    let has_nq = active.contains(pipeline_plugins::NQUADS_SERIALIZER_ID);
+    let has_ttl = active.contains(pipeline_plugins::TURTLE_SERIALIZER_ID);
+    if args.output_format == OutputFormat::Nquads && !has_nq {
+        anyhow::bail!(
+            "nquads output requires `{}` to be active",
+            pipeline_plugins::NQUADS_SERIALIZER_ID
+        );
+    }
+    if args.output_format == OutputFormat::Turtle && !has_ttl {
+        anyhow::bail!(
+            "turtle output requires `{}` to be active",
+            pipeline_plugins::TURTLE_SERIALIZER_ID
+        );
+    }
+    if active.contains(pipeline_plugins::GRAFEO_EXPORT_ID) {
+        if args.output_format != OutputFormat::Nquads {
+            anyhow::bail!(
+                "grafeo export plugin requires `--output-format nquads`"
+            );
+        }
+        if args.quad_chunking != QuadChunkingMode::None {
+            anyhow::bail!("grafeo export plugin cannot be combined with `--quad-chunking`");
+        }
+    }
+    Ok(())
+}
+
 type ProducerTask<'a> = Box<dyn FnOnce() -> anyhow::Result<()> + Send + 'a>;
 
-fn run_producer_plugin_tasks<'a>(tasks: Vec<(&'static str, ProducerTask<'a>)>) -> anyhow::Result<()> {
+struct ProducerTaskSpec<'a> {
+    plugin_id: String,
+    failure_policy: FailurePolicy,
+    task: ProducerTask<'a>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ProducerExecutionPlan {
+    parallel_topology_plugin: bool,
+}
+
+fn build_producer_execution_plan(
+    output_format: OutputFormat,
+    topology_plugin_count: usize,
+) -> ProducerExecutionPlan {
+    ProducerExecutionPlan {
+        parallel_topology_plugin: output_format == OutputFormat::Nquads && topology_plugin_count > 0,
+    }
+}
+
+fn resolve_failure_policy(registry: &lbd_pipeline::PluginRegistry, plugin_id: &str) -> FailurePolicy {
+    registry
+        .plugin(plugin_id)
+        .map(|plugin| plugin.manifest().failure_policy)
+        .unwrap_or(FailurePolicy::Required)
+}
+
+fn run_producer_plugin_tasks<'a>(tasks: Vec<ProducerTaskSpec<'a>>) -> anyhow::Result<()> {
     std::thread::scope(|scope| -> anyhow::Result<()> {
         let mut handles = Vec::with_capacity(tasks.len());
-        for (plugin_id, task) in tasks {
+        for spec in tasks {
+            let ProducerTaskSpec {
+                plugin_id,
+                failure_policy,
+                task,
+            } = spec;
             let handle = scope.spawn(move || task());
-            handles.push((plugin_id, handle));
+            handles.push((plugin_id, failure_policy, handle));
         }
-        for (plugin_id, handle) in handles {
-            handle
-                .join()
-                .map_err(|_| anyhow::anyhow!("producer plugin `{}` panicked", plugin_id))??;
+        let mut required_errors = Vec::new();
+        for (plugin_id, failure_policy, handle) in handles {
+            let result = handle.join().map_err(|_| {
+                anyhow::anyhow!("producer plugin `{}` panicked", plugin_id)
+            });
+            match (failure_policy, result) {
+                (_, Ok(Ok(()))) => {}
+                (FailurePolicy::Optional, Ok(Err(error))) => {
+                    tracing::warn!(
+                        "optional producer plugin `{}` failed and will be skipped: {}",
+                        plugin_id,
+                        error
+                    );
+                }
+                (FailurePolicy::Optional, Err(error)) => {
+                    tracing::warn!(
+                        "optional producer plugin `{}` panicked and will be skipped: {}",
+                        plugin_id,
+                        error
+                    );
+                }
+                (FailurePolicy::Required, Ok(Err(error))) => {
+                    required_errors.push(anyhow::anyhow!(
+                        "required producer plugin `{}` failed: {}",
+                        plugin_id,
+                        error
+                    ));
+                }
+                (FailurePolicy::Required, Err(error)) => {
+                    required_errors.push(anyhow::anyhow!(
+                        "required producer plugin `{}` panicked: {}",
+                        plugin_id,
+                        error
+                    ));
+                }
+            }
+        }
+        if let Some(error) = required_errors.into_iter().next() {
+            return Err(error);
         }
         Ok(())
     })
 }
 
-fn topology_full_occ_relations(
+pub(crate) fn topology_full_occ_relations(
     model: &IfcModel,
     step: &StepFile,
     input_path: &Path,
@@ -1537,7 +1807,7 @@ struct BboxOutlier {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct BboxQualityReport {
+pub(crate) struct BboxQualityReport {
     elements_requested: usize,
     elements_with_mesh: usize,
     escalated_exact_count: usize,
@@ -1950,7 +2220,7 @@ fn normalize_base_for_graph_iri(base_uri: &str) -> String {
 }
 
 fn validate_args(args: &Args) -> anyhow::Result<()> {
-    if !args.list_plugins && args.input.is_none() {
+    if !args.list_plugins && !args.show_pipeline_plan && args.input.is_none() {
         anyhow::bail!("an IFC input path is required");
     }
     if args.topology && args.topology_full {
