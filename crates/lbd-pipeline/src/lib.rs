@@ -133,7 +133,11 @@ impl PluginRegistry {
     }
 
     pub fn manifests(&self) -> Vec<PluginManifest> {
-        let mut manifests: Vec<_> = self.plugins.values().map(RegisteredPlugin::manifest).collect();
+        let mut manifests: Vec<_> = self
+            .plugins
+            .values()
+            .map(RegisteredPlugin::manifest)
+            .collect();
         manifests.sort_by_key(|manifest| (manifest.stage as u8, manifest.id));
         manifests
     }
@@ -149,7 +153,10 @@ impl PluginRegistry {
         self.plugins.get(id)
     }
 
-    pub fn resolve_activation(&self, requested: &[String]) -> Result<ActivationPlan, ActivationError> {
+    pub fn resolve_activation(
+        &self,
+        requested: &[String],
+    ) -> Result<ActivationPlan, ActivationError> {
         let mut ordered_enabled: Vec<String> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
         let mut queue: Vec<String> = requested.to_vec();
@@ -266,7 +273,10 @@ mod tests {
         let mut registry = PluginRegistry::new();
         registry.register_producer(TestProducer).unwrap();
         let err = registry.register_producer(TestProducer).unwrap_err();
-        assert!(matches!(err, RegistryError::DuplicatePluginId("test-producer")));
+        assert!(matches!(
+            err,
+            RegistryError::DuplicatePluginId("test-producer")
+        ));
     }
 
     #[test]
@@ -326,6 +336,9 @@ mod tests {
         let plan = registry
             .resolve_activation(&["needs-dep".to_string()])
             .unwrap();
-        assert_eq!(plan.enabled_ids, vec!["dep".to_string(), "needs-dep".to_string()]);
+        assert_eq!(
+            plan.enabled_ids,
+            vec!["dep".to_string(), "needs-dep".to_string()]
+        );
     }
 }

@@ -1,78 +1,59 @@
 # IFC2LBD-Neo
 
-High-performance Rust converter from IFC STEP to LBD/IfcOWL in Turtle or N-Quads.
+High-performance Rust converter from IFC STEP to LBD/IfcOWL with a module-first pipeline.
 
-## Why This Exists
+## CLI Model
 
-IFC2LBD-Neo focuses on fast, production-grade conversion with explicit pipeline stages and module-based extensibility.
+The CLI is module-driven:
+
+- `--module <id>` activates a module (repeatable).
+- `--module-opt <module-id>.<key>=<value>` configures module options (repeatable).
+- `--show-module-plan` prints the resolved module set and options.
+
+No profiles are required for normal usage.
 
 ## Quick Start
 
-Full run (LBD + IfcOWL + full topology + bbox) in N-Quads:
+LBD Turtle to file:
+
+```bash
+ifc2lbd-neo model.ifc \
+  --output out.ttl \
+  --base-uri https://example.test/base/ \
+  --module neo-lbd-producer \
+  --module neo-turtle-serializer \
+  --module neo-file-export
+```
+
+LBD + full topology N-Quads (no IfcOWL):
 
 ```bash
 ifc2lbd-neo model.ifc \
   --output out.nq \
   --base-uri https://example.test/base/ \
-  --output-format nquads \
-  --quad-chunking cores \
-  --enable-module neo-topology-full-producer \
-  --bbox
+  --module neo-lbd-producer \
+  --module neo-topology-full-producer \
+  --module neo-nquads-serializer \
+  --module neo-file-export
 ```
 
-Minimal Turtle:
+Full pipeline (LBD + IfcOWL + full topology + bbox) in N-Quads with core chunking:
 
 ```bash
-ifc2lbd-neo model.ifc --output out.ttl
+ifc2lbd-neo model.ifc \
+  --output out.nq \
+  --base-uri https://example.test/base/ \
+  --module neo-lbd-producer \
+  --module neo-ifcowl-producer \
+  --module neo-topology-full-producer \
+  --module neo-bbox-enricher \
+  --module neo-nquads-serializer \
+  --module neo-file-export \
+  --module-opt neo-nquads-serializer.chunking=cores \
+  --module-opt neo-bbox-enricher.inflation_threshold=1.5
 ```
 
-## Topology Behavior
-
-- `neo-topology-lite-producer`: IFC relationship topology only.
-- `neo-topology-full-producer`: includes lite topology and adds OCC-backed geometry refinement.
-
-So yes: full topology already includes the simple topology layer.
-
-## Module Activation
-
-List installed modules:
-
-```bash
-ifc2lbd-neo --list-modules
-```
-
-Activate a module:
-
-```bash
-ifc2lbd-neo model.ifc --output out.nq --output-format nquads \
-  --enable-module neo-topology-full-producer
-```
-
-Module-specific typed config (example for full topology):
-
-```bash
-ifc2lbd-neo model.ifc --output out.nq --output-format nquads \
-  --enable-module neo-topology-full-producer \
-  --module-config neo-topology-full-producer:kernel_timeout_secs=900 \
-  --module-config neo-topology-full-producer:max_pairs_per_batch=75000
-```
-
-Show the resolved plan:
-
-```bash
-ifc2lbd-neo model.ifc --output out.nq --output-format nquads \
-  --enable-module neo-topology-full-producer \
-  --show-module-plan
-```
-
-Grafeo streaming is module-only (no dedicated CLI flag):
-
-```bash
-ifc2lbd-neo model.ifc --output-format nquads \
-  --enable-module neo-grafeo-export
-```
-
-## Built-In Modules
+## Built-In Neo Modules
 
 | Stage | Module ID | Purpose |
 |---|---|---|
@@ -80,28 +61,42 @@ ifc2lbd-neo model.ifc --output-format nquads \
 | Produce | `neo-ifcowl-producer` | Emit IfcOWL triples |
 | Produce | `neo-topology-lite-producer` | BOT topology from IFC relationships |
 | Produce | `neo-topology-full-producer` | BOT topology with OCC geometry refinement |
+| Produce | `neo-bbox-enricher` | Compute bbox geometry enrichment |
 | Serialize | `neo-turtle-serializer` | Serialize Turtle |
 | Serialize | `neo-nquads-serializer` | Serialize N-Quads (merged/chunked) |
 | Export | `neo-file-export` | Write files/manifests |
 | Export | `neo-stdout-export` | Write to stdout |
 | Export | `neo-grafeo-export` | Direct Grafeo framed stream |
 
-## Main Flags
+## Module Options
 
-- `--output`
-- `--base-uri`
-- `--output-format <turtle|nquads>`
-- `--profile <basic-ttl|full-nquads>`
-- `--quad-chunking <none|lines|bytes|cores>`
-- `--bbox`
-- `--list-modules`
-- `--enable-module <module-id>` (repeatable)
-- `--module-config <module-id>:<key>=<value>` (repeatable)
-- `--show-module-plan`
+`neo-topology-full-producer`:
 
-Current typed module-config keys:
-- `neo-topology-full-producer:kernel_timeout_secs` (integer > 0)
-- `neo-topology-full-producer:max_pairs_per_batch` (integer > 0)
+- `kernel_timeout_secs` (integer > 0)
+- `max_pairs_per_batch` (integer > 0)
+
+`neo-nquads-serializer`:
+
+- `chunking` = `none|lines|bytes|cores`
+- `chunk_size_lines` (integer > 0)
+- `chunk_size_bytes` (integer > 0)
+- `chunk_prefix` (string)
+- `chunk_min_count` (integer > 0)
+- `chunk_core_count` (integer > 0, only with `chunking=cores`)
+- `lbd_graph_iri` (string IRI)
+- `ifcowl_graph_iri` (string IRI)
+
+`neo-bbox-enricher`:
+
+- `inflation_threshold` (float > 0)
+- `report_path` (path)
+
+## Discovery and Plan
+
+```bash
+ifc2lbd-neo --list-modules
+ifc2lbd-neo model.ifc ... --show-module-plan
+```
 
 ## Build
 
@@ -114,5 +109,5 @@ cargo build --release -p lbd-geometry-kernel --bin lbd-geometry-kernel
 
 - Module authoring and activation: `docs/current/plugin-authoring-and-activation.md`
 - Agent module instructions: `docs/current/agent-plugin-instructions.md`
-- Oxigraph streaming/chunk loading: `docs/current/oxigraph-loading.md`
+- Oxigraph loading/chunking: `docs/current/oxigraph-loading.md`
 - Testing and benchmarking: `docs/current/testing-and-benchmarking.md`

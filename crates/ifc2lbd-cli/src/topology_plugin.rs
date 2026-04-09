@@ -29,7 +29,8 @@ pub(crate) struct TopologyExecutionTuning {
     pub max_pairs_per_batch: usize,
 }
 
-type TopologyExecutorFn = fn(&TopologyExecutionContext<'_>) -> anyhow::Result<TopologyExecutionOutput>;
+type TopologyExecutorFn =
+    fn(&TopologyExecutionContext<'_>) -> anyhow::Result<TopologyExecutionOutput>;
 
 struct TopologyExecutor {
     plugin_id: &'static str,
@@ -57,7 +58,12 @@ pub(crate) fn run_topology_plugin(
     let executor = TOPOLOGY_EXECUTORS
         .iter()
         .find(|executor| executor.plugin_id == plugin_id)
-        .ok_or_else(|| anyhow::anyhow!("no topology producer executor is registered for plugin `{}`", plugin_id))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "no topology producer executor is registered for plugin `{}`",
+                plugin_id
+            )
+        })?;
     (executor.execute)(context)
 }
 
@@ -69,7 +75,9 @@ pub(crate) fn plugin_requires_geometry_relations(plugin_id: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn execute_topology_lite(_context: &TopologyExecutionContext<'_>) -> anyhow::Result<TopologyExecutionOutput> {
+fn execute_topology_lite(
+    _context: &TopologyExecutionContext<'_>,
+) -> anyhow::Result<TopologyExecutionOutput> {
     Ok(TopologyExecutionOutput {
         enable_topology_extension: false,
         geometry_relations: None,

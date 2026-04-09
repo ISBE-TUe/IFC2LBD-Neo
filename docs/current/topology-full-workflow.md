@@ -4,9 +4,9 @@ This document describes what happens today when running the CLI with topology-re
 
 Relevant controls:
 
-- `--enable-module neo-topology-lite-producer`
-- `--enable-module neo-topology-full-producer`
-- `--bbox`
+- `--module neo-topology-lite-producer`
+- `--module neo-topology-full-producer`
+- `--module neo-bbox-enricher`
 
 ## Behavior Matrix
 
@@ -21,7 +21,7 @@ Relevant controls:
   - build topology graph
   - derive geometry relations with the OCC exact-kernel subprocess workflow in CLI
   - pass `geometry_relations` to converter
-- `--bbox` enabled:
+- `neo-bbox-enricher` enabled:
   - emit bbox geometry resources in LBD:
     - element `lbd:hasBoundingBox` geometry-node
     - element `geo:hasGeometry` geometry-node
@@ -30,7 +30,7 @@ Relevant controls:
   - bbox generation uses hybrid fallback:
     - fast: transformed local AABB
     - fallback (inflation > threshold): rotated XY OBB WKT + Z extent
-  - hidden dev threshold: `--bbox-inflation-threshold` (default `1.5`)
+  - threshold option: `--module-opt neo-bbox-enricher.inflation_threshold=1.5`
 
 ## Sequence Diagram
 
