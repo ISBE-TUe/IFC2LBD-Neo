@@ -38,11 +38,12 @@ Naming rule for the paper:
 
 - Use release builds only.
 - Run the DigitalHub benchmark as a repeated experiment, not as a single-shot measurement.
-- Default repeat count for the paper: 5 runs per DigitalHub configuration.
+- Default repeat count for the first paper round: 20 runs per DigitalHub configuration.
 - Measure runtime and memory with `/usr/bin/time -v`.
 - Report mean and sample standard deviation for runtime and peak RSS.
 - Record exact command lines in the benchmark notes.
 - Record nonzero exits explicitly.
+- Preserve per-run raw benchmark artifacts so plots can be regenerated later without rerunning the measurements.
 - For large-model runs, record free disk space before and after the run.
 
 ## Paths And Variables
@@ -94,7 +95,7 @@ Recommended runner:
 
 ```bash
 python3 scripts/paper_benchmark_digitalhub.py \
-  --repeats 5 \
+  --repeats 20 \
   --out-dir "$OUT/digitalhub_repeated"
 ```
 

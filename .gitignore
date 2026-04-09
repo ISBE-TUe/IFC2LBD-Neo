@@ -9,6 +9,7 @@ target/
 
 # Python / venv
 .venv/
+.venv-*/
 .query-venv/
 __pycache__/
 *.pyc

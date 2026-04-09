@@ -7,9 +7,11 @@ import json
 import math
 import platform
 import re
+import resource
 import shutil
 import statistics
 import subprocess
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -17,6 +19,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 
 
 RUST_RED = "#8D6262"
@@ -63,9 +66,17 @@ class AggregateResult:
 def main() -> None:
     args = parse_args()
     out_dir = args.out_dir.resolve()
-    if args.clean and out_dir.exists():
+    if args.clean and out_dir.exists() and not args.plot_only:
         shutil.rmtree(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.plot_only:
+        report_path = out_dir / "digitalhub_report.json"
+        report = json.loads(report_path.read_text())
+        aggregates = aggregates_from_report(report)
+        (out_dir / "digitalhub_report.md").write_text(render_markdown(report))
+        write_plots(out_dir, aggregates)
+        return
 
     if args.build:
         build_release_binaries(args.root)
@@ -130,12 +141,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--out-dir",
         type=Path,
-        default=root / "artifacts" / "paper-digitalhub",
+        default=root / "artifacts" / "paper-benchmarks" / "digitalhub_repeated",
     )
     parser.add_argument("--base-uri", default="https://benchmark.test/digitalhub/")
-    parser.add_argument("--repeats", type=int, default=5)
+    parser.add_argument("--repeats", type=int, default=20)
     parser.add_argument("--clean", action="store_true")
     parser.add_argument("--build", action="store_true")
+    parser.add_argument(
+        "--plot-only",
+        action="store_true",
+        help="Regenerate markdown and plots from an existing digitalhub_report.json without rerunning benchmarks.",
+    )
     parser.add_argument(
         "--rust-bin",
         type=Path,
@@ -218,9 +234,8 @@ def digitalhub_configs(args: argparse.Namespace, out_dir: Path) -> list[dict[str
                 "java",
                 f"-Xms{args.java_xms}",
                 f"-Xmx{args.java_xmx}",
-                "-cp",
+                "-jar",
                 args.java_cp,
-                args.java_main,
                 str(args.ifc),
                 "--url",
                 args.base_uri,
@@ -327,29 +342,34 @@ def run_repeated_config(cfg: dict[str, object], repeats: int, cwd: Path) -> Aggr
         run_dir.mkdir(parents=True, exist_ok=True)
         base_cmd = cfg["command_builder"](run_dir)
         command_example = base_cmd
-        cmd = ["/usr/bin/time", "-v", *base_cmd]
-        completed = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, check=False)
-        timing = parse_time_output(completed.stderr)
+        completed, timing = run_measured_command(base_cmd, cwd)
         output_breakdown = classify_outputs(run_dir)
         primary_output_bytes = sum(
             value
             for name, value in output_breakdown.items()
             if name in {"lbd_ttl", "ifcowl_ttl", "lbd_nq", "ifcowl_nq", "topology_nq"}
         )
-        observations.append(
-            RunObservation(
-                repeat_index=index,
-                returncode=completed.returncode,
-                wall_seconds=timing.get("wall_seconds"),
-                user_seconds=timing.get("user_seconds"),
-                sys_seconds=timing.get("sys_seconds"),
-                max_resident_bytes=timing.get("max_resident_bytes"),
-                primary_output_bytes=primary_output_bytes,
-                output_breakdown=output_breakdown,
-                stderr_tail=completed.stderr[-3000:],
-                run_dir=str(run_dir),
-            )
+        observation = RunObservation(
+            repeat_index=index,
+            returncode=completed.returncode,
+            wall_seconds=timing.get("wall_seconds"),
+            user_seconds=timing.get("user_seconds"),
+            sys_seconds=timing.get("sys_seconds"),
+            max_resident_bytes=timing.get("max_resident_bytes"),
+            primary_output_bytes=primary_output_bytes,
+            output_breakdown=output_breakdown,
+            stderr_tail=completed.stderr[-3000:],
+            run_dir=str(run_dir),
         )
+        write_run_artifacts(
+            run_dir=run_dir,
+            base_cmd=base_cmd,
+            completed=completed,
+            timing=timing,
+            output_breakdown=output_breakdown,
+            observation=observation,
+        )
+        observations.append(observation)
         if completed.returncode == 0 and representative_run_dir is None:
             representative_run_dir = run_dir
             representative_lbd = run_dir / "out.ttl"
@@ -395,6 +415,85 @@ def representative_path(result: AggregateResult, filename: str) -> Path | None:
         return None
     path = Path(result.representative_run_dir) / filename
     return path if path.exists() else None
+
+
+def run_measured_command(
+    base_cmd: list[str], cwd: Path
+) -> tuple[subprocess.CompletedProcess[str], dict[str, float | int | None]]:
+    gnu_time = shutil.which("time")
+    if gnu_time and Path(gnu_time).exists():
+        completed = subprocess.run(
+            [gnu_time, "-v", *base_cmd],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return completed, parse_time_output(completed.stderr)
+    return run_measured_command_fallback(base_cmd, cwd)
+
+
+def run_measured_command_fallback(
+    base_cmd: list[str], cwd: Path
+) -> tuple[subprocess.CompletedProcess[str], dict[str, float | int | None]]:
+    usage_before = resource.getrusage(resource.RUSAGE_CHILDREN)
+    started = time.perf_counter()
+    proc = subprocess.Popen(
+        base_cmd,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    max_rss_bytes = 0
+    while proc.poll() is None:
+        max_rss_bytes = max(max_rss_bytes, read_linux_rss_bytes(proc.pid))
+        time.sleep(0.2)
+    stdout, stderr = proc.communicate()
+    finished = time.perf_counter()
+    max_rss_bytes = max(max_rss_bytes, read_linux_rss_bytes(proc.pid))
+    usage_after = resource.getrusage(resource.RUSAGE_CHILDREN)
+    timing = {
+        "wall_seconds": finished - started,
+        "user_seconds": max(0.0, usage_after.ru_utime - usage_before.ru_utime),
+        "sys_seconds": max(0.0, usage_after.ru_stime - usage_before.ru_stime),
+        "max_resident_bytes": max_rss_bytes or None,
+    }
+    completed = subprocess.CompletedProcess(
+        args=base_cmd,
+        returncode=proc.returncode,
+        stdout=stdout,
+        stderr=stderr,
+    )
+    return completed, timing
+
+
+def read_linux_rss_bytes(pid: int) -> int:
+    status_path = Path("/proc") / str(pid) / "status"
+    try:
+        for line in status_path.read_text().splitlines():
+            if line.startswith("VmRSS:"):
+                parts = line.split()
+                return int(parts[1]) * 1024
+    except Exception:
+        return 0
+    return 0
+
+
+def write_run_artifacts(
+    run_dir: Path,
+    base_cmd: list[str],
+    completed: subprocess.CompletedProcess[str],
+    timing: dict[str, float | int | None],
+    output_breakdown: dict[str, int],
+    observation: RunObservation,
+) -> None:
+    (run_dir / "command.json").write_text(json.dumps(base_cmd, indent=2) + "\n")
+    (run_dir / "stdout.txt").write_text(completed.stdout)
+    (run_dir / "stderr.txt").write_text(completed.stderr)
+    (run_dir / "timing.json").write_text(json.dumps(timing, indent=2) + "\n")
+    (run_dir / "outputs.json").write_text(json.dumps(output_breakdown, indent=2) + "\n")
+    (run_dir / "observation.json").write_text(json.dumps(asdict(observation), indent=2) + "\n")
 
 
 def classify_outputs(run_dir: Path) -> dict[str, int]:
@@ -544,6 +643,33 @@ def bytes_to_mb(value: int | None) -> float:
     return 0.0 if value is None else value / (1024 * 1024)
 
 
+def aggregates_from_report(report: dict[str, object]) -> dict[str, AggregateResult]:
+    configs = report.get("configs", {})
+    aggregates: dict[str, AggregateResult] = {}
+    for key, value in configs.items():
+        observations = [RunObservation(**obs) for obs in value.get("observations", [])]
+        aggregates[key] = AggregateResult(
+            key=value["key"],
+            label=value["label"],
+            backend=value["backend"],
+            command=value["command"],
+            repeats=value["repeats"],
+            successful_runs=value["successful_runs"],
+            representative_run_dir=value["representative_run_dir"],
+            wall_mean=value["wall_mean"],
+            wall_std=value["wall_std"],
+            rss_mean_mb=value["rss_mean_mb"],
+            rss_std_mb=value["rss_std_mb"],
+            output_mean_mb=value["output_mean_mb"],
+            output_std_mb=value["output_std_mb"],
+            lbd_triples=value["lbd_triples"],
+            ifcowl_triples=value["ifcowl_triples"],
+            notes=value["notes"],
+            observations=observations,
+        )
+    return aggregates
+
+
 def render_markdown(report: dict[str, object]) -> str:
     cfg = report["configs"]
     baseline_keys = ["java_ttl_ifcowl", "rust_ttl_ifcowl"]
@@ -617,7 +743,7 @@ def render_markdown(report: dict[str, object]) -> str:
             "## Recommended Paper Assets",
             "",
             "- Table: DigitalHub repeated baseline and Rust mode comparison with mean ± sd for wall time, peak RSS, and output size.",
-            "- Figure: baseline comparison plot with error bars for wall time, peak RSS, and output size.",
+            "- Figure: Baseline Comparison DigitalHub Arch (LBD+IfcOWL), reported as `mu ± sigma`, optionally annotated with `n=20` in the caption.",
             "- Figure: Rust mode comparison plot with error bars for wall time, peak RSS, and output size.",
         ]
     )
@@ -640,19 +766,36 @@ def write_plots(out_dir: Path, aggregates: dict[str, AggregateResult]) -> None:
 def plot_baseline(path: Path, aggregates: dict[str, AggregateResult]) -> None:
     java = aggregates["java_ttl_ifcowl"]
     rust = aggregates["rust_ttl_ifcowl"]
-    labels = ["Java", "Rust"]
+    labels = ["IFCtoLBD (Java)", "IFC2LBD-Neo (Rust)"]
     colors = [JAVA_GREY, RUST_RED]
     values_sets = [
-        ([java.wall_mean or 0.0, rust.wall_mean or 0.0], [java.wall_std or 0.0, rust.wall_std or 0.0], "Wall Time", "seconds"),
-        ([java.rss_mean_mb or 0.0, rust.rss_mean_mb or 0.0], [java.rss_std_mb or 0.0, rust.rss_std_mb or 0.0], "Peak RSS", "MB"),
-        ([java.output_mean_mb or 0.0, rust.output_mean_mb or 0.0], [java.output_std_mb or 0.0, rust.output_std_mb or 0.0], "Output Size", "MB"),
+        (
+            [java.wall_mean or 0.0, rust.wall_mean or 0.0],
+            [java.wall_std or 0.0, rust.wall_std or 0.0],
+            "Wall Time",
+            "seconds",
+        ),
+        (
+            [java.rss_mean_mb or 0.0, rust.rss_mean_mb or 0.0],
+            [java.rss_std_mb or 0.0, rust.rss_std_mb or 0.0],
+            "Peak RSS",
+            "MB",
+        ),
+        (
+            [java.output_mean_mb or 0.0, rust.output_mean_mb or 0.0],
+            [java.output_std_mb or 0.0, rust.output_std_mb or 0.0],
+            "Output Size",
+            "MB",
+        ),
     ]
-    fig, axes = plt.subplots(1, 3, figsize=(12.5, 4.2))
+    fig, axes = plt.subplots(1, 3, figsize=(12.5, 4.65))
     for ax, (vals, errs, title, ylabel) in zip(axes, values_sets):
         bars = ax.bar(labels, vals, yerr=errs, color=colors, capsize=5, alpha=0.95)
         ax.set_title(title)
         ax.set_ylabel(ylabel)
         ax.grid(axis="y", alpha=0.25)
+        ymax = max((v + e) for v, e in zip(vals, errs)) if vals else 0.0
+        ax.set_ylim(0, ymax * 1.24 if ymax > 0 else 1.0)
         for bar, value in zip(bars, vals):
             ax.text(
                 bar.get_x() + bar.get_width() / 2,
@@ -662,8 +805,33 @@ def plot_baseline(path: Path, aggregates: dict[str, AggregateResult]) -> None:
                 va="bottom",
                 fontsize=9,
             )
-    fig.suptitle("DigitalHub baseline comparison (mean ± sd)")
-    fig.tight_layout()
+        if title != "Output Size":
+            handles = [
+                Line2D(
+                    [0],
+                    [0],
+                    color=JAVA_GREY,
+                    lw=8,
+                    label=f"μ={vals[0]:.2f}, σ={errs[0]:.2f}",
+                ),
+                Line2D(
+                    [0],
+                    [0],
+                    color=RUST_RED,
+                    lw=8,
+                    label=f"μ={vals[1]:.2f}, σ={errs[1]:.2f}",
+                ),
+            ]
+            ax.legend(
+                handles=handles,
+                loc="upper left",
+                fontsize=8,
+                frameon=True,
+                borderpad=0.4,
+                handlelength=1.4,
+            )
+    fig.suptitle("Baseline Comparison DigitalHub Arch (LBD+IfcOWL)")
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
     fig.savefig(path, dpi=180, bbox_inches="tight")
     plt.close(fig)
 
@@ -675,7 +843,12 @@ def plot_modes(path: Path, aggregates: dict[str, AggregateResult]) -> None:
         "rust_topology",
         "rust_topology_full_bbox",
     ]
-    labels = ["TTL+IfcOWL", "NQ chunked", "Topology", "Full topo+bbox"]
+    labels = [
+        "LBD+IfcOWL (TTL)",
+        "N-Quads (chunked)",
+        "--topology (TTL)",
+        "--full-topology (TTL)",
+    ]
     colors = [MODE_GREYS[0], MODE_REDS[0], MODE_GREYS[1], MODE_REDS[1]]
     values_sets = [
         (
@@ -697,13 +870,15 @@ def plot_modes(path: Path, aggregates: dict[str, AggregateResult]) -> None:
             "MB",
         ),
     ]
-    fig, axes = plt.subplots(1, 3, figsize=(13.5, 4.5))
+    fig, axes = plt.subplots(1, 3, figsize=(13.5, 4.95))
     for ax, (vals, errs, title, ylabel) in zip(axes, values_sets):
         bars = ax.bar(labels, vals, yerr=errs, color=colors, capsize=5, alpha=0.95)
         ax.set_title(title)
         ax.set_ylabel(ylabel)
         ax.tick_params(axis="x", rotation=16)
         ax.grid(axis="y", alpha=0.25)
+        ymax = max((v + e) for v, e in zip(vals, errs)) if vals else 0.0
+        ax.set_ylim(0, ymax * 1.24 if ymax > 0 else 1.0)
         for bar, value in zip(bars, vals):
             ax.text(
                 bar.get_x() + bar.get_width() / 2,
@@ -713,8 +888,21 @@ def plot_modes(path: Path, aggregates: dict[str, AggregateResult]) -> None:
                 va="bottom",
                 fontsize=8,
             )
-    fig.suptitle("DigitalHub Rust mode comparison (mean ± sd)")
-    fig.tight_layout()
+        if title != "Output Size by Mode":
+            handles = [
+                Line2D([0], [0], color=colors[i], lw=8, label=f"μ={vals[i]:.2f}, σ={errs[i]:.2f}")
+                for i in range(len(labels))
+            ]
+            ax.legend(
+                handles=handles,
+                loc="upper left",
+                fontsize=7,
+                frameon=True,
+                borderpad=0.4,
+                handlelength=1.4,
+            )
+    fig.suptitle("Mode Comparison DigitalHub Arch (IFC2LBD-Neo)")
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
     fig.savefig(path, dpi=180, bbox_inches="tight")
     plt.close(fig)
 
