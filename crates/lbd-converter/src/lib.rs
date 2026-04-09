@@ -7,7 +7,10 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 
 use crossbeam::channel::Sender;
-use ifc_model::{expand_ifc_guid, IfcModel, PropertyEnumeratedValue, PropertySingleValue, Unit};
+use ifc_model::{
+    compress_uuid_string, expand_ifc_guid, IfcModel, PropertyEnumeratedValue, PropertySingleValue,
+    Unit,
+};
 use ifc_schema::{product_type_name, SpatialType};
 use ifc_step::{decode_ifc_unicode, EntityId, StepFile, StepSchema, StepValue};
 use lbd_geometry::{
@@ -2207,7 +2210,7 @@ pub(crate) fn spatial_class(spatial_type: SpatialType) -> String {
 }
 
 fn lbd_local_name(prefix: &str, guid: &str) -> String {
-    let suffix = expand_ifc_guid(guid).unwrap_or_else(|| guid.to_string());
+    let suffix = canonical_guid_token(guid);
     format!("{prefix}_{suffix}")
 }
 
@@ -2242,18 +2245,25 @@ fn property_resource_iri(base: &str, predicate_local: &str, guid: &str, set_scop
 }
 
 fn property_set_resource_iri(base: &str, guid: &str) -> String {
-    let suffix = expand_ifc_guid(guid).unwrap_or_else(|| guid.to_string());
+    let suffix = canonical_guid_token(guid);
     format!("{base}/propertyset_{suffix}")
 }
 
 fn quantity_set_resource_iri(base: &str, guid: &str) -> String {
-    let suffix = expand_ifc_guid(guid).unwrap_or_else(|| guid.to_string());
+    let suffix = canonical_guid_token(guid);
     format!("{base}/quantityset_{suffix}")
 }
 
 fn geometry_resource_iri(base: &str, guid: &str) -> String {
-    let suffix = expand_ifc_guid(guid).unwrap_or_else(|| guid.to_string());
+    let suffix = canonical_guid_token(guid);
     format!("{base}/geometry_{suffix}")
+}
+
+fn canonical_guid_token(raw: &str) -> String {
+    if raw.len() == 22 {
+        return raw.to_string();
+    }
+    compress_uuid_string(raw).unwrap_or_else(|| raw.to_string())
 }
 
 fn bbox_wkt_polyhedral_surface(bbox: &BoundingBox) -> String {
@@ -2759,7 +2769,7 @@ mod tests {
     }
 
     #[test]
-    fn test_convert_model_uses_expanded_guid_iris() {
+    fn test_convert_model_uses_compressed_guid_iris() {
         let Some((_, model)) = duplex_step_and_model() else {
             return;
         };
@@ -2773,7 +2783,14 @@ mod tests {
             project.spatial_type,
             &project.guid,
         );
-        assert!(subject.contains("7b7032cc-b822-417b-9aea-642906a29bd5"));
+        assert!(subject.contains(project.guid.as_str()));
+        assert!(!subject.contains('-'));
+    }
+
+    #[test]
+    fn test_canonical_guid_token_compresses_expanded_uuid() {
+        let expanded = "7b7032cc-b822-417b-9aea-642906a29bd5";
+        assert_eq!(canonical_guid_token(expanded), "1xS3BCk291UvhgP2a6eflL");
     }
 
     #[test]

@@ -1,23 +1,23 @@
 # Full Topology Workflow (Current)
 
-This document describes what happens today when running the CLI with topology-related flags.
+This document describes what happens today when running the CLI with topology-related modules.
 
-Relevant flags:
+Relevant controls:
 
-- `--topology`
-- `--topology-full`
+- `--enable-module neo-topology-lite-producer`
+- `--enable-module neo-topology-full-producer`
 - `--bbox`
 
 ## Behavior Matrix
 
-- no topology flag:
+- no topology module:
   - no topology graph build
   - fallback containment logic only
-- `--topology` enabled:
+- `neo-topology-lite-producer` enabled:
   - build topology graph
   - no geometry adjacency derivation
   - no geometry-derived bounding boxes
-- `--topology-full` enabled:
+- `neo-topology-full-producer` enabled:
   - build topology graph
   - derive geometry relations with the OCC exact-kernel subprocess workflow in CLI
   - pass `geometry_relations` to converter
@@ -52,7 +52,7 @@ sequenceDiagram
     C->>M: build_model(step)
     M-->>C: IfcModel
 
-    alt topology-full
+    alt neo-topology-full-producer enabled
         C->>G: topology_full_occ_relations(model, step, input)
         G-->>C: geometry_relations + mesh_bboxes + mesh_wkts
     end
@@ -74,7 +74,7 @@ sequenceDiagram
 ## Current Internal Steps (Full Topology)
 
 1. CLI parses IFC STEP and builds typed IFC model.
-2. CLI optionally computes OCC exact-kernel geometry relations for `--topology-full`.
+2. CLI optionally computes OCC exact-kernel geometry relations when `neo-topology-full-producer` is enabled.
 3. CLI builds `ConvertOptions` and streams to converter.
 4. Converter emits core entities.
 5. Converter builds topology graph from IFC relations:
@@ -84,8 +84,8 @@ sequenceDiagram
    - `IfcRelVoidsElement` + `IfcRelFillsElement` -> `HasSubElement`
 6. Converter optionally merges geometry-derived relations.
 7. Converter emits BOT topology triples into LBD output.
-8. Converter streams IfcOWL sidecar in parallel if `--ifcowl` is enabled.
+8. Converter streams IfcOWL sidecar in parallel when IfcOWL producer is active.
 
 ## Important Current Nuance
 
-`--topology-full` currently uses the OCC exact-kernel subprocess path and merges those relations as core topology evidence in converter. The voxel helper code still exists in the CLI as legacy/exploratory implementation material, but it is not the active main path for `--topology-full`.
+`neo-topology-full-producer` currently uses the OCC exact-kernel subprocess path and merges those relations as core topology evidence in converter. The voxel helper code still exists in the CLI as legacy/exploratory implementation material, but it is not the active main path for full topology.

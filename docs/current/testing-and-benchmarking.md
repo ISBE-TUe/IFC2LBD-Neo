@@ -35,9 +35,9 @@ python3 scripts/run_release_benchmarks.py
 ## What to Verify for Converter Changes
 
 - LBD-only mode: no topology triples unless enabled.
-- `--ifcowl` mode: sidecar IfcOWL output and `owl:sameAs` links in LBD.
-- `--topology`: IFC-relation topology in LBD output.
-- `--topology-full`: advanced topology mode behavior matches expectations.
+- IfcOWL producer active: sidecar/named-graph IfcOWL output and `owl:sameAs` links in LBD.
+- `neo-topology-lite-producer`: IFC-relation topology in LBD output.
+- `neo-topology-full-producer`: advanced topology mode behavior matches expectations.
 - `--bbox`: geometry nodes + `geo:asWKT` are emitted.
 - Property/state modeling remains queryable and OPM-compatible.
 
