@@ -1,0 +1,11 @@
+[package]
+name = "lbd-pipeline"
+description = "Pipeline stage and plugin abstractions for IFC2LBD-Neo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }

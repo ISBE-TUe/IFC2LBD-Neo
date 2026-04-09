@@ -19,6 +19,7 @@ ifc-step = { workspace = true }
 ifc-model = { workspace = true }
 ifc-schema = { workspace = true }
 lbd-ontology = { workspace = true }
+lbd-pipeline = { workspace = true }
 lbd-converter = { workspace = true }
 lbd-topology = { workspace = true }
 lbd-geometry = { workspace = true }
