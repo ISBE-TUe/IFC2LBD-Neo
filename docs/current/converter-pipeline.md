@@ -87,7 +87,7 @@ Unless explicitly scoped as a semantic change, refactors must preserve:
 
 - URI shape and namespace strategy,
 - predicate choices,
-- topology flag behavior,
+- topology module behavior,
 - OPM property/state modeling semantics,
 - triple determinism assumptions used by tests.
 
@@ -95,10 +95,10 @@ Unless explicitly scoped as a semantic change, refactors must preserve:
 
 These invariants are expected across releases:
 
-- `--ifcowl` emits sidecar IfcOWL output and keeps links in LBD via `owl:sameAs`.
-- Topology triples are emitted only under topology-enabled paths.
-- `--topology` is IFC-relation topology mode.
-- `--topology-full` is advanced topology mode.
+- IfcOWL producer activation emits sidecar/named-graph IfcOWL output and keeps links in LBD via `owl:sameAs`.
+- Topology triples are emitted only when topology producer modules are active.
+- `neo-topology-lite-producer` is IFC-relation topology mode.
+- `neo-topology-full-producer` is advanced topology mode.
 - Bounding boxes are emitted only when `--bbox` is set.
 - Bounding boxes are represented via geometry resources (`lbd:hasBoundingBox`, `geo:hasGeometry`, `geo:asWKT`).
 - Property states remain queryable via OPM-compatible predicates.
@@ -145,4 +145,4 @@ python3 scripts/run_release_benchmarks.py
 
 ## Known Current Gap
 
-- `--topology-full` is now wired through the OCC exact-kernel path from the CLI, but parts of the converter implementation are still more monolithic than the target module layout described above.
+- `neo-topology-full-producer` is now wired through the OCC exact-kernel path from the CLI, but parts of the converter implementation are still more monolithic than the target module layout described above.

@@ -39,7 +39,7 @@ These points must be treated as current.
 
 ### Current Behavior
 
-- `--topology-full` is currently wired through the OCC exact-kernel subprocess path in [`crates/ifc2lbd-cli/src/main.rs`](../../crates/ifc2lbd-cli/src/main.rs).
+- `neo-topology-full-producer` is currently wired through the OCC exact-kernel subprocess path in [`crates/ifc2lbd-cli/src/main.rs`](../../crates/ifc2lbd-cli/src/main.rs).
 - Property and quantity set resources are already emitted in [`crates/lbd-converter/src/lib.rs`](../../crates/lbd-converter/src/lib.rs) with `lbd:hasPropertySets`, `lbd:PropertySet`, `lbd:hasQuantitySet`, and `lbd:ElementQuantitySet`.
 - Chunked N-Quads output can separate LBD, IfcOWL, and topology streams into named-graph chunk manifests.
 - The current architecture supports adding new built-in flags and conversion stages.
@@ -47,7 +47,7 @@ These points must be treated as current.
 ### Known Documentation Drift
 
 - [`docs/archive/paper-notes.md`](../archive/paper-notes.md) is historical only.
-- Some current docs still describe `--topology-full` as voxel-based. That description is stale for the active main path.
+- Some current docs still describe full topology as voxel-based. That description is stale for the active main path.
 - Older notes that present property/quantity set resources as future-only are stale.
 - Loose wording such as "separate topology TTL" should be replaced with precise named-graph/chunked-output language.
 
@@ -95,14 +95,14 @@ Describe these features exactly as they exist today:
 - streaming LBD conversion
 - IfcOWL sidecar or named-graph output
 - chunked N-Quads for ingest workflows
-- relation-based topology via `--topology`
-- exact-kernel-backed full topology path via `--topology-full`
+- relation-based topology via `neo-topology-lite-producer`
+- exact-kernel-backed full topology path via `neo-topology-full-producer`
 - bounding-box geometry emission via `--bbox`
 
 Do not overstate:
 
 - full IFC4 parity
-- plugin support
+- dynamic module loading support
 - universal exact-geometry coverage
 
 ## Extensibility Status
@@ -117,16 +117,15 @@ The current architecture already supports controlled extension for new built-in 
 
 ### Not Supported Today
 
-The current architecture is not yet a true plugin system:
+The current architecture is not yet a true dynamic plugin system:
 
-- no plugin trait or registry
-- no dynamic loading or discovery of conversion plugins
-- no third-party plugin API for adding flags or emitters independently of the codebase
+- no runtime dynamic loading or discovery of conversion modules
+- no third-party dynamic module API for adding flags or emitters independently of the codebase
 
 Paper wording:
 
-- say "extension-friendly for built-in conversion features"
-- do not say "plugin architecture" for the current implementation
+- say "extension-friendly module architecture for built-in conversion features"
+- do not say "runtime dynamic plugin architecture" for the current implementation
 
 ## Benchmark Plan
 
@@ -244,4 +243,4 @@ This must be a large standalone section in the paper.
 Future extensibility statement:
 
 - the current architecture is already suitable for new built-in flags and new conversion modules
-- a true plugin mechanism is future work, not a current claim
+- a true dynamic plugin mechanism is future work, not a current claim
