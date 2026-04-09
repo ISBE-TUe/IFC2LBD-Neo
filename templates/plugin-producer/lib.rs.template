@@ -1,0 +1,27 @@
+use lbd_pipeline::{
+    FailurePolicy, ParallelismMode, PipelinePlugin, PipelineStage, PluginManifest, ProducerPlugin,
+};
+
+pub const PLUGIN_ID: &str = "{{plugin_id}}";
+
+pub struct {{type_name}};
+
+impl PipelinePlugin for {{type_name}} {
+    fn manifest(&self) -> PluginManifest {
+        PluginManifest {
+            id: PLUGIN_ID,
+            display_name: "{{display_name}}",
+            stage: PipelineStage::Produce,
+            description: "Custom producer plugin generated from template.",
+            inputs: vec!["ifc-model"],
+            outputs: vec!["topology-triples"],
+            requires: vec![],
+            conflicts_with: vec![],
+            failure_policy: FailurePolicy::Optional,
+            parallelism: ParallelismMode::ParallelByPartition,
+            wasm_compatible: false,
+        }
+    }
+}
+
+impl ProducerPlugin for {{type_name}} {}

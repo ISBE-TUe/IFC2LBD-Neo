@@ -11,6 +11,7 @@ members = [
     "crates/lbd-geometry",
     "crates/lbd-geometry-kernel",
     "crates/lbd-serializer",
+    "crates/plugin-topology-full",
     "crates/ifc2lbd-cli",
     # "crates/ifc2lbd-python",  # enable when PyO3 bindings are needed
 ]
@@ -76,3 +77,4 @@ lbd-converter = { path = "crates/lbd-converter" }
 lbd-topology = { path = "crates/lbd-topology" }
 lbd-geometry = { path = "crates/lbd-geometry" }
 lbd-serializer = { path = "crates/lbd-serializer" }
+plugin-topology-full = { path = "crates/plugin-topology-full" }

@@ -24,6 +24,7 @@ lbd-converter = { workspace = true }
 lbd-topology = { workspace = true }
 lbd-geometry = { workspace = true }
 lbd-serializer = { workspace = true }
+plugin-topology-full = { workspace = true }
 crossbeam = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }

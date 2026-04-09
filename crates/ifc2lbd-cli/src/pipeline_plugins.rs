@@ -4,8 +4,8 @@ use std::thread;
 use anyhow::Context;
 use crossbeam::channel::Receiver;
 use lbd_pipeline::{
-    ExportPlugin, ParallelismMode, PipelinePlugin, PipelineStage, PluginManifest, PluginRegistry,
-    ProducerPlugin, SerializerPlugin,
+    ExportPlugin, FailurePolicy, ParallelismMode, PipelinePlugin, PipelineStage, PluginManifest,
+    PluginRegistry, ProducerPlugin, SerializerPlugin,
 };
 use serde::{Deserialize, Serialize};
 
@@ -25,6 +25,13 @@ pub fn built_in_registry() -> PluginRegistry {
 
 pub const TOPOLOGY_LITE_PRODUCER_ID: &str = "builtin-topology-lite-producer";
 pub const TOPOLOGY_FULL_PRODUCER_ID: &str = "builtin-topology-full-producer";
+pub const LBD_PRODUCER_ID: &str = "builtin-lbd-producer";
+pub const IFCOWL_PRODUCER_ID: &str = "builtin-ifcowl-producer";
+pub const TURTLE_SERIALIZER_ID: &str = "builtin-turtle-serializer";
+pub const NQUADS_SERIALIZER_ID: &str = "builtin-nquads-serializer";
+pub const FILE_EXPORT_ID: &str = "builtin-file-export";
+pub const STDOUT_EXPORT_ID: &str = "builtin-stdout-export";
+pub const GRAFEO_EXPORT_ID: &str = "builtin-grafeo-export";
 
 pub fn selected_topology_producer_id(topology: bool, topology_full: bool) -> Option<&'static str> {
     if topology_full {
@@ -49,12 +56,15 @@ struct GrafeoExportPlugin;
 impl PipelinePlugin for LbdProducerPlugin {
     fn manifest(&self) -> PluginManifest {
         PluginManifest {
-            id: "builtin-lbd-producer",
+            id: LBD_PRODUCER_ID,
             display_name: "Built-in LBD producer",
             stage: PipelineStage::Produce,
             description: "Generates LBD triples from the typed IFC model.",
             inputs: vec!["ifc-model"],
             outputs: vec!["lbd-triples"],
+            requires: vec![],
+            conflicts_with: vec![],
+            failure_policy: FailurePolicy::Required,
             parallelism: ParallelismMode::ParallelByBatch,
             wasm_compatible: true,
         }
@@ -66,12 +76,15 @@ impl ProducerPlugin for LbdProducerPlugin {}
 impl PipelinePlugin for IfcowlProducerPlugin {
     fn manifest(&self) -> PluginManifest {
         PluginManifest {
-            id: "builtin-ifcowl-producer",
+            id: IFCOWL_PRODUCER_ID,
             display_name: "Built-in IfcOWL producer",
             stage: PipelineStage::Produce,
             description: "Generates IfcOWL triples from parsed IFC STEP entities.",
             inputs: vec!["step-file", "ifc-model"],
             outputs: vec!["ifcowl-triples"],
+            requires: vec![],
+            conflicts_with: vec![],
+            failure_policy: FailurePolicy::Required,
             parallelism: ParallelismMode::ParallelByPartition,
             wasm_compatible: true,
         }
@@ -89,6 +102,9 @@ impl PipelinePlugin for TopologyLiteProducerPlugin {
             description: "Generates BOT topology triples from IFC relationship evidence.",
             inputs: vec!["ifc-model"],
             outputs: vec!["topology-triples"],
+            requires: vec![],
+            conflicts_with: vec![TOPOLOGY_FULL_PRODUCER_ID],
+            failure_policy: FailurePolicy::Optional,
             parallelism: ParallelismMode::ParallelByPartition,
             wasm_compatible: true,
         }
@@ -106,6 +122,9 @@ impl PipelinePlugin for TopologyFullProducerPlugin {
             description: "Generates BOT topology triples using staged geometric refinement with OCC exact checks.",
             inputs: vec!["ifc-model", "step-file", "geometry-relations"],
             outputs: vec!["topology-triples"],
+            requires: vec![],
+            conflicts_with: vec![TOPOLOGY_LITE_PRODUCER_ID],
+            failure_policy: FailurePolicy::Optional,
             parallelism: ParallelismMode::ParallelByPartition,
             wasm_compatible: false,
         }
@@ -117,12 +136,15 @@ impl ProducerPlugin for TopologyFullProducerPlugin {}
 impl PipelinePlugin for TurtleSerializerPlugin {
     fn manifest(&self) -> PluginManifest {
         PluginManifest {
-            id: "builtin-turtle-serializer",
+            id: TURTLE_SERIALIZER_ID,
             display_name: "Built-in Turtle serializer",
             stage: PipelineStage::Serialize,
             description: "Serializes triple streams into Turtle output.",
             inputs: vec!["triples"],
             outputs: vec!["turtle-bytes"],
+            requires: vec![LBD_PRODUCER_ID],
+            conflicts_with: vec![NQUADS_SERIALIZER_ID],
+            failure_policy: FailurePolicy::Required,
             parallelism: ParallelismMode::Serial,
             wasm_compatible: true,
         }
@@ -134,12 +156,15 @@ impl SerializerPlugin for TurtleSerializerPlugin {}
 impl PipelinePlugin for NquadsSerializerPlugin {
     fn manifest(&self) -> PluginManifest {
         PluginManifest {
-            id: "builtin-nquads-serializer",
+            id: NQUADS_SERIALIZER_ID,
             display_name: "Built-in N-Quads serializer",
             stage: PipelineStage::Serialize,
             description: "Serializes graph streams into merged or chunked N-Quads output.",
             inputs: vec!["quads"],
             outputs: vec!["nquads-bytes", "nquads-chunks"],
+            requires: vec![LBD_PRODUCER_ID, IFCOWL_PRODUCER_ID],
+            conflicts_with: vec![TURTLE_SERIALIZER_ID],
+            failure_policy: FailurePolicy::Required,
             parallelism: ParallelismMode::ParallelByPartition,
             wasm_compatible: true,
         }
@@ -151,12 +176,15 @@ impl SerializerPlugin for NquadsSerializerPlugin {}
 impl PipelinePlugin for FileExportPlugin {
     fn manifest(&self) -> PluginManifest {
         PluginManifest {
-            id: "builtin-file-export",
+            id: FILE_EXPORT_ID,
             display_name: "Built-in file exporter",
             stage: PipelineStage::Export,
             description: "Writes serialized output streams to files and chunk manifests.",
             inputs: vec!["turtle-bytes", "nquads-bytes", "nquads-chunks"],
             outputs: vec!["filesystem"],
+            requires: vec![],
+            conflicts_with: vec![STDOUT_EXPORT_ID, GRAFEO_EXPORT_ID],
+            failure_policy: FailurePolicy::Required,
             parallelism: ParallelismMode::Serial,
             wasm_compatible: false,
         }
@@ -168,12 +196,15 @@ impl ExportPlugin for FileExportPlugin {}
 impl PipelinePlugin for StdoutExportPlugin {
     fn manifest(&self) -> PluginManifest {
         PluginManifest {
-            id: "builtin-stdout-export",
+            id: STDOUT_EXPORT_ID,
             display_name: "Built-in stdout exporter",
             stage: PipelineStage::Export,
             description: "Writes serialized output streams to stdout.",
             inputs: vec!["turtle-bytes", "nquads-bytes"],
             outputs: vec!["stdout"],
+            requires: vec![],
+            conflicts_with: vec![FILE_EXPORT_ID],
+            failure_policy: FailurePolicy::Required,
             parallelism: ParallelismMode::Serial,
             wasm_compatible: true,
         }
@@ -185,12 +216,15 @@ impl ExportPlugin for StdoutExportPlugin {}
 impl PipelinePlugin for GrafeoExportPlugin {
     fn manifest(&self) -> PluginManifest {
         PluginManifest {
-            id: "builtin-grafeo-export",
+            id: GRAFEO_EXPORT_ID,
             display_name: "Built-in Grafeo exporter",
             stage: PipelineStage::Export,
             description: "Frames graph batches for direct Grafeo ingestion.",
             inputs: vec!["quads", "triple-batches"],
             outputs: vec!["grafeo-stream"],
+            requires: vec![NQUADS_SERIALIZER_ID, IFCOWL_PRODUCER_ID],
+            conflicts_with: vec![FILE_EXPORT_ID, STDOUT_EXPORT_ID],
+            failure_policy: FailurePolicy::Required,
             parallelism: ParallelismMode::ParallelByPartition,
             wasm_compatible: false,
         }
