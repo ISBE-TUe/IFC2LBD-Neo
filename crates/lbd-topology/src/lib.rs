@@ -1,4 +1,8 @@
 //! IFC topology derivation from relationship entities.
+//!
+//! Extracts building topology (BOT) graphs from the typed IFC model.
+//! Supports a lightweight mode using IFC relation evidence (spatial containment, space boundaries, hosted/aggregated relationships).
+//! Supports a full mode with staged escalation: candidate generation, bounding-box filtering, then exact geometric checks to produce more complete BOT relations and interfaces.
 
 use std::collections::{HashMap, HashSet};
 
