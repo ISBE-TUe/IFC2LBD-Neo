@@ -4,6 +4,7 @@ members = [
     "crates/ifc-step",
     "crates/ifc-model",
     "crates/ifc-schema",
+    "crates/lbd-pipeline",
     "crates/lbd-ontology",
     "crates/lbd-converter",
     "crates/lbd-topology",
@@ -70,6 +71,7 @@ ifc-step = { path = "crates/ifc-step" }
 ifc-model = { path = "crates/ifc-model" }
 ifc-schema = { path = "crates/ifc-schema" }
 lbd-ontology = { path = "crates/lbd-ontology" }
+lbd-pipeline = { path = "crates/lbd-pipeline" }
 lbd-converter = { path = "crates/lbd-converter" }
 lbd-topology = { path = "crates/lbd-topology" }
 lbd-geometry = { path = "crates/lbd-geometry" }

@@ -670,6 +670,7 @@ dependencies = [
  "lbd-converter",
  "lbd-geometry",
  "lbd-ontology",
+ "lbd-pipeline",
  "lbd-serializer",
  "lbd-topology",
  "rayon",
@@ -803,6 +804,14 @@ dependencies = [
 [[package]]
 name = "lbd-ontology"
 version = "0.1.0"
+
+[[package]]
+name = "lbd-pipeline"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "thiserror",
+]
 
 [[package]]
 name = "lbd-serializer"

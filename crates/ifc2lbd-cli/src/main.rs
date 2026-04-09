@@ -25,9 +25,10 @@ use lbd_serializer::{
     serialize_nquads_merged_batches_to_writer, serialize_turtle_batches_to_writer,
 };
 use rayon::prelude::*;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 mod mesh;
+mod pipeline_plugins;
 mod transform;
 mod voxel;
 
@@ -60,7 +61,7 @@ enum QuadChunkingMode {
 #[command(name = "ifc2lbd-neo")]
 #[command(about = "Convert IFC STEP files to a first-slice LBD Turtle model")]
 struct Args {
-    input: PathBuf,
+    input: Option<PathBuf>,
 
     #[arg(
         short = 'o',
@@ -161,31 +162,10 @@ struct Args {
         hide = true
     )]
     voxel_max_element_voxels: usize,
-}
 
-const DIRECT_STREAM_VERSION: u8 = 1;
-
-#[derive(Debug, Serialize, Deserialize)]
-struct DirectStreamFrame {
-    version: u8,
-    graph: String,
-    triples: Vec<DirectStreamTriple>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct DirectStreamTriple {
-    subject: DirectStreamTerm,
-    predicate: DirectStreamTerm,
-    object: DirectStreamTerm,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-enum DirectStreamTerm {
-    Iri(String),
-    BlankNode(String),
-    Literal(String),
-    TypedLiteral { value: String, datatype: String },
-    LangLiteral { value: String, lang: String },
+    /// List built-in pipeline plugins and exit.
+    #[arg(long = "list-plugins", default_value_t = false)]
+    list_plugins: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -194,10 +174,23 @@ fn main() -> anyhow::Result<()> {
         .with_env_filter("info")
         .with_writer(std::io::stderr)
         .init();
+    let built_in_registry = pipeline_plugins::built_in_registry();
+    tracing::debug!(
+        "pipeline registry initialized with {} built-in plugins",
+        built_in_registry.len()
+    );
     let args = Args::parse();
+    if args.list_plugins {
+        print_pipeline_plugins(&built_in_registry);
+        return Ok(());
+    }
+    let input_path = args
+        .input
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("missing required IFC input path"))?;
     validate_args(&args)?;
     let output_format = args.output_format;
-    let input_file_size_bytes = std::fs::metadata(&args.input).map(|m| m.len()).unwrap_or(0);
+    let input_file_size_bytes = std::fs::metadata(input_path).map(|m| m.len()).unwrap_or(0);
 
     let emit_ifcowl = args.ifcowl || output_format == OutputFormat::Nquads;
     if output_format == OutputFormat::Nquads && !args.ifcowl {
@@ -214,8 +207,8 @@ fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|| format!("{normalized_base}/ifcowl"));
 
     let parse_start = Instant::now();
-    let step = parse_step_file(&args.input)
-        .with_context(|| format!("failed to parse STEP file {}", args.input.display()))?;
+    let step = parse_step_file(input_path)
+        .with_context(|| format!("failed to parse STEP file {}", input_path.display()))?;
     tracing::info!(
         "phase parse_step_file completed in {:.3}s",
         parse_start.elapsed().as_secs_f64()
@@ -228,6 +221,8 @@ fn main() -> anyhow::Result<()> {
     );
 
     let topology_enabled = args.topology || args.topology_full;
+    let topology_plugin_id =
+        pipeline_plugins::selected_topology_producer_id(args.topology, args.topology_full);
     let derive_adjacency = args.topology_full;
     let topology_graph_iri = format!("{normalized_base}/topology");
 
@@ -261,24 +256,31 @@ fn main() -> anyhow::Result<()> {
         geometry_wkts = Some(Arc::new(mesh_wkts));
     }
 
-    let chunked_nquads_with_parallel_topology =
-        output_format == OutputFormat::Nquads && topology_enabled;
+    let parallel_topology_plugin =
+        output_format == OutputFormat::Nquads && topology_plugin_id.is_some();
+    if let Some(plugin_id) = topology_plugin_id {
+        tracing::info!(
+            "topology producer plugin selected: {} (parallel_nquads_mode={})",
+            plugin_id,
+            parallel_topology_plugin
+        );
+    }
 
     let base_options = ConvertOptions {
         base_uri: args.base_uri,
         emit_ifcowl_links: emit_ifcowl,
-        enable_topology: if chunked_nquads_with_parallel_topology {
+        enable_topology: if parallel_topology_plugin {
             false
         } else {
             topology_enabled
         },
-        enable_topology_extension: if chunked_nquads_with_parallel_topology {
+        enable_topology_extension: if parallel_topology_plugin {
             false
         } else {
             args.topology_full
         },
         topology_only: false,
-        suppress_non_topology_fallback: chunked_nquads_with_parallel_topology,
+        suppress_non_topology_fallback: parallel_topology_plugin,
         geometry_relations: None,
         geometry_bounding_boxes: geometry_bounding_boxes.clone(),
         geometry_wkts: geometry_wkts.clone(),
@@ -295,7 +297,7 @@ fn main() -> anyhow::Result<()> {
     } else {
         (None, None)
     };
-    let (topology_sender, mut topology_receiver) = if chunked_nquads_with_parallel_topology {
+    let (topology_sender, mut topology_receiver) = if parallel_topology_plugin {
         let (sender, receiver) = crossbeam::channel::bounded(SERIALIZER_CHANNEL_CAPACITY);
         (Some(sender), Some(receiver))
     } else {
@@ -383,7 +385,7 @@ fn main() -> anyhow::Result<()> {
                     let stdout = std::io::stdout();
                     let handle = stdout.lock();
                     let writer = BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, handle);
-                    stream_grafeo_batches_to_writer(
+                    pipeline_plugins::stream_grafeo_batches_to_writer(
                         lbd_receiver,
                         ifcowl_receiver,
                         merged_topology_receiver,
@@ -541,7 +543,7 @@ fn main() -> anyhow::Result<()> {
         let receiver = ifcowl_receiver
             .take()
             .ok_or_else(|| anyhow::anyhow!("missing IfcOWL receiver for turtle sidecar mode"))?;
-        let path = resolve_ifcowl_path(args.output_file.as_deref(), &args.input);
+        let path = resolve_ifcowl_path(args.output_file.as_deref(), input_path);
         let ifcowl_base = base_options.base_uri.clone();
         ifcowl_thread = Some(thread::spawn(move || -> anyhow::Result<()> {
             let file = File::create(&path).with_context(|| {
@@ -555,84 +557,90 @@ fn main() -> anyhow::Result<()> {
     }
 
     let producer_start = Instant::now();
-    if chunked_nquads_with_parallel_topology {
+    if parallel_topology_plugin {
         let topology_sender_clone = topology_sender
             .as_ref()
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("missing topology sender for parallel topology mode"))?;
         let topology_base = base_options.base_uri.clone();
-        let input_path = args.input.clone();
+        let input_path_buf = input_path.to_path_buf();
         let bbox_inflation_threshold = args.bbox_inflation_threshold;
         let geometry_tolerance = args.geometry_tolerance;
         let bbox_report_path = args.bbox_report.clone();
         let topology_only_mode = args.topology_full;
-        std::thread::scope(|scope| -> anyhow::Result<()> {
-            let topology_handle = scope.spawn(|| -> anyhow::Result<()> {
-                let geometry_relations = if topology_only_mode {
-                    let full_start = Instant::now();
-                    let (relations, _mesh_bboxes, _mesh_wkts, bbox_report) = topology_full_occ_relations(
-                        &model,
+        let ifcowl_sender_clone = ifcowl_sender.clone();
+        run_producer_plugin_tasks(vec![
+            (
+                "builtin-core-conversion",
+                Box::new(|| {
+                    stream_step_and_model(
                         &step,
-                        &input_path,
-                        geometry_tolerance,
-                        bbox_inflation_threshold,
-                    )?;
-                    tracing::info!(
-                        "topology-full OCC produced {} relations in {:.3}s",
-                        relations.len(),
-                        full_start.elapsed().as_secs_f64(),
-                    );
-                    if !args.bbox {
-                        if let Some(path) = bbox_report_path.as_ref() {
-                            let report_json = serde_json::to_string_pretty(&bbox_report)
-                                .context("failed to serialize bbox report JSON")?;
-                            std::fs::write(path, report_json).with_context(|| {
-                                format!("failed to write bbox report {}", path.display())
-                            })?;
+                        &model,
+                        &base_options,
+                        &converter_lbd_sender,
+                        ifcowl_sender_clone.as_ref(),
+                    )
+                    .context("failed to stream conversion output")?;
+                    Ok(())
+                }),
+            ),
+            (
+                topology_plugin_id
+                    .expect("parallel topology mode requires a selected topology plugin"),
+                Box::new(|| {
+                    let geometry_relations = if topology_only_mode {
+                        let full_start = Instant::now();
+                        let (relations, _mesh_bboxes, _mesh_wkts, bbox_report) =
+                            topology_full_occ_relations(
+                                &model,
+                                &step,
+                                &input_path_buf,
+                                geometry_tolerance,
+                                bbox_inflation_threshold,
+                            )?;
+                        tracing::info!(
+                            "topology-full OCC produced {} relations in {:.3}s",
+                            relations.len(),
+                            full_start.elapsed().as_secs_f64(),
+                        );
+                        if !args.bbox {
+                            if let Some(path) = bbox_report_path.as_ref() {
+                                let report_json = serde_json::to_string_pretty(&bbox_report)
+                                    .context("failed to serialize bbox report JSON")?;
+                                std::fs::write(path, report_json).with_context(|| {
+                                    format!("failed to write bbox report {}", path.display())
+                                })?;
+                            }
                         }
-                    }
-                    Some(Arc::new(relations))
-                } else {
-                    None
-                };
-                let topology_options = ConvertOptions {
-                    base_uri: topology_base,
-                    emit_ifcowl_links: false,
-                    enable_topology: true,
-                    enable_topology_extension: args.topology_full,
-                    topology_only: true,
-                    suppress_non_topology_fallback: false,
-                    geometry_relations,
-                    geometry_bounding_boxes: None,
-                    geometry_wkts: None,
-                    geometry_tolerance,
-                };
-                stream_topology_model(&model, &topology_options, &topology_sender_clone)
-                    .context("failed to stream topology output")?;
-                Ok(())
-            });
-
-            stream_step_and_model(
-                &step,
-                &model,
-                &base_options,
-                &converter_lbd_sender,
-                ifcowl_sender.as_ref(),
-            )
-            .context("failed to stream conversion output")?;
-
-            topology_handle
-                .join()
-                .map_err(|_| anyhow::anyhow!("topology producer thread panicked"))??;
-            Ok(())
-        })?;
+                        Some(Arc::new(relations))
+                    } else {
+                        None
+                    };
+                    let topology_options = ConvertOptions {
+                        base_uri: topology_base,
+                        emit_ifcowl_links: false,
+                        enable_topology: true,
+                        enable_topology_extension: args.topology_full,
+                        topology_only: true,
+                        suppress_non_topology_fallback: false,
+                        geometry_relations,
+                        geometry_bounding_boxes: None,
+                        geometry_wkts: None,
+                        geometry_tolerance,
+                    };
+                    stream_topology_model(&model, &topology_options, &topology_sender_clone)
+                        .context("failed to stream topology output")?;
+                    Ok(())
+                }),
+            ),
+        ])?;
     } else {
         let options = if derive_adjacency {
             let full_start = Instant::now();
             let (relations, _mesh_bboxes, _mesh_wkts, bbox_report) = topology_full_occ_relations(
                 &model,
                 &step,
-                &args.input,
+                input_path,
                 args.geometry_tolerance,
                 args.bbox_inflation_threshold,
             )?;
@@ -713,101 +721,35 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn stream_grafeo_batches_to_writer<W: Write>(
-    lbd_receiver: crossbeam::channel::Receiver<Vec<lbd_ontology::Triple>>,
-    ifcowl_receiver: crossbeam::channel::Receiver<Vec<lbd_ontology::Triple>>,
-    topology_receiver: Option<crossbeam::channel::Receiver<Vec<lbd_ontology::Triple>>>,
-    mut writer: W,
-    lbd_graph_iri: &str,
-    ifcowl_graph_iri: &str,
-    topology_graph_iri: &str,
-) -> anyhow::Result<()> {
-    let (merged_sender, merged_receiver) =
-        crossbeam::channel::unbounded::<(String, Vec<lbd_ontology::Triple>)>();
-
-    let lbd_graph = lbd_graph_iri.to_string();
-    let lbd_sender = merged_sender.clone();
-    let lbd_forwarder = thread::spawn(move || {
-        for batch in lbd_receiver {
-            if lbd_sender.send((lbd_graph.clone(), batch)).is_err() {
-                break;
-            }
-        }
-    });
-
-    let ifcowl_graph = ifcowl_graph_iri.to_string();
-    let ifcowl_sender = merged_sender.clone();
-    let ifcowl_forwarder = thread::spawn(move || {
-        for batch in ifcowl_receiver {
-            if ifcowl_sender.send((ifcowl_graph.clone(), batch)).is_err() {
-                break;
-            }
-        }
-    });
-
-    let topology_forwarder = topology_receiver.map(|receiver| {
-        let graph = topology_graph_iri.to_string();
-        let sender = merged_sender.clone();
-        thread::spawn(move || {
-            for batch in receiver {
-                if sender.send((graph.clone(), batch)).is_err() {
-                    break;
-                }
-            }
-        })
-    });
-
-    drop(merged_sender);
-
-    for (graph, batch) in merged_receiver {
-        let frame = DirectStreamFrame {
-            version: DIRECT_STREAM_VERSION,
-            graph,
-            triples: batch.into_iter().map(direct_stream_triple_from_lbd).collect(),
-        };
-        bincode::serde::encode_into_std_write(&frame, &mut writer, bincode::config::standard())
-            .context("failed to encode Grafeo direct stream frame")?;
-        writer.flush().context("failed to flush Grafeo direct stream writer")?;
-    }
-
-    lbd_forwarder
-        .join()
-        .map_err(|_| anyhow::anyhow!("LBD Grafeo stream forwarder panicked"))?;
-    ifcowl_forwarder
-        .join()
-        .map_err(|_| anyhow::anyhow!("IfcOWL Grafeo stream forwarder panicked"))?;
-    if let Some(handle) = topology_forwarder {
-        handle
-            .join()
-            .map_err(|_| anyhow::anyhow!("Topology Grafeo stream forwarder panicked"))?;
-    }
-    Ok(())
-}
-
-fn direct_stream_triple_from_lbd(triple: lbd_ontology::Triple) -> DirectStreamTriple {
-    DirectStreamTriple {
-        subject: direct_stream_term_from_iri_like(triple.subject),
-        predicate: direct_stream_term_from_iri_like(triple.predicate),
-        object: direct_stream_term_from_lbd_object(triple.object),
+fn print_pipeline_plugins(registry: &lbd_pipeline::PluginRegistry) {
+    for manifest in registry.manifests() {
+        println!(
+            "{:?}\t{}\t{}\tparallel={:?}\twasm={}",
+            manifest.stage,
+            manifest.id,
+            manifest.display_name,
+            manifest.parallelism,
+            manifest.wasm_compatible
+        );
     }
 }
 
-fn direct_stream_term_from_iri_like(value: String) -> DirectStreamTerm {
-    if let Some(id) = value.strip_prefix("_:") {
-        DirectStreamTerm::BlankNode(id.to_string())
-    } else {
-        DirectStreamTerm::Iri(value)
-    }
-}
+type ProducerTask<'a> = Box<dyn FnOnce() -> anyhow::Result<()> + Send + 'a>;
 
-fn direct_stream_term_from_lbd_object(object: lbd_ontology::Object) -> DirectStreamTerm {
-    match object {
-        lbd_ontology::Object::Iri(value) => direct_stream_term_from_iri_like(value),
-        lbd_ontology::Object::Literal(value) => DirectStreamTerm::Literal(value),
-        lbd_ontology::Object::TypedLiteral { value, datatype } => {
-            DirectStreamTerm::TypedLiteral { value, datatype }
+fn run_producer_plugin_tasks<'a>(tasks: Vec<(&'static str, ProducerTask<'a>)>) -> anyhow::Result<()> {
+    std::thread::scope(|scope| -> anyhow::Result<()> {
+        let mut handles = Vec::with_capacity(tasks.len());
+        for (plugin_id, task) in tasks {
+            let handle = scope.spawn(move || task());
+            handles.push((plugin_id, handle));
         }
-    }
+        for (plugin_id, handle) in handles {
+            handle
+                .join()
+                .map_err(|_| anyhow::anyhow!("producer plugin `{}` panicked", plugin_id))??;
+        }
+        Ok(())
+    })
 }
 
 fn topology_full_occ_relations(
@@ -2008,6 +1950,9 @@ fn normalize_base_for_graph_iri(base_uri: &str) -> String {
 }
 
 fn validate_args(args: &Args) -> anyhow::Result<()> {
+    if !args.list_plugins && args.input.is_none() {
+        anyhow::bail!("an IFC input path is required");
+    }
     if args.topology && args.topology_full {
         anyhow::bail!("use either --topology or --topology-full, not both");
     }
