@@ -23,25 +23,15 @@ pub fn built_in_registry() -> PluginRegistry {
     registry
 }
 
-pub const TOPOLOGY_LITE_PRODUCER_ID: &str = "builtin-topology-lite-producer";
-pub const TOPOLOGY_FULL_PRODUCER_ID: &str = "builtin-topology-full-producer";
-pub const LBD_PRODUCER_ID: &str = "builtin-lbd-producer";
-pub const IFCOWL_PRODUCER_ID: &str = "builtin-ifcowl-producer";
-pub const TURTLE_SERIALIZER_ID: &str = "builtin-turtle-serializer";
-pub const NQUADS_SERIALIZER_ID: &str = "builtin-nquads-serializer";
-pub const FILE_EXPORT_ID: &str = "builtin-file-export";
-pub const STDOUT_EXPORT_ID: &str = "builtin-stdout-export";
-pub const GRAFEO_EXPORT_ID: &str = "builtin-grafeo-export";
-
-pub fn selected_topology_producer_id(topology: bool, topology_full: bool) -> Option<&'static str> {
-    if topology_full {
-        Some(TOPOLOGY_FULL_PRODUCER_ID)
-    } else if topology {
-        Some(TOPOLOGY_LITE_PRODUCER_ID)
-    } else {
-        None
-    }
-}
+pub const TOPOLOGY_LITE_PRODUCER_ID: &str = "neo-topology-lite-producer";
+pub const TOPOLOGY_FULL_PRODUCER_ID: &str = "neo-topology-full-producer";
+pub const LBD_PRODUCER_ID: &str = "neo-lbd-producer";
+pub const IFCOWL_PRODUCER_ID: &str = "neo-ifcowl-producer";
+pub const TURTLE_SERIALIZER_ID: &str = "neo-turtle-serializer";
+pub const NQUADS_SERIALIZER_ID: &str = "neo-nquads-serializer";
+pub const FILE_EXPORT_ID: &str = "neo-file-export";
+pub const STDOUT_EXPORT_ID: &str = "neo-stdout-export";
+pub const GRAFEO_EXPORT_ID: &str = "neo-grafeo-export";
 
 struct LbdProducerPlugin;
 struct IfcowlProducerPlugin;

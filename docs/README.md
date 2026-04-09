@@ -11,8 +11,9 @@ Use this folder entry point first.
 - [Contributing](./current/contributing.md)
 - [Testing and Benchmarks](./current/testing-and-benchmarking.md)
 - [Future WebAssembly Plan](./current/future-wasm-plan.md)
-- [Plugin Authoring and Activation](./current/plugin-authoring-and-activation.md)
-- [Agent Plugin Instructions](./current/agent-plugin-instructions.md)
+- [Module Authoring and Activation](./current/plugin-authoring-and-activation.md)
+- [Agent Module Instructions](./current/agent-plugin-instructions.md)
+- [Oxigraph Loading](./current/oxigraph-loading.md)
 
 ## Plans (Active Roadmaps)
 
