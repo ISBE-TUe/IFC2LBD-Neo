@@ -394,7 +394,6 @@ fn is_valid_prefixed_local(local: &str) -> bool {
     chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
 }
 
-
 fn ensure_trailing_slash(base: &str) -> String {
     if base.ends_with('/') {
         base.to_owned()

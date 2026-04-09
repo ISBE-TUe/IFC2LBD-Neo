@@ -99,7 +99,7 @@ These invariants are expected across releases:
 - Topology triples are emitted only when topology producer modules are active.
 - `neo-topology-lite-producer` is IFC-relation topology mode.
 - `neo-topology-full-producer` is advanced topology mode.
-- Bounding boxes are emitted only when `--bbox` is set.
+- Bounding boxes are emitted only when `neo-bbox-enricher` is active.
 - Bounding boxes are represented via geometry resources (`lbd:hasBoundingBox`, `geo:hasGeometry`, `geo:asWKT`).
 - Property states remain queryable via OPM-compatible predicates.
 

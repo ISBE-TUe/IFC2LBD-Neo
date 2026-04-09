@@ -20,5 +20,6 @@ pub(crate) fn run_topology_producer_plugin(
     options: &ConvertOptions,
     topology_sender: &crossbeam::channel::Sender<Vec<Triple>>,
 ) -> anyhow::Result<()> {
-    stream_topology_model(model, options, topology_sender).context("failed to stream topology output")
+    stream_topology_model(model, options, topology_sender)
+        .context("failed to stream topology output")
 }

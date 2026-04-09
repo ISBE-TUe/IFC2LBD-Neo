@@ -12,7 +12,7 @@ Goal:
 `--topology-full` should produce:
 - BOT core hierarchy from IFC relations,
 - geometry-confirmed topology enrichment (`bot:intersectingElement`, `bot:interfaceOf`),
-- optional `--bbox` output with GeoSPARQL WKT bbox geometry,
+- optional `neo-bbox-enricher` output with GeoSPARQL WKT bbox geometry,
 - stable runtime and memory envelopes on benchmark fixtures.
 
 ## Non-Goals (Current Iteration)
@@ -28,7 +28,7 @@ Scope:
 - make evidence visible for performance and quality regressions.
 
 Deliverables:
-- benchmark table for `--topology`, `--topology-full`, `--bbox`,
+- benchmark table for topology and bbox modules (`neo-topology-lite-producer`, `neo-topology-full-producer`, `neo-bbox-enricher`),
 - bbox report metrics persisted in CI artifacts for selected fixtures,
 - topology relation counts snapshot per fixture.
 
@@ -84,8 +84,8 @@ Scope:
 - ensure operational feasibility for production model sizes.
 
 Budgets (initial targets):
-- `model-A.ifc`: `< 30s`, `< 1.2GB` peak RSS for `--topology-full --bbox`,
-- `Wohn-Geschaeftshaus.ifc`: `< 25s`, `< 1.0GB` peak RSS for `--topology-full --bbox`.
+- `model-A.ifc`: `< 30s`, `< 1.2GB` peak RSS for full topology + bbox modules,
+- `Wohn-Geschaeftshaus.ifc`: `< 25s`, `< 1.0GB` peak RSS for full topology + bbox modules.
 
 Work:
 - parallelize narrow-phase safely,

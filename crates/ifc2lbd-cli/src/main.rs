@@ -16,11 +16,11 @@ use ifc_model::build_model;
 use ifc_model::IfcModel;
 use ifc_step::{parse_step_file, EntityId, StepFile, StepValue};
 use lbd_converter::ConvertOptions;
-use lbd_pipeline::FailurePolicy;
 use lbd_geometry::{
     derive_relations_with_exact_kernel_subprocess_batch, BoundingBox, ExactCheckOptions,
     GeometryRelation, GeometryRelationKind, SubprocessKernelExecutionOptions,
 };
+use lbd_pipeline::FailurePolicy;
 use lbd_serializer::{
     serialize_lbd_batches_to_writer, serialize_nquads_batches_to_writer,
     serialize_nquads_merged_batches_to_writer, serialize_turtle_batches_to_writer,
@@ -60,12 +60,6 @@ enum QuadChunkingMode {
     Cores,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
-enum ModuleProfile {
-    BasicTtl,
-    FullNquads,
-}
-
 #[derive(Debug, Parser)]
 #[command(name = "ifc2lbd-neo")]
 #[command(about = "Convert IFC STEP files to a first-slice LBD Turtle model")]
@@ -88,59 +82,6 @@ struct Args {
     )]
     base_uri: String,
 
-    /// Output syntax. `nquads` writes LBD+IfcOWL into one `.nq` stream with named graphs.
-    #[arg(long = "output-format", value_enum, default_value_t = OutputFormat::Turtle)]
-    output_format: OutputFormat,
-
-    /// Override named graph IRI for LBD triples in `nquads` mode.
-    #[arg(long = "lbd-graph-iri")]
-    lbd_graph_iri: Option<String>,
-
-    /// Override named graph IRI for IfcOWL triples in `nquads` mode.
-    #[arg(long = "ifcowl-graph-iri")]
-    ifcowl_graph_iri: Option<String>,
-
-    /// Emit N-Quads in chunked files (valid only with `--output-format nquads`).
-    #[arg(long = "quad-chunking", value_enum, default_value_t = QuadChunkingMode::None)]
-    quad_chunking: QuadChunkingMode,
-
-    /// Lines per chunk when `--quad-chunking lines`.
-    #[arg(long = "quad-chunk-size-lines", default_value_t = 2_000_000)]
-    quad_chunk_size_lines: usize,
-
-    /// Bytes per chunk when `--quad-chunking bytes`.
-    #[arg(long = "quad-chunk-size-bytes", default_value_t = 268_435_456)]
-    quad_chunk_size_bytes: usize,
-
-    /// Prefix for chunk output filenames: `<prefix>.part-000.nq`, ...
-    #[arg(long = "quad-chunk-prefix", default_value = "out")]
-    quad_chunk_prefix: String,
-
-    /// Minimum number of chunk files to emit.
-    #[arg(long = "quad-chunk-min-count", default_value_t = 1)]
-    quad_chunk_min_count: usize,
-
-    /// Override chunk count when `--quad-chunking cores` (default: available parallelism).
-    #[arg(long = "quad-chunk-core-count")]
-    quad_chunk_core_count: Option<usize>,
-
-    /// Legacy compatibility flag to force IfcOWL producer activation.
-    #[arg(long = "ifcowl", default_value_t = false, hide = true)]
-    ifcowl: bool,
-
-    /// Emit per-element bounding boxes in LBD output.
-    #[arg(long = "bbox", default_value_t = false)]
-    bbox: bool,
-
-    /// Escalate bbox extraction to exact world-vertex AABB when transformed local-box
-    /// volume inflation exceeds this threshold.
-    #[arg(long = "bbox-inflation-threshold", default_value_t = 1.5, hide = true)]
-    bbox_inflation_threshold: f64,
-
-    /// Optional JSON report path with bbox quality stats and top outliers.
-    #[arg(long = "bbox-report")]
-    bbox_report: Option<PathBuf>,
-
     /// Development tuning.
     #[arg(long = "geometry-tolerance", default_value_t = 1e-6, hide = true)]
     geometry_tolerance: f64,
@@ -160,25 +101,47 @@ struct Args {
     )]
     voxel_max_element_voxels: usize,
 
-    /// Optional module profile bundle.
-    #[arg(long = "profile", value_enum)]
-    profile: Option<ModuleProfile>,
-
     /// List built-in pipeline modules and exit.
-    #[arg(long = "list-modules", alias = "list-plugins", default_value_t = false)]
+    #[arg(long = "list-modules", default_value_t = false)]
     list_modules: bool,
 
     /// Enable one or more modules by id. Can be provided multiple times.
-    #[arg(long = "enable-module", alias = "enable-plugin")]
-    enable_module: Vec<String>,
+    #[arg(long = "module")]
+    module: Vec<String>,
 
-    /// Set module config values as `<module-id>:<key>=<value>`.
-    #[arg(long = "module-config", alias = "plugin-config")]
-    module_config: Vec<String>,
+    /// Set typed module options as `<module-id>.<key>=<value>`. Repeat as needed.
+    #[arg(long = "module-opt")]
+    module_opt: Vec<String>,
 
     /// Show resolved module activation plan and exit.
-    #[arg(long = "show-module-plan", alias = "show-pipeline-plan", default_value_t = false)]
+    #[arg(long = "show-module-plan", default_value_t = false)]
     show_module_plan: bool,
+}
+
+#[derive(Clone, Debug)]
+struct NquadsModuleOptions {
+    lbd_graph_iri: Option<String>,
+    ifcowl_graph_iri: Option<String>,
+    chunking: QuadChunkingMode,
+    chunk_size_lines: usize,
+    chunk_size_bytes: usize,
+    chunk_prefix: String,
+    chunk_min_count: usize,
+    chunk_core_count: Option<usize>,
+}
+
+#[derive(Clone, Debug)]
+struct BboxModuleOptions {
+    inflation_threshold: f64,
+    report_path: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug)]
+struct ExecutionSettings {
+    output_format: OutputFormat,
+    emit_ifcowl: bool,
+    bbox: Option<BboxModuleOptions>,
+    nquads: NquadsModuleOptions,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -201,12 +164,13 @@ fn main() -> anyhow::Result<()> {
     let activation_plan = built_in_registry
         .resolve_activation(&requested_modules)
         .map_err(|error| anyhow::anyhow!("module activation failed: {}", error))?;
-    validate_activation_plan_with_args(&args, &activation_plan)?;
-    let module_configs = parse_module_configs(&args.module_config)
-        .map_err(|error| anyhow::anyhow!("invalid --module-config: {}", error))?;
+    let module_configs = parse_module_configs(&args.module_opt)
+        .map_err(|error| anyhow::anyhow!("invalid --module-opt: {}", error))?;
     validate_module_configs(&activation_plan, &module_configs)?;
     validate_typed_module_configs(&module_configs)
-        .map_err(|error| anyhow::anyhow!("invalid --module-config: {}", error))?;
+        .map_err(|error| anyhow::anyhow!("invalid --module-opt: {}", error))?;
+    let settings = resolve_execution_settings(&args, &activation_plan, &module_configs)?;
+    validate_activation_plan_with_args(&activation_plan, &settings)?;
     if args.show_module_plan {
         print_module_plan(&built_in_registry, &activation_plan, &module_configs);
         return Ok(());
@@ -215,8 +179,7 @@ fn main() -> anyhow::Result<()> {
         .input
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("missing required IFC input path"))?;
-    validate_args(&args)?;
-    let output_format = args.output_format;
+    validate_args(&args, &settings)?;
     let input_file_size_bytes = std::fs::metadata(input_path).map(|m| m.len()).unwrap_or(0);
 
     let active_plugins: HashSet<&str> = activation_plan
@@ -232,19 +195,20 @@ fn main() -> anyhow::Result<()> {
         .map(|m| m.id.to_string())
         .collect();
     active_producer_ids.sort();
-    tracing::info!("active producer modules: {}", active_producer_ids.join(", "));
-    let emit_ifcowl = args.ifcowl
-        || output_format == OutputFormat::Nquads
-        || active_plugins.contains(pipeline_plugins::IFCOWL_PRODUCER_ID);
-    if output_format == OutputFormat::Nquads && !args.ifcowl {
-        tracing::info!("nquads mode enabled: forcing IfcOWL emission into named graph output");
-    }
+    tracing::info!(
+        "active producer modules: {}",
+        active_producer_ids.join(", ")
+    );
+    let output_format = settings.output_format;
+    let emit_ifcowl = settings.emit_ifcowl;
     let normalized_base = normalize_base_for_graph_iri(&args.base_uri);
-    let lbd_graph_iri = args
+    let lbd_graph_iri = settings
+        .nquads
         .lbd_graph_iri
         .clone()
         .unwrap_or_else(|| format!("{normalized_base}/lbd"));
-    let ifcowl_graph_iri = args
+    let ifcowl_graph_iri = settings
+        .nquads
         .ifcowl_graph_iri
         .clone()
         .unwrap_or_else(|| format!("{normalized_base}/ifcowl"));
@@ -266,10 +230,17 @@ fn main() -> anyhow::Result<()> {
     let active_topology_plugin_ids: Vec<String> = activation_plan
         .enabled_ids
         .iter()
-        .filter_map(|id| built_in_registry.plugin(id).map(|plugin| (id, plugin.manifest())))
+        .filter_map(|id| {
+            built_in_registry
+                .plugin(id)
+                .map(|plugin| (id, plugin.manifest()))
+        })
         .filter(|(_, manifest)| {
             manifest.stage == lbd_pipeline::PipelineStage::Produce
-                && manifest.outputs.iter().any(|output| *output == "topology-triples")
+                && manifest
+                    .outputs
+                    .iter()
+                    .any(|output| *output == "topology-triples")
         })
         .map(|(id, _)| id.clone())
         .collect();
@@ -281,12 +252,16 @@ fn main() -> anyhow::Result<()> {
 
     let mut geometry_bounding_boxes: Option<Arc<HashMap<EntityId, BoundingBox>>> = None;
     let mut geometry_wkts: Option<Arc<HashMap<EntityId, String>>> = None;
-    if args.bbox {
+    if settings.bbox.is_some() {
+        let bbox_settings = settings
+            .bbox
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("missing bbox module settings"))?;
         let bbox_start = Instant::now();
         let (mesh_bboxes, mesh_wkts, bbox_report) = collect_mesh_bounding_boxes_hybrid(
             &step,
             model.elements.keys().copied().collect(),
-            args.bbox_inflation_threshold,
+            bbox_settings.inflation_threshold,
         );
         tracing::info!(
             "bbox extraction produced {} bboxes in {:.3}s (exact escalations: {} / {}, avg inflation fast/final: {:.3}/{:.3}, max fast/final: {:.3}/{:.3})",
@@ -299,7 +274,7 @@ fn main() -> anyhow::Result<()> {
             bbox_report.max_inflation_fast,
             bbox_report.max_inflation_final,
         );
-        if let Some(path) = args.bbox_report.as_ref() {
+        if let Some(path) = bbox_settings.report_path.as_ref() {
             let report_json = serde_json::to_string_pretty(&bbox_report)
                 .context("failed to serialize bbox report JSON")?;
             std::fs::write(path, report_json)
@@ -367,35 +342,35 @@ fn main() -> anyhow::Result<()> {
     let lbd_graph_iri_thread = lbd_graph_iri.clone();
     let ifcowl_graph_iri_thread = ifcowl_graph_iri.clone();
     let topology_graph_iri_thread = topology_graph_iri.clone();
-    let quad_chunking_mode = args.quad_chunking;
+    let quad_chunking_mode = settings.nquads.chunking;
     let grafeo_direct_stream = active_plugins.contains(pipeline_plugins::GRAFEO_EXPORT_ID);
-    let quad_chunk_size_lines = args.quad_chunk_size_lines;
-    let quad_chunk_size_bytes = args.quad_chunk_size_bytes;
-    let quad_chunk_prefix = args.quad_chunk_prefix.clone();
-    let quad_chunk_min_count = args.quad_chunk_min_count;
+    let quad_chunk_size_lines = settings.nquads.chunk_size_lines;
+    let quad_chunk_size_bytes = settings.nquads.chunk_size_bytes;
+    let quad_chunk_prefix = settings.nquads.chunk_prefix.clone();
+    let quad_chunk_min_count = settings.nquads.chunk_min_count;
     let ifcowl_chunk_core_count = resolve_effective_core_chunk_count_for_estimated_bytes(
-        args.quad_chunking,
-        args.quad_chunk_core_count,
-        args.quad_chunk_min_count,
+        settings.nquads.chunking,
+        settings.nquads.chunk_core_count,
+        settings.nquads.chunk_min_count,
         input_file_size_bytes.saturating_mul(IFCOWL_TO_NQ_ESTIMATE_MULTIPLIER),
     );
     let lbd_chunk_core_count = resolve_effective_core_chunk_count_for_estimated_bytes(
-        args.quad_chunking,
-        args.quad_chunk_core_count,
-        args.quad_chunk_min_count,
+        settings.nquads.chunking,
+        settings.nquads.chunk_core_count,
+        settings.nquads.chunk_min_count,
         input_file_size_bytes.saturating_mul(LBD_TO_NQ_ESTIMATE_MULTIPLIER),
     );
     let topology_chunk_core_count = resolve_effective_core_chunk_count_for_estimated_bytes(
-        args.quad_chunking,
-        args.quad_chunk_core_count,
-        args.quad_chunk_min_count,
+        settings.nquads.chunking,
+        settings.nquads.chunk_core_count,
+        settings.nquads.chunk_min_count,
         if derive_adjacency {
             input_file_size_bytes.saturating_mul(TOPOLOGY_FULL_TO_NQ_ESTIMATE_MULTIPLIER)
         } else {
             (input_file_size_bytes / 8).max(1)
         },
     );
-    if args.quad_chunking == QuadChunkingMode::Cores {
+    if settings.nquads.chunking == QuadChunkingMode::Cores {
         tracing::info!(
             "core chunk targets (auto): ifcowl={}, lbd={}, topology={}",
             ifcowl_chunk_core_count.unwrap_or(1),
@@ -404,11 +379,7 @@ fn main() -> anyhow::Result<()> {
         );
     }
     let merged_ifcowl_receiver = if output_format == OutputFormat::Nquads {
-        Some(
-            ifcowl_receiver
-                .take()
-                .ok_or_else(|| anyhow::anyhow!("nquads mode requires IfcOWL receiver channel"))?,
-        )
+        ifcowl_receiver.take()
     } else {
         None
     };
@@ -437,15 +408,13 @@ fn main() -> anyhow::Result<()> {
                 }
             },
             OutputFormat::Nquads => {
-                let ifcowl_receiver = merged_ifcowl_receiver
-                    .ok_or_else(|| anyhow::anyhow!("missing IfcOWL receiver for nquads mode"))?;
                 if grafeo_direct_stream {
                     let stdout = std::io::stdout();
                     let handle = stdout.lock();
                     let writer = BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, handle);
                     pipeline_plugins::stream_grafeo_batches_to_writer(
                         lbd_receiver,
-                        ifcowl_receiver,
+                        merged_ifcowl_receiver,
                         merged_topology_receiver,
                         writer,
                         &lbd_graph_iri_thread,
@@ -464,15 +433,19 @@ fn main() -> anyhow::Result<()> {
                         quad_chunk_min_count,
                         lbd_chunk_core_count,
                     )?;
-                    let mut ifcowl_chunk_writer = QuadChunkWriter::new(
-                        resolve_quad_chunk_output_dir(lbd_target.as_deref()),
-                        format!("{}-ifcowl", quad_chunk_prefix),
-                        quad_chunking_mode,
-                        quad_chunk_size_lines,
-                        quad_chunk_size_bytes,
-                        quad_chunk_min_count,
-                        ifcowl_chunk_core_count,
-                    )?;
+                    let mut ifcowl_chunk_writer = if merged_ifcowl_receiver.is_some() {
+                        Some(QuadChunkWriter::new(
+                            resolve_quad_chunk_output_dir(lbd_target.as_deref()),
+                            format!("{}-ifcowl", quad_chunk_prefix),
+                            quad_chunking_mode,
+                            quad_chunk_size_lines,
+                            quad_chunk_size_bytes,
+                            quad_chunk_min_count,
+                            ifcowl_chunk_core_count,
+                        )?)
+                    } else {
+                        None
+                    };
                     let mut topology_chunk_writer = if merged_topology_receiver.is_some() {
                         Some(QuadChunkWriter::new(
                             resolve_quad_chunk_output_dir(lbd_target.as_deref()),
@@ -487,27 +460,38 @@ fn main() -> anyhow::Result<()> {
                         None
                     };
 
-                    let ifcowl_graph = ifcowl_graph_iri_thread.clone();
-                    let ifcowl_thread = thread::spawn(move || -> anyhow::Result<()> {
-                        serialize_nquads_batches_to_writer(
-                            ifcowl_receiver,
-                            &mut ifcowl_chunk_writer,
-                            &ifcowl_graph,
-                        )
-                        .context("failed to write IfcOWL chunked N-Quads output")?;
-                        ifcowl_chunk_writer
-                            .finish()
-                            .context("failed to finalize IfcOWL quad chunk manifest")?;
-                        Ok(())
-                    });
+                    let ifcowl_thread = if let Some(ifcowl_receiver) = merged_ifcowl_receiver {
+                        let ifcowl_graph = ifcowl_graph_iri_thread.clone();
+                        let mut writer = ifcowl_chunk_writer
+                            .take()
+                            .ok_or_else(|| anyhow::anyhow!("missing IfcOWL chunk writer"))?;
+                        Some(thread::spawn(move || -> anyhow::Result<()> {
+                            serialize_nquads_batches_to_writer(
+                                ifcowl_receiver,
+                                &mut writer,
+                                &ifcowl_graph,
+                            )
+                            .context("failed to write IfcOWL chunked N-Quads output")?;
+                            writer
+                                .finish()
+                                .context("failed to finalize IfcOWL quad chunk manifest")?;
+                            Ok(())
+                        }))
+                    } else {
+                        None
+                    };
                     let topology_thread = if let Some(receiver) = merged_topology_receiver {
                         let topology_graph = topology_graph_iri_thread.clone();
                         let mut writer = topology_chunk_writer
                             .take()
                             .ok_or_else(|| anyhow::anyhow!("missing topology chunk writer"))?;
                         Some(thread::spawn(move || -> anyhow::Result<()> {
-                            serialize_nquads_batches_to_writer(receiver, &mut writer, &topology_graph)
-                                .context("failed to write topology chunked N-Quads output")?;
+                            serialize_nquads_batches_to_writer(
+                                receiver,
+                                &mut writer,
+                                &topology_graph,
+                            )
+                            .context("failed to write topology chunked N-Quads output")?;
                             writer
                                 .finish()
                                 .context("failed to finalize topology quad chunk manifest")?;
@@ -527,13 +511,15 @@ fn main() -> anyhow::Result<()> {
                         .finish()
                         .context("failed to finalize LBD quad chunk manifest")?;
 
-                    ifcowl_thread
-                        .join()
-                        .map_err(|_| anyhow::anyhow!("IfcOWL chunk writer thread panicked"))??;
+                    if let Some(handle) = ifcowl_thread {
+                        handle.join().map_err(|_| {
+                            anyhow::anyhow!("IfcOWL chunk writer thread panicked")
+                        })??;
+                    }
                     if let Some(handle) = topology_thread {
-                        handle
-                            .join()
-                            .map_err(|_| anyhow::anyhow!("topology chunk writer thread panicked"))??;
+                        handle.join().map_err(|_| {
+                            anyhow::anyhow!("topology chunk writer thread panicked")
+                        })??;
                     }
                 } else {
                     match lbd_target {
@@ -543,16 +529,27 @@ fn main() -> anyhow::Result<()> {
                             })?;
                             let mut writer =
                                 BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, file);
-                            serialize_nquads_merged_batches_to_writer(
-                                lbd_receiver,
-                                ifcowl_receiver,
-                                &mut writer,
-                                &lbd_graph_iri_thread,
-                                &ifcowl_graph_iri_thread,
-                            )
-                            .with_context(|| {
-                                format!("failed to write N-Quads to {}", path.display())
-                            })?;
+                            if let Some(ifcowl_receiver) = merged_ifcowl_receiver {
+                                serialize_nquads_merged_batches_to_writer(
+                                    lbd_receiver,
+                                    ifcowl_receiver,
+                                    &mut writer,
+                                    &lbd_graph_iri_thread,
+                                    &ifcowl_graph_iri_thread,
+                                )
+                                .with_context(|| {
+                                    format!("failed to write N-Quads to {}", path.display())
+                                })?;
+                            } else {
+                                serialize_nquads_batches_to_writer(
+                                    lbd_receiver,
+                                    &mut writer,
+                                    &lbd_graph_iri_thread,
+                                )
+                                .with_context(|| {
+                                    format!("failed to write N-Quads to {}", path.display())
+                                })?;
+                            }
                             if let Some(topology_receiver) = merged_topology_receiver {
                                 serialize_nquads_batches_to_writer(
                                     topology_receiver,
@@ -572,14 +569,23 @@ fn main() -> anyhow::Result<()> {
                             let handle = stdout.lock();
                             let mut writer =
                                 BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, handle);
-                            serialize_nquads_merged_batches_to_writer(
-                                lbd_receiver,
-                                ifcowl_receiver,
-                                &mut writer,
-                                &lbd_graph_iri_thread,
-                                &ifcowl_graph_iri_thread,
-                            )
-                            .context("failed to write N-Quads to stdout")?;
+                            if let Some(ifcowl_receiver) = merged_ifcowl_receiver {
+                                serialize_nquads_merged_batches_to_writer(
+                                    lbd_receiver,
+                                    ifcowl_receiver,
+                                    &mut writer,
+                                    &lbd_graph_iri_thread,
+                                    &ifcowl_graph_iri_thread,
+                                )
+                                .context("failed to write N-Quads to stdout")?;
+                            } else {
+                                serialize_nquads_batches_to_writer(
+                                    lbd_receiver,
+                                    &mut writer,
+                                    &lbd_graph_iri_thread,
+                                )
+                                .context("failed to write N-Quads to stdout")?;
+                            }
                             if let Some(topology_receiver) = merged_topology_receiver {
                                 serialize_nquads_batches_to_writer(
                                     topology_receiver,
@@ -615,6 +621,16 @@ fn main() -> anyhow::Result<()> {
     }
 
     let producer_start = Instant::now();
+    let write_topology_report = settings.bbox.is_none();
+    let bbox_inflation_threshold = settings
+        .bbox
+        .as_ref()
+        .map(|bbox| bbox.inflation_threshold)
+        .unwrap_or(1.5);
+    let bbox_report_path = settings
+        .bbox
+        .as_ref()
+        .and_then(|bbox| bbox.report_path.clone());
     if producer_plan.parallel_topology_plugin {
         let model_ref = &model;
         let step_ref = &step;
@@ -625,9 +641,7 @@ fn main() -> anyhow::Result<()> {
             .ok_or_else(|| anyhow::anyhow!("missing topology sender for parallel topology mode"))?;
         let topology_base = base_options.base_uri.clone();
         let input_path_buf = input_path.to_path_buf();
-        let bbox_inflation_threshold = args.bbox_inflation_threshold;
         let geometry_tolerance = args.geometry_tolerance;
-        let bbox_report_path = args.bbox_report.clone();
         let ifcowl_sender_clone = ifcowl_sender.clone();
         let mut producer_tasks = vec![ProducerTaskSpec {
             plugin_id: "neo-core-conversion".to_string(),
@@ -665,7 +679,7 @@ fn main() -> anyhow::Result<()> {
                             geometry_tolerance,
                             bbox_inflation_threshold,
                             bbox_report_path: bbox_report_path.as_deref(),
-                            write_report: !args.bbox,
+                            write_report: write_topology_report,
                             module_config: module_config.as_ref(),
                         },
                     )?;
@@ -709,8 +723,8 @@ fn main() -> anyhow::Result<()> {
                     step: &step,
                     input_path,
                     geometry_tolerance: args.geometry_tolerance,
-                    bbox_inflation_threshold: args.bbox_inflation_threshold,
-                    bbox_report_path: args.bbox_report.as_deref(),
+                    bbox_inflation_threshold,
+                    bbox_report_path: bbox_report_path.as_deref(),
                     write_report: true,
                     module_config,
                 },
@@ -773,10 +787,7 @@ fn main() -> anyhow::Result<()> {
         "phase serializer_join completed in {:.3}s",
         serializer_join_start.elapsed().as_secs_f64()
     );
-    tracing::info!(
-        "run completed in {:.3}s",
-        run_start.elapsed().as_secs_f64()
-    );
+    tracing::info!("run completed in {:.3}s", run_start.elapsed().as_secs_f64());
 
     Ok(())
 }
@@ -806,7 +817,12 @@ fn print_module_plan(
             let manifest = plugin.manifest();
             println!(
                 "  {:?}\t{}\t{}\tparallel={:?}\tfailure={:?}\twasm={}",
-                manifest.stage, manifest.id, manifest.display_name, manifest.parallelism, manifest.failure_policy, manifest.wasm_compatible
+                manifest.stage,
+                manifest.id,
+                manifest.display_name,
+                manifest.parallelism,
+                manifest.failure_policy,
+                manifest.wasm_compatible
             );
         } else {
             println!("  unknown\t{}\t(unregistered)", id);
@@ -820,42 +836,7 @@ fn print_module_plan(
 }
 
 fn build_requested_module_list(args: &Args) -> Vec<String> {
-    let mut requested: Vec<String> = Vec::new();
-    let explicit: HashSet<&str> = args.enable_module.iter().map(|id| id.as_str()).collect();
-    let has_explicit_serializer = explicit.contains(pipeline_plugins::TURTLE_SERIALIZER_ID)
-        || explicit.contains(pipeline_plugins::NQUADS_SERIALIZER_ID);
-    let has_explicit_export = explicit.contains(pipeline_plugins::FILE_EXPORT_ID)
-        || explicit.contains(pipeline_plugins::STDOUT_EXPORT_ID)
-        || explicit.contains(pipeline_plugins::GRAFEO_EXPORT_ID);
-
-    requested.push(pipeline_plugins::LBD_PRODUCER_ID.to_string());
-    if args.ifcowl || args.output_format == OutputFormat::Nquads {
-        requested.push(pipeline_plugins::IFCOWL_PRODUCER_ID.to_string());
-    }
-    if !has_explicit_serializer {
-        if args.output_format == OutputFormat::Nquads {
-            requested.push(pipeline_plugins::NQUADS_SERIALIZER_ID.to_string());
-        } else {
-            requested.push(pipeline_plugins::TURTLE_SERIALIZER_ID.to_string());
-        }
-    }
-    if !has_explicit_export {
-        if args.output_file.is_some() || args.quad_chunking != QuadChunkingMode::None {
-            requested.push(pipeline_plugins::FILE_EXPORT_ID.to_string());
-        } else {
-            requested.push(pipeline_plugins::STDOUT_EXPORT_ID.to_string());
-        }
-    }
-    match args.profile {
-        Some(ModuleProfile::BasicTtl) => {}
-        Some(ModuleProfile::FullNquads) => {
-            requested.push(pipeline_plugins::TOPOLOGY_FULL_PRODUCER_ID.to_string());
-            requested.push(pipeline_plugins::IFCOWL_PRODUCER_ID.to_string());
-        }
-        None => {}
-    }
-
-    requested.extend(args.enable_module.clone());
+    let requested: Vec<String> = args.module.clone();
 
     let mut deduped = Vec::new();
     let mut seen = HashSet::new();
@@ -873,8 +854,8 @@ fn parse_module_configs(
     let mut by_plugin: HashMap<String, HashMap<String, String>> = HashMap::new();
     for raw in values {
         let (plugin, rest) = raw
-            .split_once(':')
-            .ok_or_else(|| format!("expected `<module-id>:<key>=<value>`, got `{}`", raw))?;
+            .split_once('.')
+            .ok_or_else(|| format!("expected `<module-id>.<key>=<value>`, got `{}`", raw))?;
         let (key, value) = rest
             .split_once('=')
             .ok_or_else(|| format!("expected `<key>=<value>` in `{}`", raw))?;
@@ -900,7 +881,7 @@ fn validate_module_configs(
     for plugin_id in configs.keys() {
         if !active.contains(plugin_id.as_str()) {
             anyhow::bail!(
-                "module config provided for `{}` but module is not active; add `--enable-module {}`",
+                "module options provided for `{}` but module is not active; add `--module {}`",
                 plugin_id,
                 plugin_id
             );
@@ -914,41 +895,246 @@ fn validate_typed_module_configs(
 ) -> Result<(), String> {
     for (module_id, entries) in configs {
         topology_plugin::validate_typed_module_config(module_id, entries)?;
+        if module_id == pipeline_plugins::NQUADS_SERIALIZER_ID {
+            validate_nquads_serializer_module_config(entries)?;
+        }
+        if module_id == pipeline_plugins::BBOX_ENRICHER_ID {
+            validate_bbox_module_config(entries)?;
+        }
     }
     Ok(())
 }
 
 fn validate_activation_plan_with_args(
-    args: &Args,
     plan: &lbd_pipeline::ActivationPlan,
+    settings: &ExecutionSettings,
 ) -> anyhow::Result<()> {
     let active: HashSet<&str> = plan.enabled_ids.iter().map(|id| id.as_str()).collect();
-    let has_nq = active.contains(pipeline_plugins::NQUADS_SERIALIZER_ID);
-    let has_ttl = active.contains(pipeline_plugins::TURTLE_SERIALIZER_ID);
-    if args.output_format == OutputFormat::Nquads && !has_nq {
-        anyhow::bail!(
-            "nquads output requires `{}` to be active",
-            pipeline_plugins::NQUADS_SERIALIZER_ID
-        );
-    }
-    if args.output_format == OutputFormat::Turtle && !has_ttl {
-        anyhow::bail!(
-            "turtle output requires `{}` to be active",
-            pipeline_plugins::TURTLE_SERIALIZER_ID
-        );
-    }
+    let output_format = settings.output_format;
     if active.contains(pipeline_plugins::GRAFEO_EXPORT_ID) {
-        if args.output_format != OutputFormat::Nquads {
-            anyhow::bail!(
-                "grafeo export module requires `--output-format nquads`"
-            );
+        if output_format != OutputFormat::Nquads {
+            anyhow::bail!("grafeo export module requires `neo-nquads-serializer`");
         }
-        if args.quad_chunking != QuadChunkingMode::None {
-            anyhow::bail!("grafeo export module cannot be combined with `--quad-chunking`");
+        if settings.nquads.chunking != QuadChunkingMode::None {
+            anyhow::bail!("grafeo export module cannot be combined with N-Quads chunking");
         }
     }
-    if args.profile == Some(ModuleProfile::FullNquads) && args.output_format != OutputFormat::Nquads {
-        anyhow::bail!("`--profile full-nquads` requires `--output-format nquads`");
+    if !active.contains(pipeline_plugins::LBD_PRODUCER_ID) {
+        anyhow::bail!(
+            "module plan must include `{}`",
+            pipeline_plugins::LBD_PRODUCER_ID
+        );
+    }
+    let has_file_export = active.contains(pipeline_plugins::FILE_EXPORT_ID);
+    let has_stdout_export = active.contains(pipeline_plugins::STDOUT_EXPORT_ID);
+    let has_grafeo_export = active.contains(pipeline_plugins::GRAFEO_EXPORT_ID);
+    let export_count =
+        has_file_export as usize + has_stdout_export as usize + has_grafeo_export as usize;
+    if export_count != 1 {
+        anyhow::bail!(
+            "module plan must include exactly one export module (`{}`, `{}`, or `{}`)",
+            pipeline_plugins::FILE_EXPORT_ID,
+            pipeline_plugins::STDOUT_EXPORT_ID,
+            pipeline_plugins::GRAFEO_EXPORT_ID
+        );
+    }
+    Ok(())
+}
+
+fn resolve_execution_settings(
+    _args: &Args,
+    plan: &lbd_pipeline::ActivationPlan,
+    configs: &HashMap<String, HashMap<String, String>>,
+) -> anyhow::Result<ExecutionSettings> {
+    let active: HashSet<&str> = plan.enabled_ids.iter().map(|id| id.as_str()).collect();
+    let has_nquads = active.contains(pipeline_plugins::NQUADS_SERIALIZER_ID);
+    let has_turtle = active.contains(pipeline_plugins::TURTLE_SERIALIZER_ID);
+    let output_format = match (has_turtle, has_nquads) {
+        (true, false) => OutputFormat::Turtle,
+        (false, true) => OutputFormat::Nquads,
+        (true, true) => anyhow::bail!(
+            "conflicting serializer modules enabled (`{}` and `{}`)",
+            pipeline_plugins::TURTLE_SERIALIZER_ID,
+            pipeline_plugins::NQUADS_SERIALIZER_ID
+        ),
+        (false, false) => anyhow::bail!(
+            "no serializer module enabled; add `--module {}` or `--module {}`",
+            pipeline_plugins::TURTLE_SERIALIZER_ID,
+            pipeline_plugins::NQUADS_SERIALIZER_ID
+        ),
+    };
+
+    let nquads_entries = configs.get(pipeline_plugins::NQUADS_SERIALIZER_ID);
+    let chunking = parse_quad_chunking(
+        nquads_entries
+            .and_then(|e| e.get("chunking"))
+            .map(String::as_str),
+    )?;
+    let chunk_size_lines =
+        parse_usize_with_default(nquads_entries, "chunk_size_lines", 2_000_000usize)?;
+    let chunk_size_bytes =
+        parse_usize_with_default(nquads_entries, "chunk_size_bytes", 268_435_456usize)?;
+    let chunk_prefix = string_with_default(nquads_entries, "chunk_prefix", "out");
+    let chunk_min_count = parse_usize_with_default(nquads_entries, "chunk_min_count", 1usize)?;
+    let chunk_core_count = parse_optional_usize(nquads_entries, "chunk_core_count")?;
+    let lbd_graph_iri = nquads_entries.and_then(|e| e.get("lbd_graph_iri")).cloned();
+    let ifcowl_graph_iri = nquads_entries
+        .and_then(|e| e.get("ifcowl_graph_iri"))
+        .cloned();
+
+    let bbox = if active.contains(pipeline_plugins::BBOX_ENRICHER_ID) {
+        let bbox_entries = configs.get(pipeline_plugins::BBOX_ENRICHER_ID);
+        let inflation_threshold = parse_f64_with_default(bbox_entries, "inflation_threshold", 1.5)?;
+        let report_path = bbox_entries
+            .and_then(|entries| entries.get("report_path"))
+            .map(PathBuf::from);
+        Some(BboxModuleOptions {
+            inflation_threshold,
+            report_path,
+        })
+    } else {
+        None
+    };
+
+    Ok(ExecutionSettings {
+        output_format,
+        emit_ifcowl: active.contains(pipeline_plugins::IFCOWL_PRODUCER_ID),
+        bbox,
+        nquads: NquadsModuleOptions {
+            lbd_graph_iri,
+            ifcowl_graph_iri,
+            chunking,
+            chunk_size_lines,
+            chunk_size_bytes,
+            chunk_prefix,
+            chunk_min_count,
+            chunk_core_count,
+        },
+    })
+}
+
+fn parse_quad_chunking(raw: Option<&str>) -> anyhow::Result<QuadChunkingMode> {
+    let value = raw.unwrap_or("none");
+    match value {
+        "none" => Ok(QuadChunkingMode::None),
+        "lines" => Ok(QuadChunkingMode::Lines),
+        "bytes" => Ok(QuadChunkingMode::Bytes),
+        "cores" => Ok(QuadChunkingMode::Cores),
+        _ => anyhow::bail!(
+            "invalid `neo-nquads-serializer.chunking={}` (expected none|lines|bytes|cores)",
+            value
+        ),
+    }
+}
+
+fn parse_usize_with_default(
+    entries: Option<&HashMap<String, String>>,
+    key: &str,
+    default: usize,
+) -> anyhow::Result<usize> {
+    match entries.and_then(|m| m.get(key)) {
+        Some(raw) => raw
+            .parse::<usize>()
+            .map_err(|_| anyhow::anyhow!("invalid integer for `{}`: `{}`", key, raw)),
+        None => Ok(default),
+    }
+}
+
+fn parse_optional_usize(
+    entries: Option<&HashMap<String, String>>,
+    key: &str,
+) -> anyhow::Result<Option<usize>> {
+    match entries.and_then(|m| m.get(key)) {
+        Some(raw) => raw
+            .parse::<usize>()
+            .map(Some)
+            .map_err(|_| anyhow::anyhow!("invalid integer for `{}`: `{}`", key, raw)),
+        None => Ok(None),
+    }
+}
+
+fn parse_f64_with_default(
+    entries: Option<&HashMap<String, String>>,
+    key: &str,
+    default: f64,
+) -> anyhow::Result<f64> {
+    match entries.and_then(|m| m.get(key)) {
+        Some(raw) => raw
+            .parse::<f64>()
+            .map_err(|_| anyhow::anyhow!("invalid float for `{}`: `{}`", key, raw)),
+        None => Ok(default),
+    }
+}
+
+fn string_with_default(
+    entries: Option<&HashMap<String, String>>,
+    key: &str,
+    default: &str,
+) -> String {
+    entries
+        .and_then(|m| m.get(key))
+        .cloned()
+        .unwrap_or_else(|| default.to_string())
+}
+
+fn validate_nquads_serializer_module_config(
+    entries: &HashMap<String, String>,
+) -> Result<(), String> {
+    for (key, value) in entries {
+        match key.as_str() {
+            "chunking" => {
+                if !matches!(value.as_str(), "none" | "lines" | "bytes" | "cores") {
+                    return Err(format!(
+                        "`neo-nquads-serializer.chunking` must be one of none|lines|bytes|cores, got `{}`",
+                        value
+                    ));
+                }
+            }
+            "chunk_size_lines" | "chunk_size_bytes" | "chunk_min_count" | "chunk_core_count" => {
+                let parsed = value.parse::<usize>().map_err(|_| {
+                    format!(
+                        "`neo-nquads-serializer.{}` must be an integer, got `{}`",
+                        key, value
+                    )
+                })?;
+                if parsed == 0 {
+                    return Err(format!("`neo-nquads-serializer.{}` must be > 0", key));
+                }
+            }
+            "chunk_prefix" | "lbd_graph_iri" | "ifcowl_graph_iri" => {}
+            other => {
+                return Err(format!(
+                    "unknown option `neo-nquads-serializer.{}` (supported: chunking, chunk_size_lines, chunk_size_bytes, chunk_prefix, chunk_min_count, chunk_core_count, lbd_graph_iri, ifcowl_graph_iri)",
+                    other
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_bbox_module_config(entries: &HashMap<String, String>) -> Result<(), String> {
+    for (key, value) in entries {
+        match key.as_str() {
+            "inflation_threshold" => {
+                let parsed = value.parse::<f64>().map_err(|_| {
+                    format!(
+                        "`neo-bbox-enricher.inflation_threshold` must be a float, got `{}`",
+                        value
+                    )
+                })?;
+                if parsed <= 0.0 {
+                    return Err("`neo-bbox-enricher.inflation_threshold` must be > 0".to_string());
+                }
+            }
+            "report_path" => {}
+            other => {
+                return Err(format!(
+                    "unknown option `neo-bbox-enricher.{}` (supported: inflation_threshold, report_path)",
+                    other
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -971,11 +1157,15 @@ fn build_producer_execution_plan(
     topology_plugin_count: usize,
 ) -> ProducerExecutionPlan {
     ProducerExecutionPlan {
-        parallel_topology_plugin: output_format == OutputFormat::Nquads && topology_plugin_count > 0,
+        parallel_topology_plugin: output_format == OutputFormat::Nquads
+            && topology_plugin_count > 0,
     }
 }
 
-fn resolve_failure_policy(registry: &lbd_pipeline::PluginRegistry, plugin_id: &str) -> FailurePolicy {
+fn resolve_failure_policy(
+    registry: &lbd_pipeline::PluginRegistry,
+    plugin_id: &str,
+) -> FailurePolicy {
     registry
         .plugin(plugin_id)
         .map(|plugin| plugin.manifest().failure_policy)
@@ -996,9 +1186,9 @@ fn run_producer_plugin_tasks<'a>(tasks: Vec<ProducerTaskSpec<'a>>) -> anyhow::Re
         }
         let mut required_errors = Vec::new();
         for (plugin_id, failure_policy, handle) in handles {
-            let result = handle.join().map_err(|_| {
-                anyhow::anyhow!("producer module `{}` panicked", plugin_id)
-            });
+            let result = handle
+                .join()
+                .map_err(|_| anyhow::anyhow!("producer module `{}` panicked", plugin_id));
             match (failure_policy, result) {
                 (_, Ok(Ok(()))) => {}
                 (FailurePolicy::Optional, Ok(Err(error))) => {
@@ -2237,27 +2427,40 @@ fn normalize_base_for_graph_iri(base_uri: &str) -> String {
     base_uri.trim_end_matches('/').to_string()
 }
 
-fn validate_args(args: &Args) -> anyhow::Result<()> {
+fn validate_args(args: &Args, settings: &ExecutionSettings) -> anyhow::Result<()> {
     if !args.list_modules && !args.show_module_plan && args.input.is_none() {
         anyhow::bail!("an IFC input path is required");
     }
-    if args.output_format != OutputFormat::Nquads && args.quad_chunking != QuadChunkingMode::None {
-        anyhow::bail!("quad chunking flags require --output-format nquads");
+    if args.module.is_empty() {
+        anyhow::bail!(
+            "no modules selected; add explicit modules via `--module <id>` (see `--list-modules`)"
+        );
     }
-    if args.quad_chunk_size_lines == 0 {
-        anyhow::bail!("--quad-chunk-size-lines must be > 0");
+    if settings.output_format != OutputFormat::Nquads
+        && settings.nquads.chunking != QuadChunkingMode::None
+    {
+        anyhow::bail!("N-Quads chunking options require `neo-nquads-serializer` to be active");
     }
-    if args.quad_chunk_size_bytes == 0 {
-        anyhow::bail!("--quad-chunk-size-bytes must be > 0");
+    if settings.nquads.chunk_size_lines == 0 {
+        anyhow::bail!("`neo-nquads-serializer.chunk_size_lines` must be > 0");
     }
-    if args.quad_chunk_min_count == 0 {
-        anyhow::bail!("--quad-chunk-min-count must be > 0");
+    if settings.nquads.chunk_size_bytes == 0 {
+        anyhow::bail!("`neo-nquads-serializer.chunk_size_bytes` must be > 0");
     }
-    if args.quad_chunk_core_count.is_some_and(|count| count == 0) {
-        anyhow::bail!("--quad-chunk-core-count must be > 0 when provided");
+    if settings.nquads.chunk_min_count == 0 {
+        anyhow::bail!("`neo-nquads-serializer.chunk_min_count` must be > 0");
     }
-    if args.quad_chunking != QuadChunkingMode::Cores && args.quad_chunk_core_count.is_some() {
-        anyhow::bail!("--quad-chunk-core-count is only valid with --quad-chunking cores");
+    if settings
+        .nquads
+        .chunk_core_count
+        .is_some_and(|count| count == 0)
+    {
+        anyhow::bail!("`neo-nquads-serializer.chunk_core_count` must be > 0 when provided");
+    }
+    if settings.nquads.chunking != QuadChunkingMode::Cores
+        && settings.nquads.chunk_core_count.is_some()
+    {
+        anyhow::bail!("`neo-nquads-serializer.chunk_core_count` is only valid when chunking=cores");
     }
     Ok(())
 }
@@ -2301,8 +2504,7 @@ fn resolve_effective_core_chunk_count_for_estimated_bytes(
         .unwrap_or(available_cores)
         .max(min_chunk_count);
     let min_chunks_by_max_size =
-        ((estimated_nq_bytes + (MAX_CORE_CHUNK_BYTES - 1)) / MAX_CORE_CHUNK_BYTES).max(1)
-            as usize;
+        ((estimated_nq_bytes + (MAX_CORE_CHUNK_BYTES - 1)) / MAX_CORE_CHUNK_BYTES).max(1) as usize;
     let max_chunks_by_min_size = (estimated_nq_bytes / MIN_CORE_CHUNK_BYTES).max(1) as usize;
     let floor = min_chunk_count.max(min_chunks_by_max_size);
     let ceiling = max_chunks_by_min_size.max(floor);
@@ -2687,7 +2889,8 @@ impl Write for QuadChunkWriter {
 #[cfg(test)]
 mod tests {
     use super::{
-        resolve_effective_core_chunk_count, validate_args, Args, OutputFormat, QuadChunkWriter,
+        build_requested_module_list, parse_module_configs, resolve_effective_core_chunk_count,
+        validate_args, Args, ExecutionSettings, NquadsModuleOptions, OutputFormat, QuadChunkWriter,
         QuadChunkingMode,
     };
     use clap::Parser;
@@ -2698,17 +2901,8 @@ mod tests {
     #[test]
     fn cli_defaults_are_minimal() {
         let args = Args::try_parse_from(["ifc2lbd-neo", "input.ifc"]).expect("parse");
-        assert_eq!(args.output_format, OutputFormat::Turtle);
-        assert_eq!(args.quad_chunking, QuadChunkingMode::None);
-        assert_eq!(args.quad_chunk_size_lines, 2_000_000);
-        assert_eq!(args.quad_chunk_size_bytes, 268_435_456);
-        assert_eq!(args.quad_chunk_prefix, "out");
-        assert_eq!(args.quad_chunk_min_count, 1);
-        assert!(args.quad_chunk_core_count.is_none());
-        assert!(args.lbd_graph_iri.is_none());
-        assert!(args.ifcowl_graph_iri.is_none());
-        assert!(!args.ifcowl);
-        assert!(!args.bbox);
+        assert!(args.module.is_empty());
+        assert!(args.module_opt.is_empty());
     }
 
     #[test]
@@ -2716,80 +2910,64 @@ mod tests {
         let args = Args::try_parse_from([
             "ifc2lbd-neo",
             "input.ifc",
+            "--module",
+            "neo-lbd-producer",
+            "--module",
+            "neo-nquads-serializer",
             "--output",
             "out.ttl",
             "--base-uri",
             "https://example.test/base/",
-            "--output-format",
-            "nquads",
-            "--lbd-graph-iri",
-            "https://graphs.example.test/lbd",
-            "--ifcowl-graph-iri",
-            "https://graphs.example.test/ifcowl",
-            "--quad-chunking",
-            "cores",
-            "--quad-chunk-size-lines",
-            "999",
-            "--quad-chunk-size-bytes",
-            "4096",
-            "--quad-chunk-prefix",
-            "ingest",
-            "--quad-chunk-min-count",
-            "3",
-            "--quad-chunk-core-count",
-            "12",
-            "--ifcowl",
-            "--bbox",
+            "--module-opt",
+            "neo-nquads-serializer.chunking=cores",
+            "--module-opt",
+            "neo-nquads-serializer.chunk_size_lines=999",
         ])
         .expect("parse");
         assert_eq!(args.output_file.as_deref(), Some(Path::new("out.ttl")));
         assert_eq!(args.base_uri, "https://example.test/base/");
-        assert_eq!(args.output_format, OutputFormat::Nquads);
         assert_eq!(
-            args.lbd_graph_iri.as_deref(),
-            Some("https://graphs.example.test/lbd")
+            args.module,
+            vec![
+                "neo-lbd-producer".to_string(),
+                "neo-nquads-serializer".to_string()
+            ]
         );
+        let cfg = parse_module_configs(&args.module_opt).expect("module cfg");
         assert_eq!(
-            args.ifcowl_graph_iri.as_deref(),
-            Some("https://graphs.example.test/ifcowl")
+            cfg.get("neo-nquads-serializer")
+                .and_then(|m| m.get("chunking"))
+                .map(String::as_str),
+            Some("cores")
         );
-        assert_eq!(args.quad_chunking, QuadChunkingMode::Cores);
-        assert_eq!(args.quad_chunk_size_lines, 999);
-        assert_eq!(args.quad_chunk_size_bytes, 4096);
-        assert_eq!(args.quad_chunk_prefix, "ingest");
-        assert_eq!(args.quad_chunk_min_count, 3);
-        assert_eq!(args.quad_chunk_core_count, Some(12));
-        assert!(args.ifcowl);
-        assert!(args.bbox);
     }
 
     #[test]
-    fn chunking_requires_nquads_output() {
-        let args = Args::try_parse_from(["ifc2lbd-neo", "input.ifc", "--quad-chunking", "lines"])
-            .expect("parse");
-        let err = validate_args(&args).expect_err("must reject chunking with turtle output");
-        assert!(err
-            .to_string()
-            .contains("quad chunking flags require --output-format nquads"));
+    fn module_selection_is_required() {
+        let args = Args::try_parse_from(["ifc2lbd-neo", "input.ifc"]).expect("parse");
+        let settings = test_settings(OutputFormat::Turtle);
+        let err =
+            validate_args(&args, &settings).expect_err("must reject missing module selection");
+        assert!(err.to_string().contains("no modules selected"));
     }
 
     #[test]
-    fn core_count_flag_requires_cores_mode() {
+    fn requested_modules_are_explicit() {
         let args = Args::try_parse_from([
             "ifc2lbd-neo",
             "input.ifc",
-            "--output-format",
-            "nquads",
-            "--quad-chunking",
-            "bytes",
-            "--quad-chunk-core-count",
-            "8",
+            "--module",
+            "neo-lbd-producer",
+            "--module",
+            "neo-topology-full-producer",
+            "--module",
+            "neo-nquads-serializer",
         ])
         .expect("parse");
-        let err = validate_args(&args).expect_err("must reject core-count override in bytes mode");
-        assert!(err
-            .to_string()
-            .contains("--quad-chunk-core-count is only valid with --quad-chunking cores"));
+        let requested = build_requested_module_list(&args);
+        assert!(requested.contains(&"neo-lbd-producer".to_string()));
+        assert!(requested.contains(&"neo-topology-full-producer".to_string()));
+        assert!(requested.contains(&"neo-nquads-serializer".to_string()));
     }
 
     #[test]
@@ -2886,5 +3064,23 @@ mod tests {
             .expect("clock")
             .as_nanos();
         std::env::temp_dir().join(format!("{prefix}_{now}"))
+    }
+
+    fn test_settings(output_format: OutputFormat) -> ExecutionSettings {
+        ExecutionSettings {
+            output_format,
+            emit_ifcowl: false,
+            bbox: None,
+            nquads: NquadsModuleOptions {
+                lbd_graph_iri: None,
+                ifcowl_graph_iri: None,
+                chunking: QuadChunkingMode::None,
+                chunk_size_lines: 2_000_000,
+                chunk_size_bytes: 268_435_456,
+                chunk_prefix: "out".to_string(),
+                chunk_min_count: 1,
+                chunk_core_count: None,
+            },
+        }
     }
 }

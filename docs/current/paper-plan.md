@@ -97,7 +97,7 @@ Describe these features exactly as they exist today:
 - chunked N-Quads for ingest workflows
 - relation-based topology via `neo-topology-lite-producer`
 - exact-kernel-backed full topology path via `neo-topology-full-producer`
-- bounding-box geometry emission via `--bbox`
+- bounding-box geometry emission via `neo-bbox-enricher`
 
 Do not overstate:
 

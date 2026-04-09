@@ -13,10 +13,19 @@ pub fn built_in_registry() -> PluginRegistry {
     let mut registry = PluginRegistry::new();
     registry.register_producer(LbdProducerPlugin).unwrap();
     registry.register_producer(IfcowlProducerPlugin).unwrap();
-    registry.register_producer(TopologyLiteProducerPlugin).unwrap();
-    registry.register_producer(TopologyFullProducerPlugin).unwrap();
-    registry.register_serializer(TurtleSerializerPlugin).unwrap();
-    registry.register_serializer(NquadsSerializerPlugin).unwrap();
+    registry
+        .register_producer(TopologyLiteProducerPlugin)
+        .unwrap();
+    registry
+        .register_producer(TopologyFullProducerPlugin)
+        .unwrap();
+    registry.register_producer(BboxEnricherPlugin).unwrap();
+    registry
+        .register_serializer(TurtleSerializerPlugin)
+        .unwrap();
+    registry
+        .register_serializer(NquadsSerializerPlugin)
+        .unwrap();
     registry.register_export(FileExportPlugin).unwrap();
     registry.register_export(StdoutExportPlugin).unwrap();
     registry.register_export(GrafeoExportPlugin).unwrap();
@@ -27,6 +36,7 @@ pub const TOPOLOGY_LITE_PRODUCER_ID: &str = "neo-topology-lite-producer";
 pub const TOPOLOGY_FULL_PRODUCER_ID: &str = "neo-topology-full-producer";
 pub const LBD_PRODUCER_ID: &str = "neo-lbd-producer";
 pub const IFCOWL_PRODUCER_ID: &str = "neo-ifcowl-producer";
+pub const BBOX_ENRICHER_ID: &str = "neo-bbox-enricher";
 pub const TURTLE_SERIALIZER_ID: &str = "neo-turtle-serializer";
 pub const NQUADS_SERIALIZER_ID: &str = "neo-nquads-serializer";
 pub const FILE_EXPORT_ID: &str = "neo-file-export";
@@ -37,6 +47,7 @@ struct LbdProducerPlugin;
 struct IfcowlProducerPlugin;
 struct TopologyLiteProducerPlugin;
 struct TopologyFullProducerPlugin;
+struct BboxEnricherPlugin;
 struct TurtleSerializerPlugin;
 struct NquadsSerializerPlugin;
 struct FileExportPlugin;
@@ -123,6 +134,26 @@ impl PipelinePlugin for TopologyFullProducerPlugin {
 
 impl ProducerPlugin for TopologyFullProducerPlugin {}
 
+impl PipelinePlugin for BboxEnricherPlugin {
+    fn manifest(&self) -> PluginManifest {
+        PluginManifest {
+            id: BBOX_ENRICHER_ID,
+            display_name: "Neo bbox enricher",
+            stage: PipelineStage::Produce,
+            description: "Adds bbox geometry enrichment data for LBD output.",
+            inputs: vec!["ifc-model", "step-file"],
+            outputs: vec!["bbox-geometry"],
+            requires: vec![LBD_PRODUCER_ID],
+            conflicts_with: vec![],
+            failure_policy: FailurePolicy::Optional,
+            parallelism: ParallelismMode::ParallelByPartition,
+            wasm_compatible: true,
+        }
+    }
+}
+
+impl ProducerPlugin for BboxEnricherPlugin {}
+
 impl PipelinePlugin for TurtleSerializerPlugin {
     fn manifest(&self) -> PluginManifest {
         PluginManifest {
@@ -152,7 +183,7 @@ impl PipelinePlugin for NquadsSerializerPlugin {
             description: "Serializes graph streams into merged or chunked N-Quads output.",
             inputs: vec!["quads"],
             outputs: vec!["nquads-bytes", "nquads-chunks"],
-            requires: vec![LBD_PRODUCER_ID, IFCOWL_PRODUCER_ID],
+            requires: vec![LBD_PRODUCER_ID],
             conflicts_with: vec![TURTLE_SERIALIZER_ID],
             failure_policy: FailurePolicy::Required,
             parallelism: ParallelismMode::ParallelByPartition,
@@ -212,7 +243,7 @@ impl PipelinePlugin for GrafeoExportPlugin {
             description: "Frames graph batches for direct Grafeo ingestion.",
             inputs: vec!["quads", "triple-batches"],
             outputs: vec!["grafeo-stream"],
-            requires: vec![NQUADS_SERIALIZER_ID, IFCOWL_PRODUCER_ID],
+            requires: vec![NQUADS_SERIALIZER_ID],
             conflicts_with: vec![FILE_EXPORT_ID, STDOUT_EXPORT_ID],
             failure_policy: FailurePolicy::Required,
             parallelism: ParallelismMode::ParallelByPartition,
@@ -250,7 +281,7 @@ enum DirectStreamTerm {
 
 pub fn stream_grafeo_batches_to_writer<W: Write>(
     lbd_receiver: Receiver<Vec<lbd_ontology::Triple>>,
-    ifcowl_receiver: Receiver<Vec<lbd_ontology::Triple>>,
+    ifcowl_receiver: Option<Receiver<Vec<lbd_ontology::Triple>>>,
     topology_receiver: Option<Receiver<Vec<lbd_ontology::Triple>>>,
     mut writer: W,
     lbd_graph_iri: &str,
@@ -270,14 +301,16 @@ pub fn stream_grafeo_batches_to_writer<W: Write>(
         }
     });
 
-    let ifcowl_graph = ifcowl_graph_iri.to_string();
-    let ifcowl_sender = merged_sender.clone();
-    let ifcowl_forwarder = thread::spawn(move || {
-        for batch in ifcowl_receiver {
-            if ifcowl_sender.send((ifcowl_graph.clone(), batch)).is_err() {
-                break;
+    let ifcowl_forwarder = ifcowl_receiver.map(|receiver| {
+        let ifcowl_graph = ifcowl_graph_iri.to_string();
+        let ifcowl_sender = merged_sender.clone();
+        thread::spawn(move || {
+            for batch in receiver {
+                if ifcowl_sender.send((ifcowl_graph.clone(), batch)).is_err() {
+                    break;
+                }
             }
-        }
+        })
     });
 
     let topology_forwarder = topology_receiver.map(|receiver| {
@@ -298,7 +331,10 @@ pub fn stream_grafeo_batches_to_writer<W: Write>(
         let frame = DirectStreamFrame {
             version: DIRECT_STREAM_VERSION,
             graph,
-            triples: batch.into_iter().map(direct_stream_triple_from_lbd).collect(),
+            triples: batch
+                .into_iter()
+                .map(direct_stream_triple_from_lbd)
+                .collect(),
         };
         bincode::serde::encode_into_std_write(&frame, &mut writer, bincode::config::standard())
             .context("failed to encode Grafeo direct stream frame")?;
@@ -310,9 +346,11 @@ pub fn stream_grafeo_batches_to_writer<W: Write>(
     lbd_forwarder
         .join()
         .map_err(|_| anyhow::anyhow!("LBD Grafeo stream forwarder panicked"))?;
-    ifcowl_forwarder
-        .join()
-        .map_err(|_| anyhow::anyhow!("IfcOWL Grafeo stream forwarder panicked"))?;
+    if let Some(handle) = ifcowl_forwarder {
+        handle
+            .join()
+            .map_err(|_| anyhow::anyhow!("IfcOWL Grafeo stream forwarder panicked"))?;
+    }
     if let Some(handle) = topology_forwarder {
         handle
             .join()
@@ -356,8 +394,14 @@ mod tests {
     #[test]
     fn built_in_registry_exposes_expected_stage_counts() {
         let registry = built_in_registry();
-        assert_eq!(registry.manifests_for_stage(PipelineStage::Produce).len(), 4);
-        assert_eq!(registry.manifests_for_stage(PipelineStage::Serialize).len(), 2);
+        assert_eq!(
+            registry.manifests_for_stage(PipelineStage::Produce).len(),
+            5
+        );
+        assert_eq!(
+            registry.manifests_for_stage(PipelineStage::Serialize).len(),
+            2
+        );
         assert_eq!(registry.manifests_for_stage(PipelineStage::Export).len(), 3);
     }
 }

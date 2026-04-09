@@ -38,7 +38,7 @@ python3 scripts/run_release_benchmarks.py
 - IfcOWL producer active: sidecar/named-graph IfcOWL output and `owl:sameAs` links in LBD.
 - `neo-topology-lite-producer`: IFC-relation topology in LBD output.
 - `neo-topology-full-producer`: advanced topology mode behavior matches expectations.
-- `--bbox`: geometry nodes + `geo:asWKT` are emitted.
+- `neo-bbox-enricher` active: geometry nodes + `geo:asWKT` are emitted.
 - Property/state modeling remains queryable and OPM-compatible.
 
 ## Determinism Checks

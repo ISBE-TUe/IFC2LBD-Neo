@@ -24,6 +24,6 @@ done
 
 ## Notes
 
-- In `nquads` mode, IfcOWL is emitted automatically.
+- IfcOWL is emitted only when `neo-ifcowl-producer` is enabled.
 - If topology is not enabled, there will be no topology manifest.
-- Use `--quad-chunking cores` for practical default parallel chunking.
+- Use `--module-opt neo-nquads-serializer.chunking=cores` for practical default parallel chunking.
