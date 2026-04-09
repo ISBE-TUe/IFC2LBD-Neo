@@ -1,4 +1,8 @@
 //! Geometry hooks for optional topology enrichment.
+//!
+//! Provides the geometry-intensive steps used primarily in full topology mode.
+//! Computes refined (mesh-based and rotated) bounding boxes and runs exact boolean intersection operations via the OCC kernel.
+//! Confirms interfaces and intersections and enriches RDF output with high-precision, geometry-derived topology statements; also supports optional bounding-box geometry (e.g., GeoSPARQL WKT) for LBD when enabled.
 
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
