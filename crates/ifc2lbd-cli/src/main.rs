@@ -1,3 +1,8 @@
+//! Provides the command-line interface and end-to-end orchestration of the pipeline.
+//! Parses flags and modes (e.g., output format, chunking options, --topology, --topology-full, --bbox).
+//! Wires together parsing, modeling, conversion, topology, geometry, and serialization components according to user-selected options, while keeping stages clearly separated and extensible.
+
+
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufWriter, Write};
