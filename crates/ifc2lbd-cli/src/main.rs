@@ -60,6 +60,12 @@ enum QuadChunkingMode {
     Cores,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum ModuleProfile {
+    BasicTtl,
+    FullNquads,
+}
+
 #[derive(Debug, Parser)]
 #[command(name = "ifc2lbd-neo")]
 #[command(about = "Convert IFC STEP files to a first-slice LBD Turtle model")]
@@ -118,21 +124,9 @@ struct Args {
     #[arg(long = "quad-chunk-core-count")]
     quad_chunk_core_count: Option<usize>,
 
-    /// Emit a framed direct RDF stream for Grafeo on stdout instead of writing RDF files.
-    #[arg(long = "grafeo-direct-stream", default_value_t = false)]
-    grafeo_direct_stream: bool,
-
-    /// Emit full IfcOWL-compatible output and links in a separate sidecar file.
-    #[arg(long = "ifcowl", default_value_t = false)]
+    /// Legacy compatibility flag to force IfcOWL producer activation.
+    #[arg(long = "ifcowl", default_value_t = false, hide = true)]
     ifcowl: bool,
-
-    /// Enable BOT topology from IFC relationship evidence only (no geometry adjacency).
-    #[arg(long = "topology", default_value_t = false)]
-    topology: bool,
-
-    /// Enable full topology mode with OCC exact geometry checks.
-    #[arg(long = "topology-full", default_value_t = false)]
-    topology_full: bool,
 
     /// Emit per-element bounding boxes in LBD output.
     #[arg(long = "bbox", default_value_t = false)]
@@ -166,21 +160,25 @@ struct Args {
     )]
     voxel_max_element_voxels: usize,
 
-    /// List built-in pipeline plugins and exit.
-    #[arg(long = "list-plugins", default_value_t = false)]
-    list_plugins: bool,
+    /// Optional module profile bundle.
+    #[arg(long = "profile", value_enum)]
+    profile: Option<ModuleProfile>,
 
-    /// Enable one or more plugins by id. Can be provided multiple times.
-    #[arg(long = "enable-plugin")]
-    enable_plugin: Vec<String>,
+    /// List built-in pipeline modules and exit.
+    #[arg(long = "list-modules", alias = "list-plugins", default_value_t = false)]
+    list_modules: bool,
 
-    /// Set plugin config values as `<plugin-id>:<key>=<value>`.
-    #[arg(long = "plugin-config")]
-    plugin_config: Vec<String>,
+    /// Enable one or more modules by id. Can be provided multiple times.
+    #[arg(long = "enable-module", alias = "enable-plugin")]
+    enable_module: Vec<String>,
 
-    /// Show resolved plugin activation plan and exit.
-    #[arg(long = "show-pipeline-plan", default_value_t = false)]
-    show_pipeline_plan: bool,
+    /// Set module config values as `<module-id>:<key>=<value>`.
+    #[arg(long = "module-config", alias = "plugin-config")]
+    module_config: Vec<String>,
+
+    /// Show resolved module activation plan and exit.
+    #[arg(long = "show-module-plan", alias = "show-pipeline-plan", default_value_t = false)]
+    show_module_plan: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -191,24 +189,26 @@ fn main() -> anyhow::Result<()> {
         .init();
     let built_in_registry = pipeline_plugins::built_in_registry();
     tracing::debug!(
-        "pipeline registry initialized with {} built-in plugins",
+        "pipeline registry initialized with {} built-in modules",
         built_in_registry.len()
     );
     let args = Args::parse();
-    if args.list_plugins {
-        print_pipeline_plugins(&built_in_registry);
+    if args.list_modules {
+        print_pipeline_modules(&built_in_registry);
         return Ok(());
     }
-    let requested_plugins = build_requested_plugin_list(&args);
+    let requested_modules = build_requested_module_list(&args);
     let activation_plan = built_in_registry
-        .resolve_activation(&requested_plugins)
-        .map_err(|error| anyhow::anyhow!("plugin activation failed: {}", error))?;
+        .resolve_activation(&requested_modules)
+        .map_err(|error| anyhow::anyhow!("module activation failed: {}", error))?;
     validate_activation_plan_with_args(&args, &activation_plan)?;
-    let plugin_configs = parse_plugin_configs(&args.plugin_config)
-        .map_err(|error| anyhow::anyhow!("invalid --plugin-config: {}", error))?;
-    validate_plugin_configs(&activation_plan, &plugin_configs)?;
-    if args.show_pipeline_plan {
-        print_pipeline_plan(&built_in_registry, &activation_plan, &plugin_configs);
+    let module_configs = parse_module_configs(&args.module_config)
+        .map_err(|error| anyhow::anyhow!("invalid --module-config: {}", error))?;
+    validate_module_configs(&activation_plan, &module_configs)?;
+    validate_typed_module_configs(&module_configs)
+        .map_err(|error| anyhow::anyhow!("invalid --module-config: {}", error))?;
+    if args.show_module_plan {
+        print_module_plan(&built_in_registry, &activation_plan, &module_configs);
         return Ok(());
     }
     let input_path = args
@@ -232,7 +232,7 @@ fn main() -> anyhow::Result<()> {
         .map(|m| m.id.to_string())
         .collect();
     active_producer_ids.sort();
-    tracing::info!("active producer plugins: {}", active_producer_ids.join(", "));
+    tracing::info!("active producer modules: {}", active_producer_ids.join(", "));
     let emit_ifcowl = args.ifcowl
         || output_format == OutputFormat::Nquads
         || active_plugins.contains(pipeline_plugins::IFCOWL_PRODUCER_ID);
@@ -313,12 +313,12 @@ fn main() -> anyhow::Result<()> {
         build_producer_execution_plan(output_format, active_topology_plugin_ids.len());
     if active_topology_plugin_ids.len() > 1 && !producer_plan.parallel_topology_plugin {
         anyhow::bail!(
-            "multiple topology producer plugins require `--output-format nquads` so they can run in parallel"
+            "multiple topology producer modules require `--output-format nquads` so they can run in parallel"
         );
     }
     if !active_topology_plugin_ids.is_empty() {
         tracing::info!(
-            "topology producer plugins selected: {} (parallel_nquads_mode={})",
+            "topology producer modules selected: {} (parallel_nquads_mode={})",
             active_topology_plugin_ids.join(", "),
             producer_plan.parallel_topology_plugin
         );
@@ -630,7 +630,7 @@ fn main() -> anyhow::Result<()> {
         let bbox_report_path = args.bbox_report.clone();
         let ifcowl_sender_clone = ifcowl_sender.clone();
         let mut producer_tasks = vec![ProducerTaskSpec {
-            plugin_id: "builtin-core-conversion".to_string(),
+            plugin_id: "neo-core-conversion".to_string(),
             failure_policy: FailurePolicy::Required,
             task: Box::new(move || {
                 producer_plugins::run_core_conversion_plugin(
@@ -640,7 +640,7 @@ fn main() -> anyhow::Result<()> {
                     &converter_lbd_sender_clone,
                     ifcowl_sender_clone.as_ref(),
                 )
-                .context("failed to run core conversion producer plugin")?;
+                .context("failed to run core conversion producer module")?;
                 Ok(())
             }),
         }];
@@ -651,6 +651,7 @@ fn main() -> anyhow::Result<()> {
             let topology_base = topology_base.clone();
             let input_path_buf = input_path_buf.clone();
             let bbox_report_path = bbox_report_path.clone();
+            let module_config = module_configs.get(&plugin_id).cloned();
             producer_tasks.push(ProducerTaskSpec {
                 plugin_id: plugin_id.clone(),
                 failure_policy,
@@ -665,6 +666,7 @@ fn main() -> anyhow::Result<()> {
                             bbox_inflation_threshold,
                             bbox_report_path: bbox_report_path.as_deref(),
                             write_report: !args.bbox,
+                            module_config: module_config.as_ref(),
                         },
                     )?;
                     let topology_options = ConvertOptions {
@@ -685,7 +687,7 @@ fn main() -> anyhow::Result<()> {
                         &topology_sender_clone,
                     )
                     .with_context(|| {
-                        format!("failed to run topology producer plugin `{}`", plugin_id)
+                        format!("failed to run topology producer module `{}`", plugin_id)
                     })?;
                     Ok(())
                 }),
@@ -694,6 +696,9 @@ fn main() -> anyhow::Result<()> {
         run_producer_plugin_tasks(producer_tasks)?;
     } else {
         let options = if derive_adjacency {
+            let module_config = active_topology_plugin_ids
+                .first()
+                .and_then(|id| module_configs.get(id));
             let topology_execution = topology_plugin::run_topology_plugin(
                 active_topology_plugin_ids
                     .first()
@@ -707,6 +712,7 @@ fn main() -> anyhow::Result<()> {
                     bbox_inflation_threshold: args.bbox_inflation_threshold,
                     bbox_report_path: args.bbox_report.as_deref(),
                     write_report: true,
+                    module_config,
                 },
             )?;
             ConvertOptions {
@@ -743,7 +749,7 @@ fn main() -> anyhow::Result<()> {
             &converter_lbd_sender,
             ifcowl_sender.as_ref(),
         )
-        .context("failed to run core conversion producer plugin")?;
+        .context("failed to run core conversion producer module")?;
     }
     tracing::info!(
         "phase triple_production completed in {:.3}s",
@@ -775,7 +781,7 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn print_pipeline_plugins(registry: &lbd_pipeline::PluginRegistry) {
+fn print_pipeline_modules(registry: &lbd_pipeline::PluginRegistry) {
     for manifest in registry.manifests() {
         println!(
             "{:?}\t{}\t{}\tparallel={:?}\tfailure={:?}\twasm={}",
@@ -789,12 +795,12 @@ fn print_pipeline_plugins(registry: &lbd_pipeline::PluginRegistry) {
     }
 }
 
-fn print_pipeline_plan(
+fn print_module_plan(
     registry: &lbd_pipeline::PluginRegistry,
     plan: &lbd_pipeline::ActivationPlan,
     configs: &HashMap<String, HashMap<String, String>>,
 ) {
-    println!("Enabled plugins:");
+    println!("Enabled modules:");
     for id in &plan.enabled_ids {
         if let Some(plugin) = registry.plugin(id) {
             let manifest = plugin.manifest();
@@ -813,16 +819,14 @@ fn print_pipeline_plan(
     }
 }
 
-fn build_requested_plugin_list(args: &Args) -> Vec<String> {
+fn build_requested_module_list(args: &Args) -> Vec<String> {
     let mut requested: Vec<String> = Vec::new();
-    let explicit: HashSet<&str> = args.enable_plugin.iter().map(|id| id.as_str()).collect();
+    let explicit: HashSet<&str> = args.enable_module.iter().map(|id| id.as_str()).collect();
     let has_explicit_serializer = explicit.contains(pipeline_plugins::TURTLE_SERIALIZER_ID)
         || explicit.contains(pipeline_plugins::NQUADS_SERIALIZER_ID);
     let has_explicit_export = explicit.contains(pipeline_plugins::FILE_EXPORT_ID)
         || explicit.contains(pipeline_plugins::STDOUT_EXPORT_ID)
         || explicit.contains(pipeline_plugins::GRAFEO_EXPORT_ID);
-    let has_explicit_topology = explicit.contains(pipeline_plugins::TOPOLOGY_LITE_PRODUCER_ID)
-        || explicit.contains(pipeline_plugins::TOPOLOGY_FULL_PRODUCER_ID);
 
     requested.push(pipeline_plugins::LBD_PRODUCER_ID.to_string());
     if args.ifcowl || args.output_format == OutputFormat::Nquads {
@@ -836,22 +840,22 @@ fn build_requested_plugin_list(args: &Args) -> Vec<String> {
         }
     }
     if !has_explicit_export {
-        if args.grafeo_direct_stream {
-            requested.push(pipeline_plugins::GRAFEO_EXPORT_ID.to_string());
-        } else if args.output_file.is_some() || args.quad_chunking != QuadChunkingMode::None {
+        if args.output_file.is_some() || args.quad_chunking != QuadChunkingMode::None {
             requested.push(pipeline_plugins::FILE_EXPORT_ID.to_string());
         } else {
             requested.push(pipeline_plugins::STDOUT_EXPORT_ID.to_string());
         }
     }
-    if !has_explicit_topology {
-        if let Some(topology_plugin_id) =
-            pipeline_plugins::selected_topology_producer_id(args.topology, args.topology_full)
-        {
-            requested.push(topology_plugin_id.to_string());
+    match args.profile {
+        Some(ModuleProfile::BasicTtl) => {}
+        Some(ModuleProfile::FullNquads) => {
+            requested.push(pipeline_plugins::TOPOLOGY_FULL_PRODUCER_ID.to_string());
+            requested.push(pipeline_plugins::IFCOWL_PRODUCER_ID.to_string());
         }
+        None => {}
     }
-    requested.extend(args.enable_plugin.clone());
+
+    requested.extend(args.enable_module.clone());
 
     let mut deduped = Vec::new();
     let mut seen = HashSet::new();
@@ -863,20 +867,20 @@ fn build_requested_plugin_list(args: &Args) -> Vec<String> {
     deduped
 }
 
-fn parse_plugin_configs(
+fn parse_module_configs(
     values: &[String],
 ) -> Result<HashMap<String, HashMap<String, String>>, String> {
     let mut by_plugin: HashMap<String, HashMap<String, String>> = HashMap::new();
     for raw in values {
         let (plugin, rest) = raw
             .split_once(':')
-            .ok_or_else(|| format!("expected `<plugin-id>:<key>=<value>`, got `{}`", raw))?;
+            .ok_or_else(|| format!("expected `<module-id>:<key>=<value>`, got `{}`", raw))?;
         let (key, value) = rest
             .split_once('=')
             .ok_or_else(|| format!("expected `<key>=<value>` in `{}`", raw))?;
         if plugin.is_empty() || key.is_empty() {
             return Err(format!(
-                "plugin id and key must be non-empty in plugin config `{}`",
+                "module id and key must be non-empty in module config `{}`",
                 raw
             ));
         }
@@ -888,7 +892,7 @@ fn parse_plugin_configs(
     Ok(by_plugin)
 }
 
-fn validate_plugin_configs(
+fn validate_module_configs(
     plan: &lbd_pipeline::ActivationPlan,
     configs: &HashMap<String, HashMap<String, String>>,
 ) -> anyhow::Result<()> {
@@ -896,11 +900,20 @@ fn validate_plugin_configs(
     for plugin_id in configs.keys() {
         if !active.contains(plugin_id.as_str()) {
             anyhow::bail!(
-                "plugin config provided for `{}` but plugin is not active; add `--enable-plugin {}`",
+                "module config provided for `{}` but module is not active; add `--enable-module {}`",
                 plugin_id,
                 plugin_id
             );
         }
+    }
+    Ok(())
+}
+
+fn validate_typed_module_configs(
+    configs: &HashMap<String, HashMap<String, String>>,
+) -> Result<(), String> {
+    for (module_id, entries) in configs {
+        topology_plugin::validate_typed_module_config(module_id, entries)?;
     }
     Ok(())
 }
@@ -927,12 +940,15 @@ fn validate_activation_plan_with_args(
     if active.contains(pipeline_plugins::GRAFEO_EXPORT_ID) {
         if args.output_format != OutputFormat::Nquads {
             anyhow::bail!(
-                "grafeo export plugin requires `--output-format nquads`"
+                "grafeo export module requires `--output-format nquads`"
             );
         }
         if args.quad_chunking != QuadChunkingMode::None {
-            anyhow::bail!("grafeo export plugin cannot be combined with `--quad-chunking`");
+            anyhow::bail!("grafeo export module cannot be combined with `--quad-chunking`");
         }
+    }
+    if args.profile == Some(ModuleProfile::FullNquads) && args.output_format != OutputFormat::Nquads {
+        anyhow::bail!("`--profile full-nquads` requires `--output-format nquads`");
     }
     Ok(())
 }
@@ -981,34 +997,34 @@ fn run_producer_plugin_tasks<'a>(tasks: Vec<ProducerTaskSpec<'a>>) -> anyhow::Re
         let mut required_errors = Vec::new();
         for (plugin_id, failure_policy, handle) in handles {
             let result = handle.join().map_err(|_| {
-                anyhow::anyhow!("producer plugin `{}` panicked", plugin_id)
+                anyhow::anyhow!("producer module `{}` panicked", plugin_id)
             });
             match (failure_policy, result) {
                 (_, Ok(Ok(()))) => {}
                 (FailurePolicy::Optional, Ok(Err(error))) => {
                     tracing::warn!(
-                        "optional producer plugin `{}` failed and will be skipped: {}",
+                        "optional producer module `{}` failed and will be skipped: {}",
                         plugin_id,
                         error
                     );
                 }
                 (FailurePolicy::Optional, Err(error)) => {
                     tracing::warn!(
-                        "optional producer plugin `{}` panicked and will be skipped: {}",
+                        "optional producer module `{}` panicked and will be skipped: {}",
                         plugin_id,
                         error
                     );
                 }
                 (FailurePolicy::Required, Ok(Err(error))) => {
                     required_errors.push(anyhow::anyhow!(
-                        "required producer plugin `{}` failed: {}",
+                        "required producer module `{}` failed: {}",
                         plugin_id,
                         error
                     ));
                 }
                 (FailurePolicy::Required, Err(error)) => {
                     required_errors.push(anyhow::anyhow!(
-                        "required producer plugin `{}` panicked: {}",
+                        "required producer module `{}` panicked: {}",
                         plugin_id,
                         error
                     ));
@@ -1028,6 +1044,8 @@ pub(crate) fn topology_full_occ_relations(
     input_path: &Path,
     geometry_tolerance: f64,
     bbox_inflation_threshold: f64,
+    kernel_timeout: Duration,
+    max_pairs_per_batch: usize,
 ) -> anyhow::Result<(
     Vec<GeometryRelation>,
     HashMap<EntityId, [f64; 6]>,
@@ -1087,10 +1105,10 @@ pub(crate) fn topology_full_occ_relations(
         tolerance: geometry_tolerance,
     };
     let execution = SubprocessKernelExecutionOptions {
-        timeout: Duration::from_secs(600),
+        timeout: kernel_timeout,
         // Keep one kernel invocation for typical model sizes to avoid rebuilding
         // in-memory shape maps across multiple subprocess calls.
-        max_pairs_per_batch: 50_000,
+        max_pairs_per_batch,
     };
 
     let relations = derive_relations_with_exact_kernel_subprocess_batch(
@@ -2220,17 +2238,8 @@ fn normalize_base_for_graph_iri(base_uri: &str) -> String {
 }
 
 fn validate_args(args: &Args) -> anyhow::Result<()> {
-    if !args.list_plugins && !args.show_pipeline_plan && args.input.is_none() {
+    if !args.list_modules && !args.show_module_plan && args.input.is_none() {
         anyhow::bail!("an IFC input path is required");
-    }
-    if args.topology && args.topology_full {
-        anyhow::bail!("use either --topology or --topology-full, not both");
-    }
-    if args.grafeo_direct_stream && args.output_format != OutputFormat::Nquads {
-        anyhow::bail!("--grafeo-direct-stream requires --output-format nquads");
-    }
-    if args.grafeo_direct_stream && args.quad_chunking != QuadChunkingMode::None {
-        anyhow::bail!("--grafeo-direct-stream cannot be combined with --quad-chunking");
     }
     if args.output_format != OutputFormat::Nquads && args.quad_chunking != QuadChunkingMode::None {
         anyhow::bail!("quad chunking flags require --output-format nquads");
@@ -2699,8 +2708,6 @@ mod tests {
         assert!(args.lbd_graph_iri.is_none());
         assert!(args.ifcowl_graph_iri.is_none());
         assert!(!args.ifcowl);
-        assert!(!args.topology);
-        assert!(!args.topology_full);
         assert!(!args.bbox);
     }
 
@@ -2732,7 +2739,6 @@ mod tests {
             "--quad-chunk-core-count",
             "12",
             "--ifcowl",
-            "--topology-full",
             "--bbox",
         ])
         .expect("parse");
@@ -2754,8 +2760,6 @@ mod tests {
         assert_eq!(args.quad_chunk_min_count, 3);
         assert_eq!(args.quad_chunk_core_count, Some(12));
         assert!(args.ifcowl);
-        assert!(!args.topology);
-        assert!(args.topology_full);
         assert!(args.bbox);
     }
 

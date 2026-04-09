@@ -1,10 +1,10 @@
-# Agent Instructions for Building Plugins
+# Agent Instructions for Building Modules
 
-Use this when delegating plugin implementation to an AI coding agent.
+Use this when delegating module implementation to an AI coding agent.
 
 ## Required Inputs
 
-- Plugin id in kebab-case, e.g. `voxels`.
+- Module id in kebab-case, e.g. `voxels`.
 - Stage: currently `produce`.
 - Output contract, e.g. `topology-triples`.
 - Failure policy: `optional` or `required`.
@@ -13,9 +13,9 @@ Use this when delegating plugin implementation to an AI coding agent.
 ## Agent Prompt Template
 
 ```text
-You are implementing a new IFC2LBD-Neo producer plugin.
+You are implementing a new IFC2LBD-Neo producer module.
 
-Plugin id: custom-<id>-producer
+Module id: custom-<id>-producer
 Display name: <Display Name>
 Stage: Produce
 Outputs: topology-triples
@@ -27,7 +27,8 @@ Tasks:
 2. Add the new crate to workspace Cargo.toml members.
 3. Register the manifest in crates/ifc2lbd-cli/src/pipeline_plugins.rs.
 4. Add one executor entry in crates/ifc2lbd-cli/src/topology_plugin.rs (TOPOLOGY_EXECUTORS).
-5. Ensure plugin can be activated with `--enable-plugin custom-<id>-producer`.
+5. Ensure module can be activated with `--enable-module custom-<id>-producer`.
+   - Add typed config parsing and validation for any new `--module-config <module-id>:<key>=<value>` keys.
 6. Run:
    - cargo check -p ifc2lbd-cli
    - cargo test -p ifc2lbd-cli pipeline_plugins
@@ -36,13 +37,13 @@ Tasks:
 
 Constraints:
 - Do not commit benchmark payloads or virtualenv directories.
-- Keep plugin failure isolated if policy is Optional.
-- Keep execution parallel; do not serialize producer plugins.
+- Keep module failure isolated if policy is Optional.
+- Keep execution parallel; do not serialize producer modules.
 ```
 
 ## Activation Checklist
 
-1. `target/release/ifc2lbd-neo --list-plugins`
-2. `target/release/ifc2lbd-neo <ifc> --enable-plugin <id> --show-pipeline-plan`
+1. `target/release/ifc2lbd-neo --list-modules`
+2. `target/release/ifc2lbd-neo <ifc> --enable-module <id> --show-module-plan`
 3. Full run in `nquads` mode with model A.
-4. Optional-failure simulation if plugin policy is `Optional`.
+4. Optional-failure simulation if module policy is `Optional`.
