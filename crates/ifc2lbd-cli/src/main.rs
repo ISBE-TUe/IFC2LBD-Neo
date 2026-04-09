@@ -25,7 +25,7 @@ use lbd_serializer::{
     serialize_nquads_merged_batches_to_writer, serialize_turtle_batches_to_writer,
 };
 use rayon::prelude::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 mod mesh;
 mod transform;
@@ -114,6 +114,10 @@ struct Args {
     #[arg(long = "quad-chunk-core-count")]
     quad_chunk_core_count: Option<usize>,
 
+    /// Emit a framed direct RDF stream for Grafeo on stdout instead of writing RDF files.
+    #[arg(long = "grafeo-direct-stream", default_value_t = false)]
+    grafeo_direct_stream: bool,
+
     /// Emit full IfcOWL-compatible output and links in a separate sidecar file.
     #[arg(long = "ifcowl", default_value_t = false)]
     ifcowl: bool,
@@ -159,9 +163,37 @@ struct Args {
     voxel_max_element_voxels: usize,
 }
 
+const DIRECT_STREAM_VERSION: u8 = 1;
+
+#[derive(Debug, Serialize, Deserialize)]
+struct DirectStreamFrame {
+    version: u8,
+    graph: String,
+    triples: Vec<DirectStreamTriple>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct DirectStreamTriple {
+    subject: DirectStreamTerm,
+    predicate: DirectStreamTerm,
+    object: DirectStreamTerm,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+enum DirectStreamTerm {
+    Iri(String),
+    BlankNode(String),
+    Literal(String),
+    TypedLiteral { value: String, datatype: String },
+    LangLiteral { value: String, lang: String },
+}
+
 fn main() -> anyhow::Result<()> {
     let run_start = Instant::now();
-    tracing_subscriber::fmt().with_env_filter("info").init();
+    tracing_subscriber::fmt()
+        .with_env_filter("info")
+        .with_writer(std::io::stderr)
+        .init();
     let args = Args::parse();
     validate_args(&args)?;
     let output_format = args.output_format;
@@ -276,6 +308,7 @@ fn main() -> anyhow::Result<()> {
     let ifcowl_graph_iri_thread = ifcowl_graph_iri.clone();
     let topology_graph_iri_thread = topology_graph_iri.clone();
     let quad_chunking_mode = args.quad_chunking;
+    let grafeo_direct_stream = args.grafeo_direct_stream;
     let quad_chunk_size_lines = args.quad_chunk_size_lines;
     let quad_chunk_size_bytes = args.quad_chunk_size_bytes;
     let quad_chunk_prefix = args.quad_chunk_prefix.clone();
@@ -346,7 +379,21 @@ fn main() -> anyhow::Result<()> {
             OutputFormat::Nquads => {
                 let ifcowl_receiver = merged_ifcowl_receiver
                     .ok_or_else(|| anyhow::anyhow!("missing IfcOWL receiver for nquads mode"))?;
-                if quad_chunking_mode != QuadChunkingMode::None {
+                if grafeo_direct_stream {
+                    let stdout = std::io::stdout();
+                    let handle = stdout.lock();
+                    let writer = BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, handle);
+                    stream_grafeo_batches_to_writer(
+                        lbd_receiver,
+                        ifcowl_receiver,
+                        merged_topology_receiver,
+                        writer,
+                        &lbd_graph_iri_thread,
+                        &ifcowl_graph_iri_thread,
+                        &topology_graph_iri_thread,
+                    )
+                    .context("failed to write Grafeo direct RDF stream to stdout")?;
+                } else if quad_chunking_mode != QuadChunkingMode::None {
                     let output_dir = resolve_quad_chunk_output_dir(lbd_target.as_deref());
                     let mut lbd_chunk_writer = QuadChunkWriter::new(
                         output_dir,
@@ -664,6 +711,103 @@ fn main() -> anyhow::Result<()> {
     );
 
     Ok(())
+}
+
+fn stream_grafeo_batches_to_writer<W: Write>(
+    lbd_receiver: crossbeam::channel::Receiver<Vec<lbd_ontology::Triple>>,
+    ifcowl_receiver: crossbeam::channel::Receiver<Vec<lbd_ontology::Triple>>,
+    topology_receiver: Option<crossbeam::channel::Receiver<Vec<lbd_ontology::Triple>>>,
+    mut writer: W,
+    lbd_graph_iri: &str,
+    ifcowl_graph_iri: &str,
+    topology_graph_iri: &str,
+) -> anyhow::Result<()> {
+    let (merged_sender, merged_receiver) =
+        crossbeam::channel::unbounded::<(String, Vec<lbd_ontology::Triple>)>();
+
+    let lbd_graph = lbd_graph_iri.to_string();
+    let lbd_sender = merged_sender.clone();
+    let lbd_forwarder = thread::spawn(move || {
+        for batch in lbd_receiver {
+            if lbd_sender.send((lbd_graph.clone(), batch)).is_err() {
+                break;
+            }
+        }
+    });
+
+    let ifcowl_graph = ifcowl_graph_iri.to_string();
+    let ifcowl_sender = merged_sender.clone();
+    let ifcowl_forwarder = thread::spawn(move || {
+        for batch in ifcowl_receiver {
+            if ifcowl_sender.send((ifcowl_graph.clone(), batch)).is_err() {
+                break;
+            }
+        }
+    });
+
+    let topology_forwarder = topology_receiver.map(|receiver| {
+        let graph = topology_graph_iri.to_string();
+        let sender = merged_sender.clone();
+        thread::spawn(move || {
+            for batch in receiver {
+                if sender.send((graph.clone(), batch)).is_err() {
+                    break;
+                }
+            }
+        })
+    });
+
+    drop(merged_sender);
+
+    for (graph, batch) in merged_receiver {
+        let frame = DirectStreamFrame {
+            version: DIRECT_STREAM_VERSION,
+            graph,
+            triples: batch.into_iter().map(direct_stream_triple_from_lbd).collect(),
+        };
+        bincode::serde::encode_into_std_write(&frame, &mut writer, bincode::config::standard())
+            .context("failed to encode Grafeo direct stream frame")?;
+        writer.flush().context("failed to flush Grafeo direct stream writer")?;
+    }
+
+    lbd_forwarder
+        .join()
+        .map_err(|_| anyhow::anyhow!("LBD Grafeo stream forwarder panicked"))?;
+    ifcowl_forwarder
+        .join()
+        .map_err(|_| anyhow::anyhow!("IfcOWL Grafeo stream forwarder panicked"))?;
+    if let Some(handle) = topology_forwarder {
+        handle
+            .join()
+            .map_err(|_| anyhow::anyhow!("Topology Grafeo stream forwarder panicked"))?;
+    }
+    Ok(())
+}
+
+fn direct_stream_triple_from_lbd(triple: lbd_ontology::Triple) -> DirectStreamTriple {
+    DirectStreamTriple {
+        subject: direct_stream_term_from_iri_like(triple.subject),
+        predicate: direct_stream_term_from_iri_like(triple.predicate),
+        object: direct_stream_term_from_lbd_object(triple.object),
+    }
+}
+
+fn direct_stream_term_from_iri_like(value: String) -> DirectStreamTerm {
+    if let Some(id) = value.strip_prefix("_:") {
+        DirectStreamTerm::BlankNode(id.to_string())
+    } else {
+        DirectStreamTerm::Iri(value)
+    }
+}
+
+fn direct_stream_term_from_lbd_object(object: lbd_ontology::Object) -> DirectStreamTerm {
+    match object {
+        lbd_ontology::Object::Iri(value) => direct_stream_term_from_iri_like(value),
+        lbd_ontology::Object::Literal(value) => DirectStreamTerm::Literal(value),
+        lbd_ontology::Object::TypedLiteral { value, datatype } => {
+            DirectStreamTerm::TypedLiteral { value, datatype }
+        }
+    }
 }
 
 fn topology_full_occ_relations(
@@ -1866,6 +2010,12 @@ fn normalize_base_for_graph_iri(base_uri: &str) -> String {
 fn validate_args(args: &Args) -> anyhow::Result<()> {
     if args.topology && args.topology_full {
         anyhow::bail!("use either --topology or --topology-full, not both");
+    }
+    if args.grafeo_direct_stream && args.output_format != OutputFormat::Nquads {
+        anyhow::bail!("--grafeo-direct-stream requires --output-format nquads");
+    }
+    if args.grafeo_direct_stream && args.quad_chunking != QuadChunkingMode::None {
+        anyhow::bail!("--grafeo-direct-stream cannot be combined with --quad-chunking");
     }
     if args.output_format != OutputFormat::Nquads && args.quad_chunking != QuadChunkingMode::None {
         anyhow::bail!("quad chunking flags require --output-format nquads");
