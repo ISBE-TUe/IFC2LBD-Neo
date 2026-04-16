@@ -1,4 +1,8 @@
 //! Core IFC-to-LBD conversion for the first end-to-end slice.
+//!
+//! Translates the internal IfcModel into RDF triples for both LBD graphs and linked ifcOWL.
+//! Implements the producer logic that emits triples in bounded batches (streaming) and can run multiple producer paths (LBD, ifcOWL, topology) in parallel.
+//! Follows an emitter-based pattern so LBD-specific concerns can be factored into separate modules while sharing buffering and streaming infrastructure.
 
 mod modules;
 
