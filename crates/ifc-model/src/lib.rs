@@ -1,4 +1,8 @@
 //! Typed IFC domain model for the first conversion slice.
+//!
+//! Builds a typed, in-memory IfcModel from the parsed STEP data.
+//! Focuses only on conversion-relevant content (spatial and element nodes, properties, quantities, and relationship indexes for containment, aggregation, hosting, fillings, voids, and space boundaries).
+//! Acts as the shared internal model for LBD conversion, topology derivation, and geometry-backed enrichment, instead of constructing a full intermediate ifcOWL graph.
 
 mod guid;
 

@@ -1,4 +1,9 @@
 //! Turtle serialization for the first LBD conversion slice.
+//!
+//! Consumes the producer streams and writes them to RDF files.
+//! Supports Turtle output (LBD primary, ifcOWL separate) with incremental writing to keep memory low.
+//! Supports chunked N-Quads with named graphs for LBD, ifcOWL, and topology, including chunking policies (by lines, bytes, or CPU cores) and manifest generation for chunk order and statistics.
+//! Enables incremental ingestion workflows by exposing large RDF graphs as manageable chunks.
 
 use std::borrow::Cow;
 use std::cmp::Ordering;

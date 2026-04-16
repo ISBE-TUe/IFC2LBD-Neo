@@ -1,4 +1,6 @@
-//! IFC STEP file parser (ISO 10303-21)
+//! Industry Foundation Classes (IFC)  STEP file parser (ISO 10303-21)
+//! Parses IFC and normalizes entity data. Detects the IFC schema from the file header
+//! (IFC2X3, IFC4, IFC4X1, IFC4X3; IFC4X2 normalized to IFC4X3).
 //!
 //! Parses IFC files in the STEP Physical File format into a collection of
 //! [`RawEntity`] objects with resolved cross-references.
