@@ -15,6 +15,7 @@ lbd-topology = { workspace = true }
 lbd-geometry = { workspace = true }
 smol_str = { workspace = true }
 crossbeam = { workspace = true }
+rayon = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 rio_api = { workspace = true }

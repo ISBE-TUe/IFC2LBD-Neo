@@ -1,0 +1,28 @@
+[package]
+name = "ifc2lbd-wasm"
+description = "Browser-facing WebAssembly facade for IFC2LBD-Neo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ifc-step = { workspace = true }
+ifc-model = { workspace = true }
+lbd-converter = { workspace = true }
+lbd-pipeline = { workspace = true }
+lbd-serializer = { workspace = true }
+crossbeam = { workspace = true }
+rayon = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+wasm-bindgen = { workspace = true }
+js-sys = { workspace = true }
+serde-wasm-bindgen = { workspace = true }
+thiserror = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen-rayon = "1"

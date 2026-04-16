@@ -4,6 +4,7 @@ use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::io::{self, Write};
+#[cfg(not(target_arch = "wasm32"))]
 use std::thread;
 
 use crossbeam::channel::Receiver;
@@ -15,6 +16,8 @@ const RDF_TYPE_IRI: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
 pub enum SerializerError {
     #[error("I/O error: {0}")]
     Io(#[from] io::Error),
+    #[error("UTF-8 conversion failed: {0}")]
+    Utf8(#[from] std::string::FromUtf8Error),
 }
 
 pub fn serialize_turtle_to_writer<W: Write>(
@@ -27,7 +30,7 @@ pub fn serialize_turtle_to_writer<W: Write>(
 pub fn serialize_turtle_to_string(triples: &[Triple]) -> Result<String, SerializerError> {
     let mut buffer = Vec::new();
     serialize_turtle_to_writer(triples, &mut buffer)?;
-    Ok(String::from_utf8(buffer).expect("serializer output is valid UTF-8"))
+    Ok(String::from_utf8(buffer)?)
 }
 
 /// Stream IfcOWL triples to `writer` with prefix abbreviation.
@@ -44,18 +47,70 @@ pub fn serialize_turtle_batches_to_writer<W: Write>(
     mut writer: W,
     instance_base: Option<&str>,
 ) -> Result<(), SerializerError> {
-    write_prefixes(&mut writer, instance_base, &[], false)?;
+    write_turtle_prefixes_for_stream(&mut writer, instance_base)?;
     for batch in receiver {
-        for triple in &batch {
-            write_iri_compact(&mut writer, &triple.subject, instance_base)?;
-            writer.write_all(b" ")?;
-            write_iri_compact(&mut writer, &triple.predicate, instance_base)?;
-            writer.write_all(b" ")?;
-            write_object_compact(&mut writer, &triple.object, instance_base)?;
-            writer.write_all(b" .\n")?;
-        }
+        serialize_turtle_batch_to_writer(&batch, &mut writer, instance_base)?;
     }
     Ok(())
+}
+
+pub fn write_turtle_prefixes_for_stream<W: Write>(
+    writer: &mut W,
+    instance_base: Option<&str>,
+) -> Result<(), SerializerError> {
+    write_prefixes(writer, instance_base, &[], false)
+}
+
+pub fn serialize_turtle_batch_to_writer<W: Write>(
+    batch: &[Triple],
+    mut writer: W,
+    instance_base: Option<&str>,
+) -> Result<(), SerializerError> {
+    for triple in batch {
+        write_iri_compact(&mut writer, &triple.subject, instance_base)?;
+        writer.write_all(b" ")?;
+        write_iri_compact(&mut writer, &triple.predicate, instance_base)?;
+        writer.write_all(b" ")?;
+        write_object_compact(&mut writer, &triple.object, instance_base)?;
+        writer.write_all(b" .\n")?;
+    }
+    Ok(())
+}
+
+/// Low-overhead Turtle streaming writer that emits full IRIs without prefix compaction.
+///
+/// This keeps CPU cost predictable for very large low-memory exports.
+pub fn serialize_turtle_batch_raw_to_writer<W: Write>(
+    batch: &[Triple],
+    mut writer: W,
+) -> Result<(), SerializerError> {
+    for triple in batch {
+        writer.write_all(b"<")?;
+        writer.write_all(triple.subject.as_bytes())?;
+        writer.write_all(b"> <")?;
+        writer.write_all(triple.predicate.as_bytes())?;
+        writer.write_all(b"> ")?;
+        write_turtle_object_raw(&mut writer, &triple.object)?;
+        writer.write_all(b" .\n")?;
+    }
+    Ok(())
+}
+
+fn write_turtle_object_raw<W: Write>(writer: &mut W, object: &Object) -> io::Result<()> {
+    match object {
+        Object::Iri(iri) => {
+            writer.write_all(b"<")?;
+            writer.write_all(iri.as_bytes())?;
+            writer.write_all(b">")
+        }
+        Object::Literal(value) => writer.write_all(escape_literal(value).as_bytes()),
+        Object::TypedLiteral { value, datatype } => {
+            writer.write_all(escape_literal(value).as_bytes())?;
+            writer.write_all(b"^^<")?;
+            writer.write_all(datatype.as_bytes())?;
+            writer.write_all(b">")
+        }
+    }
 }
 
 /// Write an IRI as a prefixed name or `<full-iri>` directly to `writer`
@@ -119,6 +174,22 @@ pub fn serialize_lbd_batches_to_writer<W: Write>(
     write_grouped_turtle(&triples, &mut writer, Some(instance_base), true)
 }
 
+/// Incremental LBD Turtle serializer for low-memory mode.
+///
+/// This does not group triples by subject/predicate and therefore avoids
+/// collecting the whole graph in memory.
+pub fn serialize_lbd_batches_incremental_to_writer<W: Write>(
+    receiver: Receiver<Vec<Triple>>,
+    mut writer: W,
+    instance_base: &str,
+) -> Result<(), SerializerError> {
+    write_turtle_prefixes_for_stream(&mut writer, Some(instance_base))?;
+    for batch in receiver {
+        serialize_turtle_batch_to_writer(&batch, &mut writer, Some(instance_base))?;
+    }
+    Ok(())
+}
+
 pub fn serialize_nquads_batches_to_writer<W: Write>(
     receiver: Receiver<Vec<Triple>>,
     mut writer: W,
@@ -137,49 +208,85 @@ pub fn serialize_nquads_merged_batches_to_writer<W: Write>(
     lbd_graph_iri: &str,
     ifcowl_graph_iri: &str,
 ) -> Result<(), SerializerError> {
-    let (merged_sender, merged_receiver) = crossbeam::channel::unbounded::<(bool, Vec<Triple>)>();
-
-    let lbd_sender = merged_sender.clone();
-    let lbd_forwarder = thread::spawn(move || {
-        for batch in lbd_receiver {
-            if lbd_sender.send((false, batch)).is_err() {
-                break;
+    #[cfg(target_arch = "wasm32")]
+    {
+        let mut lbd_open = true;
+        let mut ifcowl_open = true;
+        let never_lbd = crossbeam::channel::never::<Vec<Triple>>();
+        let never_ifcowl = crossbeam::channel::never::<Vec<Triple>>();
+        let mut lbd_rx = &lbd_receiver;
+        let mut ifcowl_rx = &ifcowl_receiver;
+        while lbd_open || ifcowl_open {
+            crossbeam::select! {
+                recv(lbd_rx) -> msg => {
+                    match msg {
+                        Ok(batch) => write_nquads_batch(&mut writer, &batch, lbd_graph_iri)?,
+                        Err(_) => {
+                            lbd_open = false;
+                            lbd_rx = &never_lbd;
+                        }
+                    }
+                }
+                recv(ifcowl_rx) -> msg => {
+                    match msg {
+                        Ok(batch) => write_nquads_batch(&mut writer, &batch, ifcowl_graph_iri)?,
+                        Err(_) => {
+                            ifcowl_open = false;
+                            ifcowl_rx = &never_ifcowl;
+                        }
+                    }
+                }
             }
         }
-    });
-
-    let ifcowl_sender = merged_sender.clone();
-    let ifcowl_forwarder = thread::spawn(move || {
-        for batch in ifcowl_receiver {
-            if ifcowl_sender.send((true, batch)).is_err() {
-                break;
-            }
-        }
-    });
-
-    drop(merged_sender);
-
-    let mut write_result = Ok(());
-    for (is_ifcowl, batch) in merged_receiver {
-        let graph_iri = if is_ifcowl {
-            ifcowl_graph_iri
-        } else {
-            lbd_graph_iri
-        };
-        if let Err(err) = write_nquads_batch(&mut writer, &batch, graph_iri) {
-            write_result = Err(err);
-            break;
-        }
+        return Ok(());
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let (merged_sender, merged_receiver) =
+            crossbeam::channel::unbounded::<(bool, Vec<Triple>)>();
 
-    lbd_forwarder
-        .join()
-        .expect("LBD merge forwarder thread panicked");
-    ifcowl_forwarder
-        .join()
-        .expect("IfcOWL merge forwarder thread panicked");
+        let lbd_sender = merged_sender.clone();
+        let lbd_forwarder = thread::spawn(move || {
+            for batch in lbd_receiver {
+                if lbd_sender.send((false, batch)).is_err() {
+                    break;
+                }
+            }
+        });
 
-    write_result
+        let ifcowl_sender = merged_sender.clone();
+        let ifcowl_forwarder = thread::spawn(move || {
+            for batch in ifcowl_receiver {
+                if ifcowl_sender.send((true, batch)).is_err() {
+                    break;
+                }
+            }
+        });
+
+        drop(merged_sender);
+
+        let mut write_result = Ok(());
+        for (is_ifcowl, batch) in merged_receiver {
+            let graph_iri = if is_ifcowl {
+                ifcowl_graph_iri
+            } else {
+                lbd_graph_iri
+            };
+            if let Err(err) = write_nquads_batch(&mut writer, &batch, graph_iri) {
+                write_result = Err(err);
+                break;
+            }
+        }
+
+        lbd_forwarder
+            .join()
+            .expect("LBD merge forwarder thread panicked");
+        ifcowl_forwarder
+            .join()
+            .expect("IfcOWL merge forwarder thread panicked");
+
+        write_result
+    }
 }
 
 fn compare_triples(left: &Triple, right: &Triple) -> Ordering {

@@ -55,6 +55,9 @@ pub struct ConvertOptions {
     pub geometry_bounding_boxes: Option<Arc<HashMap<EntityId, BoundingBox>>>,
     pub geometry_wkts: Option<Arc<HashMap<EntityId, String>>>,
     pub geometry_tolerance: f64,
+    pub low_memory_mode: bool,
+    pub stream_batch_size: usize,
+    pub ifcowl_max_workers: usize,
 }
 
 impl Default for ConvertOptions {
@@ -70,6 +73,9 @@ impl Default for ConvertOptions {
             geometry_bounding_boxes: None,
             geometry_wkts: None,
             geometry_tolerance: 1e-6,
+            low_memory_mode: false,
+            stream_batch_size: STREAM_BATCH_SIZE,
+            ifcowl_max_workers: 16,
         }
     }
 }
@@ -88,6 +94,8 @@ pub enum StreamError {
 
 // Larger batches reduce channel traffic and formatter call overhead on large exports.
 const STREAM_BATCH_SIZE: usize = 8 * 1024;
+const MIN_STREAM_BATCH_SIZE: usize = 64;
+const MAX_STREAM_BATCH_SIZE: usize = 32 * 1024;
 
 pub fn convert_step_and_model(
     step: &StepFile,
@@ -120,15 +128,37 @@ pub fn stream_step_and_model(
     let base = normalize_base_uri(&options.base_uri);
     if let Some(sender) = ifcowl_sender {
         let ifcowl_sender = sender.clone();
-        std::thread::scope(|scope| {
-            let ifcowl_task = scope.spawn(|| {
-                modules::ifcowl::stream_ifcowl(step, &base, step.header.schema, &ifcowl_sender)
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            return std::thread::scope(|scope| {
+                let ifcowl_task = scope.spawn(|| {
+                    modules::ifcowl::stream_ifcowl(
+                        step,
+                        &base,
+                        step.header.schema,
+                        &ifcowl_sender,
+                        options.stream_batch_size,
+                        options.ifcowl_max_workers,
+                    )
+                });
+                let lbd_result = stream_lbd(model, options, &base, lbd_sender);
+                let ifcowl_result = ifcowl_task.join().map_err(|_| StreamError::ChannelClosed)?;
+                lbd_result?;
+                ifcowl_result
             });
-            let lbd_result = stream_lbd(model, options, &base, lbd_sender);
-            let ifcowl_result = ifcowl_task.join().map_err(|_| StreamError::ChannelClosed)?;
-            lbd_result?;
-            ifcowl_result
-        })
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            modules::ifcowl::stream_ifcowl(
+                step,
+                &base,
+                step.header.schema,
+                &ifcowl_sender,
+                options.stream_batch_size,
+                options.ifcowl_max_workers,
+            )?;
+            return stream_lbd(model, options, &base, lbd_sender);
+        }
     } else {
         stream_lbd(model, options, &base, lbd_sender)
     }
@@ -165,10 +195,13 @@ fn stream_lbd(
     base: &str,
     sender: &Sender<Vec<Triple>>,
 ) -> Result<(), StreamError> {
-    let mut batch = Vec::with_capacity(STREAM_BATCH_SIZE);
+    let batch_size = options
+        .stream_batch_size
+        .clamp(MIN_STREAM_BATCH_SIZE, MAX_STREAM_BATCH_SIZE);
+    let mut batch = Vec::with_capacity(batch_size);
     emit_lbd(model, options, base, |triple| {
         batch.push(triple);
-        if batch.len() >= STREAM_BATCH_SIZE {
+        if batch.len() >= batch_size {
             sender
                 .send(std::mem::take(&mut batch))
                 .map_err(|_| StreamError::ChannelClosed)?;
@@ -192,9 +225,12 @@ where
     F: FnMut(Triple) -> Result<(), E>,
 {
     let unit_by_type = build_unit_type_map(model);
+    #[cfg(not(target_arch = "wasm32"))]
     let generated_at = OffsetDateTime::now_utc()
         .format(&Rfc3339)
         .expect("RFC3339 formatting should always succeed");
+    #[cfg(target_arch = "wasm32")]
+    let generated_at = "1970-01-01T00:00:00Z".to_string();
     let mut declared_object_properties = HashSet::new();
     let mut declared_property_comments = HashSet::new();
     let mut property_state_counter = 0_u64;
@@ -2744,6 +2780,9 @@ mod tests {
                 geometry_bounding_boxes: None,
                 geometry_wkts: None,
                 geometry_tolerance: 1e-6,
+                low_memory_mode: false,
+                stream_batch_size: 8 * 1024,
+                ifcowl_max_workers: 16,
             },
         );
 
@@ -3134,6 +3173,9 @@ mod tests {
                 geometry_bounding_boxes: None,
                 geometry_wkts: None,
                 geometry_tolerance: 1e-6,
+                low_memory_mode: false,
+                stream_batch_size: 8 * 1024,
+                ifcowl_max_workers: 16,
             },
         );
 
@@ -3182,6 +3224,9 @@ mod tests {
                 geometry_bounding_boxes: None,
                 geometry_wkts: None,
                 geometry_tolerance: 1e-6,
+                low_memory_mode: false,
+                stream_batch_size: 8 * 1024,
+                ifcowl_max_workers: 16,
             },
         );
 
@@ -3210,6 +3255,9 @@ mod tests {
                 geometry_bounding_boxes: None,
                 geometry_wkts: None,
                 geometry_tolerance: 1e-6,
+                low_memory_mode: false,
+                stream_batch_size: 8 * 1024,
+                ifcowl_max_workers: 16,
             },
         );
         assert!(result.triples.iter().any(|triple| {
@@ -3314,6 +3362,9 @@ mod tests {
             )]))),
             geometry_wkts: None,
             geometry_tolerance: 1e-6,
+            low_memory_mode: false,
+            stream_batch_size: 8 * 1024,
+            ifcowl_max_workers: 16,
         };
         let result = convert_step_and_model(&step, &model, &options);
         assert!(result.triples.iter().any(|triple| {

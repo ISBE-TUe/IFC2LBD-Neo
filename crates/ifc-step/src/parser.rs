@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+#[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
 use smol_str::SmolStr;
 
@@ -12,8 +13,14 @@ pub fn parse_entities(data: &[u8]) -> Result<HashMap<EntityId, RawEntity>, StepE
     let text = String::from_utf8_lossy(data);
     let data_start = find_data_section(&text)?;
     let entity_ranges = scan_entity_ranges(&text, data_start)?;
+    #[cfg(not(target_arch = "wasm32"))]
     let parsed_entities: Vec<RawEntity> = entity_ranges
         .par_iter()
+        .map(|&(start, end)| parse_entity(&text[start..end]))
+        .collect::<Result<_, _>>()?;
+    #[cfg(target_arch = "wasm32")]
+    let parsed_entities: Vec<RawEntity> = entity_ranges
+        .iter()
         .map(|&(start, end)| parse_entity(&text[start..end]))
         .collect::<Result<_, _>>()?;
 

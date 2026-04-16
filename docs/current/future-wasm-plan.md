@@ -1,5 +1,16 @@
 # WebAssembly Plan (Reviewed)
 
+## Status (2026-04-12)
+
+Phase-1 implementation is now in progress in `crates/ifc2lbd-wasm` with:
+
+- browser-facing module registry APIs (`listModules`, `resolvePlan`),
+- byte-input conversion API (`convertIfc`),
+- browser `neo-file-export` artifact output (`.ttl` / `.nq`),
+- curated wasm module set that hides unsupported modules.
+
+Threaded wasm bootstrap is exposed as `initThreadPool` for `wasm32`.
+
 This document turns the initial idea in `docs/archive/webassembly-brainstorm.md` into a project-specific plan.
 
 ## Goal

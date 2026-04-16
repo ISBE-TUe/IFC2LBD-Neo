@@ -105,6 +105,34 @@ cargo build --release -p ifc2lbd-cli --bin ifc2lbd-neo
 cargo build --release -p lbd-geometry-kernel --bin lbd-geometry-kernel
 ```
 
+## Wasm (Phase 1)
+
+Browser-targeted converter facade crate:
+
+```bash
+cargo build -p ifc2lbd-wasm --target wasm32-unknown-unknown
+```
+
+Exported JS API (via `wasm-bindgen`):
+
+- `listModules()`
+- `resolvePlan(requestedModules, moduleOptions)`
+- `convertIfc(inputBytes, request)`
+- `initThreadPool(threads)` (wasm32 only)
+
+Phase-1 browser module set:
+
+- `neo-lbd-producer`
+- `neo-ifcowl-producer`
+- `neo-turtle-serializer`
+- `neo-nquads-serializer`
+- `neo-file-export` (browser artifact exporter)
+
+Threaded Wasm deployment requires cross-origin isolation headers:
+
+- `Cross-Origin-Opener-Policy: same-origin`
+- `Cross-Origin-Embedder-Policy: require-corp`
+
 ## Documentation
 
 - Module authoring and activation: `docs/current/plugin-authoring-and-activation.md`
