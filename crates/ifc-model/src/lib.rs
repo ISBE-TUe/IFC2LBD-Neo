@@ -6,6 +6,7 @@ use std::collections::HashMap;
 
 use ifc_schema::{is_element, spatial_type, SpatialType};
 use ifc_step::{EntityId, RawEntity, StepError, StepFile, StepSchema, StepValue};
+#[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
 use smol_str::SmolStr;
 
@@ -256,10 +257,16 @@ impl PartialModelBuild {
 
 pub fn build_model(step: &StepFile) -> Result<IfcModel, ModelError> {
     let entity_refs: Vec<_> = step.entities.values().collect();
+    #[cfg(not(target_arch = "wasm32"))]
     let partial = entity_refs
         .par_iter()
         .map(|entity| classify_entity(entity))
         .reduce(PartialModelBuild::default, PartialModelBuild::merge);
+    #[cfg(target_arch = "wasm32")]
+    let partial = entity_refs
+        .iter()
+        .map(|entity| classify_entity(entity))
+        .fold(PartialModelBuild::default(), PartialModelBuild::merge);
 
     let mut property_sets_for_object: HashMap<EntityId, Vec<EntityId>> = HashMap::new();
     let mut quantities_for_object: HashMap<EntityId, Vec<EntityId>> = HashMap::new();

@@ -6,7 +6,6 @@ use lbd_ontology::Triple;
 
 use crate::{
     ifcowl_entity_subjects, ifcowl_lookup, ifcowl_namespace, IfcOwlEmitter, StreamError,
-    STREAM_BATCH_SIZE,
 };
 
 pub(crate) fn convert_ifcowl(step: &StepFile, base: &str, schema: StepSchema) -> Vec<Triple> {
@@ -38,6 +37,8 @@ pub(crate) fn stream_ifcowl(
     base: &str,
     schema: StepSchema,
     sender: &Sender<Vec<Triple>>,
+    stream_batch_size: usize,
+    max_workers_override: usize,
 ) -> Result<(), StreamError> {
     let mut ids: Vec<_> = step.entities.keys().copied().collect();
     ids.sort_unstable();
@@ -45,10 +46,13 @@ pub(crate) fn stream_ifcowl(
     let lookup = ifcowl_lookup(schema);
     let max_entity_id = ids.iter().copied().max().unwrap_or(0);
     let entity_subjects = ifcowl_entity_subjects(step, base, lookup);
+    #[cfg(not(target_arch = "wasm32"))]
     let available_cores = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1);
-    let max_workers = available_cores.clamp(1, IFCOWL_MAX_WORKERS);
+    #[cfg(target_arch = "wasm32")]
+    let available_cores = rayon::current_num_threads().max(1);
+    let max_workers = available_cores.clamp(1, max_workers_override.clamp(1, IFCOWL_MAX_WORKERS));
     let workers_by_size = (ids.len() / IFCOWL_MIN_ENTITIES_PER_WORKER).max(1);
     let worker_count = max_workers.min(workers_by_size);
 
@@ -64,7 +68,7 @@ pub(crate) fn stream_ifcowl(
         for id in ids {
             let entity = &step.entities[&id];
             emitter.emit_entity(id, entity);
-            if emitter.pending_len() >= STREAM_BATCH_SIZE {
+            if emitter.pending_len() >= stream_batch_size {
                 sender
                     .send(emitter.take_triples())
                     .map_err(|_| StreamError::ChannelClosed)?;
@@ -80,56 +84,54 @@ pub(crate) fn stream_ifcowl(
     }
 
     let chunk_size = ids.len().div_ceil(worker_count);
-    let (batch_sender, batch_receiver) = crossbeam::channel::bounded::<Vec<Triple>>(32);
-    std::thread::scope(|scope| -> Result<(), StreamError> {
-        let mut handles = Vec::new();
+    let (result_sender, result_receiver) =
+        crossbeam::channel::bounded::<Result<(), StreamError>>(worker_count);
+    rayon::scope(|scope| {
         for (worker_index, chunk) in ids.chunks(chunk_size).enumerate() {
             let step_ref = step;
             let namespace_ref = namespace.as_str();
             let lookup_ref = lookup;
             let base_ref = base;
             let subjects_ref = &entity_subjects;
-            let local_sender = batch_sender.clone();
-            let handle = scope.spawn(move || -> Result<(), StreamError> {
-                let node_start = max_entity_id
-                    .saturating_add((worker_index as u64 + 1) * IFCOWL_NODE_COUNTER_STRIDE);
-                let mut emitter = IfcOwlEmitter::new(
-                    base_ref,
-                    namespace_ref,
-                    lookup_ref,
-                    node_start,
-                    subjects_ref,
-                    worker_index == 0,
-                );
-                for id in chunk {
-                    let entity = &step_ref.entities[id];
-                    emitter.emit_entity(*id, entity);
-                    if emitter.pending_len() >= STREAM_BATCH_SIZE {
-                        local_sender
-                            .send(emitter.take_triples())
+            let out_sender = sender.clone();
+            let result_sender = result_sender.clone();
+            scope.spawn(move |_| {
+                let result = (|| -> Result<(), StreamError> {
+                    let node_start = max_entity_id
+                        .saturating_add((worker_index as u64 + 1) * IFCOWL_NODE_COUNTER_STRIDE);
+                    let mut emitter = IfcOwlEmitter::new(
+                        base_ref,
+                        namespace_ref,
+                        lookup_ref,
+                        node_start,
+                        subjects_ref,
+                        worker_index == 0,
+                    );
+                    for id in chunk {
+                        let entity = &step_ref.entities[id];
+                        emitter.emit_entity(*id, entity);
+                        if emitter.pending_len() >= stream_batch_size {
+                            out_sender
+                                .send(emitter.take_triples())
+                                .map_err(|_| StreamError::ChannelClosed)?;
+                        }
+                    }
+                    let remaining = emitter.take_triples();
+                    if !remaining.is_empty() {
+                        out_sender
+                            .send(remaining)
                             .map_err(|_| StreamError::ChannelClosed)?;
                     }
-                }
-                let remaining = emitter.take_triples();
-                if !remaining.is_empty() {
-                    local_sender
-                        .send(remaining)
-                        .map_err(|_| StreamError::ChannelClosed)?;
-                }
-                Ok(())
+                    Ok(())
+                })();
+                let _ = result_sender.send(result);
             });
-            handles.push(handle);
         }
-        drop(batch_sender);
-
-        for batch in batch_receiver {
-            sender.send(batch).map_err(|_| StreamError::ChannelClosed)?;
-        }
-        for handle in handles {
-            handle.join().map_err(|_| StreamError::ChannelClosed)??;
-        }
-        Ok(())
-    })?;
+    });
+    drop(result_sender);
+    for result in result_receiver {
+        result?;
+    }
     Ok(())
 }
 

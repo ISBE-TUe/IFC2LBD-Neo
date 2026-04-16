@@ -318,6 +318,9 @@ fn main() -> anyhow::Result<()> {
         geometry_bounding_boxes: geometry_bounding_boxes.clone(),
         geometry_wkts: geometry_wkts.clone(),
         geometry_tolerance: args.geometry_tolerance,
+        low_memory_mode: false,
+        stream_batch_size: 8 * 1024,
+        ifcowl_max_workers: 16,
     };
 
     let (converter_lbd_sender, converter_lbd_receiver) =
@@ -694,6 +697,9 @@ fn main() -> anyhow::Result<()> {
                         geometry_bounding_boxes: None,
                         geometry_wkts: None,
                         geometry_tolerance,
+                        low_memory_mode: false,
+                        stream_batch_size: 8 * 1024,
+                        ifcowl_max_workers: 16,
                     };
                     producer_plugins::run_topology_producer_plugin(
                         model_ref,
@@ -740,6 +746,9 @@ fn main() -> anyhow::Result<()> {
                 geometry_bounding_boxes: geometry_bounding_boxes.clone(),
                 geometry_wkts: geometry_wkts.clone(),
                 geometry_tolerance: args.geometry_tolerance,
+                low_memory_mode: false,
+                stream_batch_size: 8 * 1024,
+                ifcowl_max_workers: 16,
             }
         } else {
             ConvertOptions {
@@ -753,6 +762,9 @@ fn main() -> anyhow::Result<()> {
                 geometry_bounding_boxes: geometry_bounding_boxes.clone(),
                 geometry_wkts: geometry_wkts.clone(),
                 geometry_tolerance: args.geometry_tolerance,
+                low_memory_mode: false,
+                stream_batch_size: 8 * 1024,
+                ifcowl_max_workers: 16,
             }
         };
 

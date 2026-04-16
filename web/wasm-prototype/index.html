@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>IFC2LBD WASM Prototype</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Nunito:wght@600;700&family=Roboto:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <img src="/logo-horizontal.png" alt="AM2PM" class="logo-horizontal" />
+        <div class="topbar-text">
+          <h1>IFC2LBD Converter</h1>
+          <p>Threaded WebAssembly prototype running fully on client hardware.</p>
+        </div>
+      </header>
+
+      <main class="container">
+        <section class="card">
+          <h2>Conversion</h2>
+          <form id="convert-form">
+            <label class="field">
+              <span>IFC file</span>
+              <input id="ifc-file" type="file" accept=".ifc,.ifczip,.step,.stp" required />
+            </label>
+
+            <label class="field">
+              <span>Base URI</span>
+              <input id="base-uri" type="url" value="https://lbd.example.com/" />
+            </label>
+
+            <label class="field">
+              <span>Output stem</span>
+              <input id="output-stem" type="text" value="converted-model" />
+            </label>
+
+            <div class="field">
+              <span>Serializer</span>
+              <div class="row">
+                <label><input type="radio" name="serializer" value="ttl" checked /> Turtle</label>
+                <label><input type="radio" name="serializer" value="nq" /> N-Quads</label>
+              </div>
+            </div>
+
+            <label class="checkbox">
+              <input id="emit-ifcowl" type="checkbox" checked />
+              Include IfcOWL output
+            </label>
+
+            <button id="convert-btn" type="submit" class="btn-primary">Convert</button>
+          </form>
+        </section>
+
+        <section class="card">
+          <h2>Runtime</h2>
+          <ul id="runtime" class="meta-list"></ul>
+        </section>
+
+        <section class="card">
+          <h2>Modules</h2>
+          <ul id="modules" class="meta-list"></ul>
+        </section>
+
+        <section class="card">
+          <h2>Downloads</h2>
+          <div id="downloads" class="downloads">No files yet.</div>
+        </section>
+
+        <section class="card">
+          <h2>Log</h2>
+          <pre id="log" class="log"></pre>
+        </section>
+      </main>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

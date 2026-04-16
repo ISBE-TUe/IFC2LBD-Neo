@@ -22,6 +22,7 @@ __pycache__/
 
 # Generated outputs / reports
 artifacts/**/*.ttl
+artifacts/wasm-node/
 artifacts/outputs/
 artifacts/test-output/
 artifacts/benchmarks/**
@@ -35,6 +36,11 @@ artifacts/topology/**
 benchmark_results/
 out.ttl
 out_ifcowl.ttl
+*_ifcowl.ttl
+
+# Web build deps/outputs
+**/node_modules/
+**/dist/
 
 # Vendored build outputs
 vendor/chijin/target/
