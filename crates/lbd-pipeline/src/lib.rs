@@ -2,7 +2,171 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use crossbeam::channel::{Receiver, Sender};
+use lbd_ontology::Triple;
 use serde::{Deserialize, Serialize};
+
+// ---------------------------------------------------------------------------
+// Resource limits & pipeline context
+// ---------------------------------------------------------------------------
+
+/// Memory/concurrency budget for a pipeline run.
+///
+/// Derived from input size and available memory; controls channel capacity,
+/// batch sizes, and parallelism throughout the pipeline.
+#[derive(Clone, Debug)]
+pub struct ResourceLimits {
+    /// Approximate peak memory budget in bytes.
+    pub memory_budget_bytes: u64,
+    /// Number of worker threads available.
+    pub thread_count: usize,
+    /// Bounded channel capacity (derived from memory budget).
+    pub channel_capacity: usize,
+    /// Batch size for triple production (derived from memory budget).
+    pub batch_size: usize,
+}
+
+impl ResourceLimits {
+    /// Derive resource limits from input size and optionally available memory.
+    ///
+    /// The returned limits tune the pipeline from "survival mode" (tiny channels,
+    /// small batches) on memory-constrained devices to "full throughput" (wide
+    /// channels, large batches) on servers.
+    pub fn auto(input_bytes: u64, available_memory_mb: Option<u64>) -> Self {
+        let threads = rayon::current_num_threads().max(1);
+        let available = available_memory_mb.unwrap_or(4096) * 1024 * 1024;
+        let input_mb = (input_bytes / (1024 * 1024)).max(1);
+        let ratio = available / (input_mb * 1024 * 1024).max(1);
+
+        let (channel_capacity, batch_size) = if ratio < 4 {
+            (4, 256)
+        } else if ratio < 16 {
+            (8, 1024)
+        } else {
+            (16, 4096)
+        };
+
+        Self {
+            memory_budget_bytes: available,
+            thread_count: threads,
+            channel_capacity,
+            batch_size,
+        }
+    }
+}
+
+impl Default for ResourceLimits {
+    fn default() -> Self {
+        Self::auto(0, None)
+    }
+}
+
+/// Shared context passed to every plugin at execution time.
+///
+/// Carries resource limits and optional typed data that producers need
+/// (e.g. StepFile, IfcModel, ConvertOptions). The typed data is stored
+/// as `Arc<dyn Any + Send + Sync>` and accessed via `get::<T>()`.
+#[derive(Clone)]
+pub struct PipelineContext {
+    pub resource_limits: ResourceLimits,
+    /// Optional typed data: `Arc<StepFile>`, `Arc<IfcModel>`, `ConvertOptions`, etc.
+    data: Vec<Arc<dyn std::any::Any + Send + Sync>>,
+}
+
+impl PipelineContext {
+    pub fn new(limits: ResourceLimits) -> Self {
+        Self {
+            resource_limits: limits,
+            data: Vec::new(),
+        }
+    }
+
+    /// Insert a typed value into the context.
+    pub fn insert<T: 'static + Send + Sync>(&mut self, value: Arc<T>) {
+        self.data.push(value as Arc<dyn std::any::Any + Send + Sync>);
+    }
+
+    /// Retrieve a typed value from the context.
+    ///
+    /// Returns the first `Arc<T>` found, or `None` if not present.
+    pub fn get<T: 'static + Send + Sync>(&self) -> Option<Arc<T>> {
+        for item in &self.data {
+            if let Ok(downcast) = item.clone().downcast::<T>() {
+                return Some(downcast);
+            }
+        }
+        None
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Streaming batch type
+// ---------------------------------------------------------------------------
+
+/// Tag for a triple batch when multiple producers feed into the same channel.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum BatchKind {
+    Lbd,
+    Ifcowl,
+    Topology,
+}
+
+// ---------------------------------------------------------------------------
+// Shared plugin ID constants
+// ---------------------------------------------------------------------------
+
+pub const LBD_PRODUCER_ID: &str = "neo-lbd-producer";
+pub const IFCOWL_PRODUCER_ID: &str = "neo-ifcowl-producer";
+pub const TOPOLOGY_LITE_PRODUCER_ID: &str = "neo-topology-lite-producer";
+pub const TOPOLOGY_FULL_PRODUCER_ID: &str = "neo-topology-full-producer";
+pub const BBOX_ENRICHER_ID: &str = "neo-bbox-enricher";
+pub const TURTLE_SERIALIZER_ID: &str = "neo-turtle-serializer";
+pub const NQUADS_SERIALIZER_ID: &str = "neo-nquads-serializer";
+pub const FILE_EXPORT_ID: &str = "neo-file-export";
+pub const STDOUT_EXPORT_ID: &str = "neo-stdout-export";
+pub const GRAFEO_EXPORT_ID: &str = "neo-grafeo-export";
+
+/// A tagged batch of triples produced by a producer plugin.
+#[derive(Clone, Debug)]
+pub struct TaggedBatch {
+    pub kind: BatchKind,
+    pub triples: Vec<Triple>,
+}
+
+// ---------------------------------------------------------------------------
+// Plugin errors
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, thiserror::Error)]
+pub enum ProducerError {
+    #[error("channel closed")]
+    ChannelClosed,
+    #[error("conversion failed: {0}")]
+    Conversion(String),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum SerializerError {
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("channel closed")]
+    ChannelClosed,
+    #[error("serialization failed: {0}")]
+    Serialization(String),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ExportError {
+    #[error("export failed: {0}")]
+    Export(String),
+}
+
+/// Statistics returned by a serializer after consuming all batches.
+#[derive(Clone, Debug, Default)]
+pub struct SerializeStats {
+    pub bytes_written: u64,
+    pub triples_written: u64,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum PipelineStage {
@@ -46,9 +210,59 @@ pub trait PipelinePlugin: Send + Sync {
 }
 
 pub trait PreprocessPlugin: PipelinePlugin {}
-pub trait ProducerPlugin: PipelinePlugin {}
-pub trait SerializerPlugin: PipelinePlugin {}
-pub trait ExportPlugin: PipelinePlugin {}
+
+/// A producer plugin that emits triples in bounded streaming batches.
+///
+/// Implementations send batches through `sender`; backpressure is natural —
+/// if the channel is full, `send` blocks.
+pub trait ProducerPlugin: PipelinePlugin {
+    /// Produce triples in bounded batches, sending them through `sender`.
+    fn produce(
+        &self,
+        ctx: &PipelineContext,
+        sender: &Sender<TaggedBatch>,
+    ) -> Result<(), ProducerError>;
+}
+
+/// A serializer plugin that consumes triple batches from a channel and writes
+/// them to a `Write` sink.
+pub trait SerializerPlugin: PipelinePlugin {
+    /// Serialize tagged batches from `receiver` into `writer`.
+    fn serialize(
+        &self,
+        ctx: &PipelineContext,
+        receiver: Receiver<TaggedBatch>,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<SerializeStats, SerializerError>;
+}
+
+/// An export plugin that handles the final output of serialized bytes.
+pub trait ExportPlugin: PipelinePlugin {
+    /// Export in-memory byte buffers. Returns summaries of exported files.
+    fn export_in_memory(
+        &self,
+        ctx: &PipelineContext,
+        files: Vec<ExportedFile>,
+    ) -> Result<Vec<ExportFileSummary>, ExportError>;
+}
+
+/// A file produced by the pipeline, ready for export.
+#[derive(Clone, Debug)]
+pub struct ExportedFile {
+    pub filename: String,
+    pub mime_type: String,
+    pub role: String,
+    pub bytes: Vec<u8>,
+}
+
+/// Summary of an exported file (bytes only, no payload).
+#[derive(Clone, Debug)]
+pub struct ExportFileSummary {
+    pub filename: String,
+    pub mime_type: String,
+    pub role: String,
+    pub bytes: u64,
+}
 
 #[derive(Clone)]
 pub enum RegisteredPlugin {
@@ -266,7 +480,15 @@ mod tests {
         }
     }
 
-    impl ProducerPlugin for TestProducer {}
+    impl ProducerPlugin for TestProducer {
+        fn produce(
+            &self,
+            _ctx: &PipelineContext,
+            _sender: &Sender<TaggedBatch>,
+        ) -> Result<(), ProducerError> {
+            Ok(())
+        }
+    }
 
     #[test]
     fn registry_rejects_duplicate_ids() {
@@ -306,7 +528,15 @@ mod tests {
             }
         }
     }
-    impl ProducerPlugin for DepProducer {}
+    impl ProducerPlugin for DepProducer {
+        fn produce(
+            &self,
+            _ctx: &PipelineContext,
+            _sender: &Sender<TaggedBatch>,
+        ) -> Result<(), ProducerError> {
+            Ok(())
+        }
+    }
 
     struct NeedsDepProducer;
     impl PipelinePlugin for NeedsDepProducer {
@@ -326,7 +556,15 @@ mod tests {
             }
         }
     }
-    impl ProducerPlugin for NeedsDepProducer {}
+    impl ProducerPlugin for NeedsDepProducer {
+        fn produce(
+            &self,
+            _ctx: &PipelineContext,
+            _sender: &Sender<TaggedBatch>,
+        ) -> Result<(), ProducerError> {
+            Ok(())
+        }
+    }
 
     #[test]
     fn resolve_activation_adds_dependencies() {

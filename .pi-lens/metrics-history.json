@@ -1,0 +1,106 @@
+{
+  "version": 1,
+  "files": {
+    "../../../../../opt/homebrew/lib/node_modules/@mariozechner/pi-coding-agent/node_modules/@mariozechner/pi-tui/dist/components/box.js": {
+      "latest": {
+        "commit": "d212cd0",
+        "timestamp": "2026-04-17T11:15:24.158Z",
+        "mi": 42.4,
+        "cognitive": 41,
+        "nesting": 4,
+        "lines": 93,
+        "maxCyclomatic": 17,
+        "entropy": 5.66
+      },
+      "history": [
+        {
+          "commit": "d212cd0",
+          "timestamp": "2026-04-17T11:15:24.158Z",
+          "mi": 42.4,
+          "cognitive": 41,
+          "nesting": 4,
+          "lines": 93,
+          "maxCyclomatic": 17,
+          "entropy": 5.66
+        }
+      ],
+      "trend": "stable"
+    },
+    "../../AM2PM-DigitalTwin/pi-mono/packages/tui/src/components/box.ts": {
+      "latest": {
+        "commit": "d212cd0",
+        "timestamp": "2026-04-17T11:15:46.041Z",
+        "mi": 40,
+        "cognitive": 41,
+        "nesting": 4,
+        "lines": 102,
+        "maxCyclomatic": 17,
+        "entropy": 5.84
+      },
+      "history": [
+        {
+          "commit": "d212cd0",
+          "timestamp": "2026-04-17T11:15:46.041Z",
+          "mi": 40,
+          "cognitive": 41,
+          "nesting": 4,
+          "lines": 102,
+          "maxCyclomatic": 17,
+          "entropy": 5.84
+        }
+      ],
+      "trend": "stable"
+    },
+    "../../../.pi/agent/extensions/node_modules/@mariozechner/pi-tui/dist/components/box.js": {
+      "latest": {
+        "commit": "d212cd0",
+        "timestamp": "2026-04-17T11:16:37.453Z",
+        "mi": 42.4,
+        "cognitive": 41,
+        "nesting": 4,
+        "lines": 93,
+        "maxCyclomatic": 17,
+        "entropy": 5.66
+      },
+      "history": [
+        {
+          "commit": "d212cd0",
+          "timestamp": "2026-04-17T11:16:37.453Z",
+          "mi": 42.4,
+          "cognitive": 41,
+          "nesting": 4,
+          "lines": 93,
+          "maxCyclomatic": 17,
+          "entropy": 5.66
+        }
+      ],
+      "trend": "stable"
+    },
+    "../../../.pi/agent.pre-migrate.20260417-120508/extensions/node_modules/@mariozechner/pi-tui/dist/components/box.js": {
+      "latest": {
+        "commit": "d212cd0",
+        "timestamp": "2026-04-17T11:16:41.798Z",
+        "mi": 42.4,
+        "cognitive": 41,
+        "nesting": 4,
+        "lines": 93,
+        "maxCyclomatic": 17,
+        "entropy": 5.66
+      },
+      "history": [
+        {
+          "commit": "d212cd0",
+          "timestamp": "2026-04-17T11:16:41.798Z",
+          "mi": 42.4,
+          "cognitive": 41,
+          "nesting": 4,
+          "lines": 93,
+          "maxCyclomatic": 17,
+          "entropy": 5.66
+        }
+      ],
+      "trend": "stable"
+    }
+  },
+  "capturedAt": "2026-04-17T11:16:46.799Z"
+}

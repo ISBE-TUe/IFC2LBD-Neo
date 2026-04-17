@@ -9,3 +9,6 @@ rust-version.workspace = true
 [dependencies]
 serde = { workspace = true }
 thiserror = { workspace = true }
+crossbeam = { workspace = true }
+rayon = { workspace = true }
+lbd-ontology = { path = "../lbd-ontology" }

@@ -1,0 +1,97 @@
+{
+  "files": {
+    "crates/ifc2lbd-wasm/src/lib.rs": {
+      "modifiedRanges": [
+        {
+          "start": 1,
+          "end": 16
+        }
+      ],
+      "importsChanged": false,
+      "lastEdit": "2026-04-17T10:30:35.432Z"
+    },
+    "crates/ifc2lbd-wasm/src/types.rs": {
+      "modifiedRanges": [
+        {
+          "start": 1,
+          "end": 175
+        }
+      ],
+      "importsChanged": false,
+      "lastEdit": "2026-04-17T10:02:51.142Z"
+    },
+    "crates/ifc2lbd-wasm/src/sink.rs": {
+      "modifiedRanges": [
+        {
+          "start": 1,
+          "end": 153
+        }
+      ],
+      "importsChanged": false,
+      "lastEdit": "2026-04-17T10:03:48.741Z"
+    },
+    "crates/ifc2lbd-wasm/src/api.rs": {
+      "modifiedRanges": [
+        {
+          "start": 1,
+          "end": 84
+        }
+      ],
+      "importsChanged": false,
+      "lastEdit": "2026-04-17T10:19:23.454Z"
+    },
+    "crates/ifc2lbd-wasm/src/tests.rs": {
+      "modifiedRanges": [
+        {
+          "start": 1,
+          "end": 86
+        }
+      ],
+      "importsChanged": false,
+      "lastEdit": "2026-04-17T10:20:07.649Z"
+    },
+    "crates/ifc2lbd-wasm/src/plugins.rs": {
+      "modifiedRanges": [
+        {
+          "start": 1,
+          "end": 351
+        }
+      ],
+      "importsChanged": false,
+      "lastEdit": "2026-04-17T10:28:15.151Z"
+    },
+    "crates/ifc2lbd-wasm/src/runner.rs": {
+      "modifiedRanges": [
+        {
+          "start": 1,
+          "end": 1355
+        }
+      ],
+      "importsChanged": false,
+      "lastEdit": "2026-04-17T10:31:42.257Z"
+    },
+    "src/sink.rs": {
+      "modifiedRanges": [
+        {
+          "start": 1,
+          "end": 193
+        }
+      ],
+      "importsChanged": false,
+      "lastEdit": "2026-04-17T11:47:35.735Z"
+    },
+    "src/runner.rs": {
+      "modifiedRanges": [
+        {
+          "start": 1024,
+          "end": 1024
+        }
+      ],
+      "importsChanged": false,
+      "lastEdit": "2026-04-17T11:49:27.231Z"
+    }
+  },
+  "turnCycles": 0,
+  "maxCycles": 3,
+  "lastUpdated": "2026-04-17T11:49:27.231Z"
+}

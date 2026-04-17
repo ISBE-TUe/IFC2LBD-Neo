@@ -1,0 +1,25 @@
+{
+  "items": [
+    {
+      "type": "TODO",
+      "message": "check this  (JO)",
+      "file": "crates/lbd-serializer/src/lib.rs",
+      "line": 522,
+      "column": 18
+    },
+    {
+      "type": "TODO",
+      "message": "we could test for more things here, like `Set`s and `Map`s.",
+      "file": "web/wasm-prototype/src/wasm/ifc2lbd_wasm.js",
+      "line": 482,
+      "column": 7
+    },
+    {
+      "type": "TODO",
+      "message": "while `new URL('...', import.meta.url) becomes a semi-standard",
+      "file": "web/wasm-prototype/src/wasm/snippets/wasm-bindgen-rayon-38edf6e439f6d70d/src/workerHelpers.js",
+      "line": 84,
+      "column": 9
+    }
+  ]
+}

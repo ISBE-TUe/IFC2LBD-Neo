@@ -13,6 +13,7 @@ crate-type = ["cdylib", "rlib"]
 ifc-step = { workspace = true }
 ifc-model = { workspace = true }
 lbd-converter = { workspace = true }
+lbd-ontology = { workspace = true }
 lbd-pipeline = { workspace = true }
 lbd-serializer = { workspace = true }
 crossbeam = { workspace = true }

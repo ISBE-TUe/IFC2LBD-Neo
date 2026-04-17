@@ -5,7 +5,9 @@ use anyhow::Context;
 use crossbeam::channel::Receiver;
 use lbd_pipeline::{
     ExportPlugin, FailurePolicy, ParallelismMode, PipelinePlugin, PipelineStage, PluginManifest,
-    PluginRegistry, ProducerPlugin, SerializerPlugin,
+    PluginRegistry, ProducerPlugin, SerializerPlugin, BBOX_ENRICHER_ID, FILE_EXPORT_ID,
+    GRAFEO_EXPORT_ID, IFCOWL_PRODUCER_ID, LBD_PRODUCER_ID, NQUADS_SERIALIZER_ID, STDOUT_EXPORT_ID,
+    TOPOLOGY_FULL_PRODUCER_ID, TOPOLOGY_LITE_PRODUCER_ID, TURTLE_SERIALIZER_ID,
 };
 use serde::{Deserialize, Serialize};
 
@@ -31,17 +33,6 @@ pub fn built_in_registry() -> PluginRegistry {
     registry.register_export(GrafeoExportPlugin).unwrap();
     registry
 }
-
-pub const TOPOLOGY_LITE_PRODUCER_ID: &str = "neo-topology-lite-producer";
-pub const TOPOLOGY_FULL_PRODUCER_ID: &str = "neo-topology-full-producer";
-pub const LBD_PRODUCER_ID: &str = "neo-lbd-producer";
-pub const IFCOWL_PRODUCER_ID: &str = "neo-ifcowl-producer";
-pub const BBOX_ENRICHER_ID: &str = "neo-bbox-enricher";
-pub const TURTLE_SERIALIZER_ID: &str = "neo-turtle-serializer";
-pub const NQUADS_SERIALIZER_ID: &str = "neo-nquads-serializer";
-pub const FILE_EXPORT_ID: &str = "neo-file-export";
-pub const STDOUT_EXPORT_ID: &str = "neo-stdout-export";
-pub const GRAFEO_EXPORT_ID: &str = "neo-grafeo-export";
 
 struct LbdProducerPlugin;
 struct IfcowlProducerPlugin;
@@ -72,7 +63,17 @@ impl PipelinePlugin for LbdProducerPlugin {
     }
 }
 
-impl ProducerPlugin for LbdProducerPlugin {}
+impl ProducerPlugin for LbdProducerPlugin {
+    fn produce(
+        &self,
+        _ctx: &lbd_pipeline::PipelineContext,
+        _sender: &crossbeam::channel::Sender<lbd_pipeline::TaggedBatch>,
+    ) -> Result<(), lbd_pipeline::ProducerError> {
+        Err(lbd_pipeline::ProducerError::Conversion(format!(
+            "produce not yet via PipelineRunner"
+        )))
+    }
+}
 
 impl PipelinePlugin for IfcowlProducerPlugin {
     fn manifest(&self) -> PluginManifest {
@@ -92,7 +93,17 @@ impl PipelinePlugin for IfcowlProducerPlugin {
     }
 }
 
-impl ProducerPlugin for IfcowlProducerPlugin {}
+impl ProducerPlugin for IfcowlProducerPlugin {
+    fn produce(
+        &self,
+        _ctx: &lbd_pipeline::PipelineContext,
+        _sender: &crossbeam::channel::Sender<lbd_pipeline::TaggedBatch>,
+    ) -> Result<(), lbd_pipeline::ProducerError> {
+        Err(lbd_pipeline::ProducerError::Conversion(format!(
+            "produce not yet via PipelineRunner"
+        )))
+    }
+}
 
 impl PipelinePlugin for TopologyLiteProducerPlugin {
     fn manifest(&self) -> PluginManifest {
@@ -112,7 +123,17 @@ impl PipelinePlugin for TopologyLiteProducerPlugin {
     }
 }
 
-impl ProducerPlugin for TopologyLiteProducerPlugin {}
+impl ProducerPlugin for TopologyLiteProducerPlugin {
+    fn produce(
+        &self,
+        _ctx: &lbd_pipeline::PipelineContext,
+        _sender: &crossbeam::channel::Sender<lbd_pipeline::TaggedBatch>,
+    ) -> Result<(), lbd_pipeline::ProducerError> {
+        Err(lbd_pipeline::ProducerError::Conversion(format!(
+            "produce not yet via PipelineRunner"
+        )))
+    }
+}
 
 impl PipelinePlugin for TopologyFullProducerPlugin {
     fn manifest(&self) -> PluginManifest {
@@ -132,7 +153,17 @@ impl PipelinePlugin for TopologyFullProducerPlugin {
     }
 }
 
-impl ProducerPlugin for TopologyFullProducerPlugin {}
+impl ProducerPlugin for TopologyFullProducerPlugin {
+    fn produce(
+        &self,
+        _ctx: &lbd_pipeline::PipelineContext,
+        _sender: &crossbeam::channel::Sender<lbd_pipeline::TaggedBatch>,
+    ) -> Result<(), lbd_pipeline::ProducerError> {
+        Err(lbd_pipeline::ProducerError::Conversion(format!(
+            "produce not yet via PipelineRunner"
+        )))
+    }
+}
 
 impl PipelinePlugin for BboxEnricherPlugin {
     fn manifest(&self) -> PluginManifest {
@@ -152,7 +183,17 @@ impl PipelinePlugin for BboxEnricherPlugin {
     }
 }
 
-impl ProducerPlugin for BboxEnricherPlugin {}
+impl ProducerPlugin for BboxEnricherPlugin {
+    fn produce(
+        &self,
+        _ctx: &lbd_pipeline::PipelineContext,
+        _sender: &crossbeam::channel::Sender<lbd_pipeline::TaggedBatch>,
+    ) -> Result<(), lbd_pipeline::ProducerError> {
+        Err(lbd_pipeline::ProducerError::Conversion(format!(
+            "produce not yet via PipelineRunner"
+        )))
+    }
+}
 
 impl PipelinePlugin for TurtleSerializerPlugin {
     fn manifest(&self) -> PluginManifest {
@@ -172,7 +213,18 @@ impl PipelinePlugin for TurtleSerializerPlugin {
     }
 }
 
-impl SerializerPlugin for TurtleSerializerPlugin {}
+impl SerializerPlugin for TurtleSerializerPlugin {
+    fn serialize(
+        &self,
+        _ctx: &lbd_pipeline::PipelineContext,
+        _receiver: crossbeam::channel::Receiver<lbd_pipeline::TaggedBatch>,
+        _writer: &mut dyn std::io::Write,
+    ) -> Result<lbd_pipeline::SerializeStats, lbd_pipeline::SerializerError> {
+        Err(lbd_pipeline::SerializerError::Serialization(
+            "serialize not yet via PipelineRunner".to_string(),
+        ))
+    }
+}
 
 impl PipelinePlugin for NquadsSerializerPlugin {
     fn manifest(&self) -> PluginManifest {
@@ -192,7 +244,18 @@ impl PipelinePlugin for NquadsSerializerPlugin {
     }
 }
 
-impl SerializerPlugin for NquadsSerializerPlugin {}
+impl SerializerPlugin for NquadsSerializerPlugin {
+    fn serialize(
+        &self,
+        _ctx: &lbd_pipeline::PipelineContext,
+        _receiver: crossbeam::channel::Receiver<lbd_pipeline::TaggedBatch>,
+        _writer: &mut dyn std::io::Write,
+    ) -> Result<lbd_pipeline::SerializeStats, lbd_pipeline::SerializerError> {
+        Err(lbd_pipeline::SerializerError::Serialization(
+            "serialize not yet via PipelineRunner".to_string(),
+        ))
+    }
+}
 
 impl PipelinePlugin for FileExportPlugin {
     fn manifest(&self) -> PluginManifest {
@@ -212,7 +275,17 @@ impl PipelinePlugin for FileExportPlugin {
     }
 }
 
-impl ExportPlugin for FileExportPlugin {}
+impl ExportPlugin for FileExportPlugin {
+    fn export_in_memory(
+        &self,
+        _ctx: &lbd_pipeline::PipelineContext,
+        _files: Vec<lbd_pipeline::ExportedFile>,
+    ) -> Result<Vec<lbd_pipeline::ExportFileSummary>, lbd_pipeline::ExportError> {
+        Err(lbd_pipeline::ExportError::Export(
+            "export_in_memory not yet via PipelineRunner".to_string(),
+        ))
+    }
+}
 
 impl PipelinePlugin for StdoutExportPlugin {
     fn manifest(&self) -> PluginManifest {
@@ -232,7 +305,17 @@ impl PipelinePlugin for StdoutExportPlugin {
     }
 }
 
-impl ExportPlugin for StdoutExportPlugin {}
+impl ExportPlugin for StdoutExportPlugin {
+    fn export_in_memory(
+        &self,
+        _ctx: &lbd_pipeline::PipelineContext,
+        _files: Vec<lbd_pipeline::ExportedFile>,
+    ) -> Result<Vec<lbd_pipeline::ExportFileSummary>, lbd_pipeline::ExportError> {
+        Err(lbd_pipeline::ExportError::Export(
+            "export_in_memory not yet via PipelineRunner".to_string(),
+        ))
+    }
+}
 
 impl PipelinePlugin for GrafeoExportPlugin {
     fn manifest(&self) -> PluginManifest {
@@ -252,7 +335,17 @@ impl PipelinePlugin for GrafeoExportPlugin {
     }
 }
 
-impl ExportPlugin for GrafeoExportPlugin {}
+impl ExportPlugin for GrafeoExportPlugin {
+    fn export_in_memory(
+        &self,
+        _ctx: &lbd_pipeline::PipelineContext,
+        _files: Vec<lbd_pipeline::ExportedFile>,
+    ) -> Result<Vec<lbd_pipeline::ExportFileSummary>, lbd_pipeline::ExportError> {
+        Err(lbd_pipeline::ExportError::Export(
+            "export_in_memory not yet via PipelineRunner".to_string(),
+        ))
+    }
+}
 
 const DIRECT_STREAM_VERSION: u8 = 1;
 

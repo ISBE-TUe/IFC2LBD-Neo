@@ -40,12 +40,12 @@ struct TopologyExecutor {
 
 const TOPOLOGY_EXECUTORS: &[TopologyExecutor] = &[
     TopologyExecutor {
-        plugin_id: crate::pipeline_plugins::TOPOLOGY_LITE_PRODUCER_ID,
+        plugin_id: lbd_pipeline::TOPOLOGY_LITE_PRODUCER_ID,
         requires_geometry_relations: false,
         execute: execute_topology_lite,
     },
     TopologyExecutor {
-        plugin_id: crate::pipeline_plugins::TOPOLOGY_FULL_PRODUCER_ID,
+        plugin_id: lbd_pipeline::TOPOLOGY_FULL_PRODUCER_ID,
         requires_geometry_relations: true,
         execute: execute_topology_full,
     },
@@ -145,7 +145,7 @@ pub(crate) fn validate_typed_module_config(
     entries: &HashMap<String, String>,
 ) -> Result<(), String> {
     match module_id {
-        crate::pipeline_plugins::TOPOLOGY_FULL_PRODUCER_ID => {
+        lbd_pipeline::TOPOLOGY_FULL_PRODUCER_ID => {
             parse_topology_full_module_config(Some(entries)).map(|_| ())
         }
         _ => Ok(()),
@@ -172,7 +172,7 @@ fn parse_topology_full_module_config(
                 return Err(format!(
                     "unknown config key `{}` for `{}`; allowed keys: kernel_timeout_secs, max_pairs_per_batch",
                     key,
-                    crate::pipeline_plugins::TOPOLOGY_FULL_PRODUCER_ID
+                    lbd_pipeline::TOPOLOGY_FULL_PRODUCER_ID
                 ));
             }
         }
