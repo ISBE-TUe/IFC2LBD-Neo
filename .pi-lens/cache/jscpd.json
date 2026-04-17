@@ -107,9 +107,9 @@
     },
     {
       "fileA": "crates/ifc2lbd-wasm/src/sink.rs",
-      "startA": 129,
+      "startA": 134,
       "fileB": "crates/ifc2lbd-wasm/src/sink.rs",
-      "startB": 89,
+      "startB": 94,
       "lines": 7,
       "tokens": 0
     },
@@ -123,89 +123,89 @@
     },
     {
       "fileA": "crates/ifc2lbd-wasm/src/runner.rs",
-      "startA": 195,
+      "startA": 197,
       "fileB": "crates/ifc2lbd-wasm/src/runner.rs",
       "startB": 127,
-      "lines": 18,
+      "lines": 16,
       "tokens": 0
     },
     {
       "fileA": "crates/ifc2lbd-wasm/src/runner.rs",
-      "startA": 309,
+      "startA": 311,
       "fileB": "crates/ifc2lbd-wasm/src/runner.rs",
-      "startB": 223,
+      "startB": 225,
       "lines": 7,
       "tokens": 0
     },
     {
       "fileA": "crates/ifc2lbd-wasm/src/runner.rs",
-      "startA": 600,
+      "startA": 602,
       "fileB": "crates/ifc2lbd-wasm/src/runner.rs",
-      "startB": 342,
+      "startB": 344,
       "lines": 11,
       "tokens": 0
     },
     {
       "fileA": "crates/ifc2lbd-wasm/src/runner.rs",
-      "startA": 619,
+      "startA": 621,
       "fileB": "crates/ifc2lbd-wasm/src/runner.rs",
-      "startB": 363,
+      "startB": 365,
       "lines": 10,
       "tokens": 0
     },
     {
       "fileA": "crates/ifc2lbd-wasm/src/runner.rs",
-      "startA": 646,
+      "startA": 648,
       "fileB": "crates/ifc2lbd-wasm/src/runner.rs",
-      "startB": 374,
+      "startB": 376,
       "lines": 6,
       "tokens": 0
     },
     {
       "fileA": "crates/ifc2lbd-wasm/src/runner.rs",
-      "startA": 662,
+      "startA": 664,
       "fileB": "crates/ifc2lbd-wasm/src/runner.rs",
-      "startB": 388,
+      "startB": 390,
       "lines": 6,
       "tokens": 0
     },
     {
       "fileA": "crates/ifc2lbd-wasm/src/runner.rs",
-      "startA": 665,
+      "startA": 667,
       "fileB": "crates/ifc2lbd-wasm/src/runner.rs",
-      "startB": 649,
+      "startB": 651,
       "lines": 9,
       "tokens": 0
     },
     {
       "fileA": "crates/ifc2lbd-wasm/src/runner.rs",
-      "startA": 714,
+      "startA": 716,
       "fileB": "crates/ifc2lbd-wasm/src/runner.rs",
-      "startB": 413,
+      "startB": 415,
       "lines": 13,
       "tokens": 0
     },
     {
       "fileA": "crates/ifc2lbd-wasm/src/runner.rs",
-      "startA": 746,
+      "startA": 748,
       "fileB": "crates/ifc2lbd-wasm/src/runner.rs",
-      "startB": 448,
+      "startB": 450,
       "lines": 9,
       "tokens": 0
     },
     {
       "fileA": "crates/ifc2lbd-wasm/src/runner.rs",
-      "startA": 769,
+      "startA": 771,
       "fileB": "crates/ifc2lbd-wasm/src/runner.rs",
-      "startB": 489,
+      "startB": 491,
       "lines": 14,
       "tokens": 0
     },
     {
       "fileA": "crates/ifc2lbd-wasm/src/runner.rs",
-      "startA": 864,
+      "startA": 866,
       "fileB": "crates/ifc2lbd-wasm/src/runner.rs",
-      "startB": 768,
+      "startB": 770,
       "lines": 14,
       "tokens": 0
     },
@@ -538,7 +538,7 @@
       "tokens": 0
     }
   ],
-  "duplicatedLines": 818,
-  "totalLines": 17029,
-  "percentage": 4.8
+  "duplicatedLines": 816,
+  "totalLines": 17063,
+  "percentage": 4.78
 }

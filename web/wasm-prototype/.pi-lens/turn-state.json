@@ -1,0 +1,27 @@
+{
+  "files": {
+    "src/main.js": {
+      "modifiedRanges": [
+        {
+          "start": 1,
+          "end": 271
+        }
+      ],
+      "importsChanged": true,
+      "lastEdit": "2026-04-17T12:07:31.906Z"
+    },
+    "src/wasm-lowmem-worker.js": {
+      "modifiedRanges": [
+        {
+          "start": 1,
+          "end": 59
+        }
+      ],
+      "importsChanged": true,
+      "lastEdit": "2026-04-17T12:07:41.864Z"
+    }
+  },
+  "turnCycles": 0,
+  "maxCycles": 3,
+  "lastUpdated": "2026-04-17T12:07:41.864Z"
+}

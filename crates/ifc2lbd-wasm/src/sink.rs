@@ -1,7 +1,12 @@
 use std::io::{self, Write};
 
 #[cfg(target_arch = "wasm32")]
-use js_sys::{Function, JsValue, Object, Reflect, Uint8Array};
+use js_sys::{Function, Object, Reflect, Uint8Array};
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::JsValue;
+
+use crate::types::OutputFileSummary;
+use lbd_serializer::SerializerError;
 
 #[derive(Default)]
 pub(crate) struct CountingWriter {

@@ -1,11 +1,4 @@
-import initWasm, {
-  initNeoThreadPool,
-  listModules,
-  resolvePlan,
-  convertIfc,
-  convertIfcToSink,
-  planExecution
-} from "./wasm/ifc2lbd_wasm.js";
+import initWasm, { listModules, resolvePlan, planExecution } from "./wasm/ifc2lbd_wasm.js";
 import "./styles.css";
 
 const modulesEl = document.querySelector("#modules");
@@ -14,9 +7,11 @@ const downloadsEl = document.querySelector("#downloads");
 const logEl = document.querySelector("#log");
 const formEl = document.querySelector("#convert-form");
 const convertBtn = document.querySelector("#convert-btn");
-let threadPoolInitialized = false;
-let threadPoolSize = 0;
-const RUNTIME_BUILD = "retry-v4-2026-04-14T18:44Z";
+
+let conversionWorker = null;
+let conversionRequestId = 0;
+const pendingConversionRequests = new Map();
+const RUNTIME_BUILD = "worker-v6-2026-04-17Z";
 
 const log = (line) => {
   logEl.textContent += `${new Date().toISOString()} ${line}\n`;
@@ -86,6 +81,90 @@ const readFileAsBytes = (file) =>
     reader.readAsArrayBuffer(file);
   });
 
+const detectFeasibilityBudgetMb = () => {
+  const deviceMemoryGb = Number(navigator.deviceMemory || 0);
+  if (!Number.isFinite(deviceMemoryGb) || deviceMemoryGb <= 0) return undefined;
+  return Math.max(512, Math.floor(deviceMemoryGb * 1024 * 0.55));
+};
+
+const getConversionWorker = () => {
+  if (conversionWorker) return conversionWorker;
+  conversionWorker = new Worker(new URL("./wasm-lowmem-worker.js", import.meta.url), { type: "module" });
+  conversionWorker.addEventListener("message", (event) => {
+    const data = event.data || {};
+    const pending = pendingConversionRequests.get(data.id);
+    if (!pending) return;
+
+    if (data.type === "threadpool") {
+      pending.threadPoolSize = Number(data.threads) || pending.threadPoolSize;
+      if (!pending.threadPoolLogged && !data.reused) {
+        pending.threadPoolLogged = true;
+        log(`Thread pool initialized: ${pending.threadPoolSize} threads`);
+      }
+      return;
+    }
+
+    if (data.type === "chunk") {
+      const filename = data.filename;
+      if (!filename || data.chunk == null) return;
+      const chunk = data.chunk instanceof Uint8Array ? data.chunk : new Uint8Array(data.chunk);
+      const chunks = pending.memoryFiles.get(filename) || [];
+      chunks.push(chunk);
+      pending.memoryFiles.set(filename, chunks);
+      return;
+    }
+
+    if (data.type === "done") {
+      const renderedFiles = pending.expectedFiles.map((meta) => ({
+        filename: meta.filename,
+        mimeType: meta.mimeType,
+        role: meta.role,
+        payloadParts: pending.memoryFiles.get(meta.filename) || []
+      }));
+      pendingConversionRequests.delete(data.id);
+      pending.resolve({
+        streamResult: data.streamResult || {},
+        renderedFiles,
+        threadPoolSize: pending.threadPoolSize
+      });
+      return;
+    }
+
+    if (data.type === "error") {
+      pendingConversionRequests.delete(data.id);
+      pending.reject(new Error(data.error || "Worker conversion failed."));
+    }
+  });
+  return conversionWorker;
+};
+
+const runSinkConversionInWorker = (input, requestPayload, expectedFiles, requestedThreads) =>
+  new Promise((resolve, reject) => {
+    const worker = getConversionWorker();
+    const id = `conv-${++conversionRequestId}`;
+    const inputCopy = input.slice();
+    pendingConversionRequests.set(id, {
+      resolve,
+      reject,
+      expectedFiles,
+      memoryFiles: new Map(),
+      threadPoolSize: requestedThreads,
+      threadPoolLogged: false
+    });
+    worker.postMessage(
+      {
+        id,
+        type: "convert",
+        payload: {
+          inputBuffer: inputCopy.buffer,
+          request: requestPayload,
+          requestedThreads
+        }
+      },
+      [inputCopy.buffer]
+    );
+  });
+
 const init = async () => {
   const secureContext = window.isSecureContext;
   const crossOriginIsolated = window.crossOriginIsolated;
@@ -105,19 +184,8 @@ const init = async () => {
     "Thread pool initialized: pending",
     `Cross-origin isolated: ${String(window.crossOriginIsolated)}`
   ]);
-  log("WASM initialized. Thread pool will be configured per execution mode on first conversion.");
+  log("WASM initialized. Conversion executes in a dedicated worker.");
   log(`Runtime build: ${RUNTIME_BUILD}`);
-};
-
-const supportsFileSave = () => typeof window.showSaveFilePicker === "function";
-const shouldRetryLowmem = (error, serializer, currentMode) => {
-  return serializer === "ttl" && currentMode !== "lowmem";
-};
-
-const detectFeasibilityBudgetMb = () => {
-  const deviceMemoryGb = Number(navigator.deviceMemory || 0);
-  if (!Number.isFinite(deviceMemoryGb) || deviceMemoryGb <= 0) return undefined;
-  return Math.max(512, Math.floor(deviceMemoryGb * 1024 * 0.55));
 };
 
 formEl.addEventListener("submit", async (event) => {
@@ -158,126 +226,30 @@ formEl.addEventListener("submit", async (event) => {
     log(
       `Execution plan: mode=${executionPlan.selectedMode} est=${executionPlan.estimatedPeakMb}MB feasibility=${executionPlan.feasibilityCheckMb}MB`
     );
-    if (!threadPoolInitialized) {
-      const requestedThreads = Math.max(2, Number(navigator.hardwareConcurrency || 4));
-      await initNeoThreadPool(requestedThreads);
-      threadPoolInitialized = true;
-      threadPoolSize = requestedThreads;
-      log(`Thread pool initialized: ${threadPoolSize} threads`);
-    }
-    const t0 = performance.now();
-    let exportedFileCount = 0;
-    const shouldUseFileSink = supportsFileSave();
+
+    const requestedThreads = Math.max(2, Number(navigator.hardwareConcurrency || 4));
     const expectedFiles =
       serializer === "nq"
-        ? [{ filename: `${outputStem}.nq`, mimeType: "application/n-quads" }]
+        ? [{ filename: `${outputStem}.nq`, mimeType: "application/n-quads", role: "merged" }]
         : emitIfcowl
           ? [
-              { filename: `${outputStem}.ttl`, mimeType: "text/turtle;charset=utf-8" },
-              { filename: `${outputStem}_ifcowl.ttl`, mimeType: "text/turtle;charset=utf-8" }
+              { filename: `${outputStem}.ttl`, mimeType: "text/turtle", role: "lbd" },
+              { filename: `${outputStem}_ifcowl.ttl`, mimeType: "text/turtle", role: "ifcowl" }
             ]
-          : [{ filename: `${outputStem}.ttl`, mimeType: "text/turtle;charset=utf-8" }];
-    const runSinkConversion = async (payload) => {
-      const writers = new Map();
-      const memoryFiles = new Map();
-      try {
-        if (shouldUseFileSink) {
-          for (const fileMeta of expectedFiles) {
-            const handle = await window.showSaveFilePicker({
-              suggestedName: fileMeta.filename,
-              types: [
-                {
-                  description: fileMeta.mimeType.includes("n-quads") ? "N-Quads" : "Turtle",
-                  accept: {
-                    [fileMeta.mimeType]: [fileMeta.filename.endsWith(".nq") ? ".nq" : ".ttl"]
-                  }
-                }
-              ]
-            });
-            const writable = await handle.createWritable();
-            writers.set(fileMeta.filename, { writable, pendingWrite: Promise.resolve(), pendingBytes: 0 });
-          }
-        }
-        const sink = (event) => {
-          if (!event || !event.type) return;
-          if (event.type === "fileChunk" && event.chunk && event.filename) {
-            const chunk = event.chunk instanceof Uint8Array ? event.chunk : new Uint8Array(event.chunk);
-            if (shouldUseFileSink) {
-              const state = writers.get(event.filename);
-              if (!state) throw new Error(`Missing sink target for ${event.filename}`);
-              state.pendingBytes += chunk.byteLength;
-              state.pendingWrite = state.pendingWrite
-                .then(() => state.writable.write(chunk))
-                .then(() => {
-                  state.pendingBytes -= chunk.byteLength;
-                });
-            } else {
-              const chunks = memoryFiles.get(event.filename) || [];
-              chunks.push(chunk);
-              memoryFiles.set(event.filename, chunks);
-            }
-          }
-        };
-        const streamResult = convertIfcToSink(input, payload, sink);
-        if (shouldUseFileSink) {
-          await Promise.all([...writers.values()].map((s) => s.pendingWrite));
-          await Promise.all([...writers.values()].map((s) => s.writable.close()));
-          return { streamResult, renderedFiles: [] };
-        }
-        const renderedFiles = expectedFiles.map((meta) => {
-          const parts = memoryFiles.get(meta.filename) || [];
-          return {
-            filename: meta.filename,
-            mimeType: meta.mimeType,
-            role: meta.filename.endsWith("_ifcowl.ttl")
-              ? "ifcowl"
-              : meta.filename.endsWith(".ttl")
-                ? "lbd"
-                : "merged",
-            payloadParts: parts
-          };
-        });
-        return { streamResult, renderedFiles };
-      } catch (error) {
-        if (shouldUseFileSink) {
-          await Promise.all(
-            [...writers.values()].map(async (s) => {
-              try {
-                await s.writable.abort();
-              } catch (_) {}
-            })
-          );
-        }
-        throw error;
-      }
-    };
-    let streamResult;
-    let renderedFiles = [];
-    try {
-      const result = await runSinkConversion(requestPayload);
-      streamResult = result.streamResult;
-      renderedFiles = result.renderedFiles || [];
-    } catch (error) {
-      const mode = (requestPayload.executionMode || "auto").toLowerCase();
-      if (!shouldRetryLowmem(error, serializer, mode)) throw error;
-      log(`Fast/auto Turtle run failed (${error instanceof Error ? error.message : String(error)}). Retrying with lowmem mode.`);
-      const retryResult = await runSinkConversion({ ...requestPayload, executionMode: "lowmem" });
-      streamResult = retryResult.streamResult;
-      renderedFiles = retryResult.renderedFiles || [];
-    }
-    exportedFileCount = streamResult.outputFileCount || expectedFiles.length;
-    if (shouldUseFileSink) {
-      downloadsEl.innerHTML = "";
-      const msg = document.createElement("div");
-      msg.textContent = `Saved streamed output files: ${expectedFiles.map((f) => f.filename).join(", ")}`;
-      downloadsEl.appendChild(msg);
-    } else {
-      renderDownloads(renderedFiles);
-    }
+          : [{ filename: `${outputStem}.ttl`, mimeType: "text/turtle", role: "lbd" }];
+
+    const t0 = performance.now();
+    const result = await runSinkConversionInWorker(input, requestPayload, expectedFiles, requestedThreads);
+    const streamResult = result.streamResult || {};
+    const renderedFiles = result.renderedFiles || [];
+
+    renderDownloads(renderedFiles);
     if (streamResult.telemetry) log(`Telemetry: ${JSON.stringify(streamResult.telemetry)}`);
+
     const elapsedMs = performance.now() - t0;
+    const exportedFileCount = streamResult.outputFileCount || expectedFiles.length;
     setRuntimeMeta([
-      `Thread pool initialized: ${threadPoolInitialized ? threadPoolSize : "pending"} threads`,
+      `Thread pool initialized: ${result.threadPoolSize || requestedThreads} threads`,
       `Cross-origin isolated: ${String(window.crossOriginIsolated)}`,
       `Conversion duration: ${(elapsedMs / 1000).toFixed(3)} s`,
       `Input size: ${bytesToHuman(input.byteLength)}`,
