@@ -56,12 +56,8 @@ impl TriangleMesh {
     pub fn append(&mut self, other: &TriangleMesh) {
         let offset = (self.vertices.len() / 3) as u32;
         self.vertices.extend_from_slice(&other.vertices);
-        self.indices.extend(
-            other
-                .indices
-                .iter()
-                .map(|i| i + offset),
-        );
+        self.indices
+            .extend(other.indices.iter().map(|i| i + offset));
     }
 
     /// Apply a 4x4 affine transform to all vertices in-place.
@@ -95,20 +91,11 @@ impl Affine3 {
     }
 
     pub fn transform_point(&self, p: &[f64; 3]) -> [f64; 3] {
-        let w = self.m[0][3] * p[0]
-            + self.m[1][3] * p[1]
-            + self.m[2][3] * p[2]
-            + self.m[3][3];
+        let w = self.m[0][3] * p[0] + self.m[1][3] * p[1] + self.m[2][3] * p[2] + self.m[3][3];
         [
-            (self.m[0][0] * p[0] + self.m[1][0] * p[1] + self.m[2][0] * p[2]
-                + self.m[3][0])
-                / w,
-            (self.m[0][1] * p[0] + self.m[1][1] * p[1] + self.m[2][1] * p[2]
-                + self.m[3][1])
-                / w,
-            (self.m[0][2] * p[0] + self.m[1][2] * p[1] + self.m[2][2] * p[2]
-                + self.m[3][2])
-                / w,
+            (self.m[0][0] * p[0] + self.m[1][0] * p[1] + self.m[2][0] * p[2] + self.m[3][0]) / w,
+            (self.m[0][1] * p[0] + self.m[1][1] * p[1] + self.m[2][1] * p[2] + self.m[3][1]) / w,
+            (self.m[0][2] * p[0] + self.m[1][2] * p[1] + self.m[2][2] * p[2] + self.m[3][2]) / w,
         ]
     }
 
@@ -116,9 +103,7 @@ impl Affine3 {
         let mut result = Self::identity();
         for i in 0..4 {
             for j in 0..4 {
-                result.m[i][j] = (0..4)
-                    .map(|k| self.m[i][k] * other.m[k][j])
-                    .sum();
+                result.m[i][j] = (0..4).map(|k| self.m[i][k] * other.m[k][j]).sum();
             }
         }
         result
@@ -174,11 +159,7 @@ pub fn extract_element_mesh(
             continue;
         }
 
-        let ident = shape_rep
-            .args
-            .get(1)
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let ident = shape_rep.args.get(1).and_then(|v| v.as_str()).unwrap_or("");
         if !ident.is_empty() && ident != "Body" && ident != "Facetation" {
             continue;
         }
@@ -226,10 +207,7 @@ fn extract_representation_item(step: &StepFile, item_id: EntityId, depth: usize)
     }
 }
 
-fn extract_triangulated_face_set(
-    step: &StepFile,
-    entity: &ifc_step::RawEntity,
-) -> TriangleMesh {
+fn extract_triangulated_face_set(step: &StepFile, entity: &ifc_step::RawEntity) -> TriangleMesh {
     let coords_id = match entity.args.get(0) {
         Some(StepValue::Ref(id)) => *id,
         _ => return TriangleMesh::new(),
@@ -268,7 +246,10 @@ fn extract_triangulated_face_set(
 fn find_coord_index_list(entity: &ifc_step::RawEntity) -> Option<&[StepValue]> {
     for idx in [3, 4] {
         if let Some(StepValue::List(list)) = entity.args.get(idx) {
-            if list.first().map_or(false, |v| matches!(v, StepValue::List(_))) {
+            if list
+                .first()
+                .map_or(false, |v| matches!(v, StepValue::List(_)))
+            {
                 return Some(list);
             }
         }
@@ -276,10 +257,7 @@ fn find_coord_index_list(entity: &ifc_step::RawEntity) -> Option<&[StepValue]> {
     None
 }
 
-fn extract_polygonal_face_set(
-    step: &StepFile,
-    entity: &ifc_step::RawEntity,
-) -> TriangleMesh {
+fn extract_polygonal_face_set(step: &StepFile, entity: &ifc_step::RawEntity) -> TriangleMesh {
     let coords_id = match entity.args.get(0) {
         Some(StepValue::Ref(id)) => *id,
         _ => return TriangleMesh::new(),
@@ -324,10 +302,7 @@ fn extract_polygonal_face_set(
     TriangleMesh { vertices, indices }
 }
 
-fn extract_faceted_brep(
-    step: &StepFile,
-    entity: &ifc_step::RawEntity,
-) -> TriangleMesh {
+fn extract_faceted_brep(step: &StepFile, entity: &ifc_step::RawEntity) -> TriangleMesh {
     let shell_id = match entity.args.get(0) {
         Some(StepValue::Ref(id)) => *id,
         _ => return TriangleMesh::new(),
@@ -405,10 +380,7 @@ fn extract_ifc_face(step: &StepFile, face_id: EntityId) -> TriangleMesh {
     TriangleMesh::new()
 }
 
-fn extract_face_based_surface_model(
-    step: &StepFile,
-    entity: &ifc_step::RawEntity,
-) -> TriangleMesh {
+fn extract_face_based_surface_model(step: &StepFile, entity: &ifc_step::RawEntity) -> TriangleMesh {
     let face_sets = match entity.args.get(0) {
         Some(StepValue::List(list)) => list,
         _ => return TriangleMesh::new(),
@@ -661,12 +633,10 @@ fn extract_curve_points(step: &StepFile, curve_id: EntityId) -> Vec<[f64; 3]> {
             });
             pts
         }
-        "IFCTRIMMEDCURVE" => {
-            match entity.args.get(0) {
-                Some(StepValue::Ref(id)) => extract_curve_points(step, *id),
-                _ => Vec::new(),
-            }
-        }
+        "IFCTRIMMEDCURVE" => match entity.args.get(0) {
+            Some(StepValue::Ref(id)) => extract_curve_points(step, *id),
+            _ => Vec::new(),
+        },
         "IFCCIRCLE" | "IFCELLIPSE" => {
             let radius = entity.args.get(1).and_then(|v| v.as_real()).unwrap_or(0.5);
             let n = 16;
@@ -1144,13 +1114,7 @@ pub fn csg_boolean_intersection(
                 "csg: left element {} has no mesh, using bbox fallback",
                 left_id
             );
-            return analyze_with_bbox_fallback(
-                left_id,
-                right_id,
-                left_bbox,
-                right_bbox,
-                options,
-            );
+            return analyze_with_bbox_fallback(left_id, right_id, left_bbox, right_bbox, options);
         }
         m => m,
     };
@@ -1161,13 +1125,7 @@ pub fn csg_boolean_intersection(
                 "csg: right element {} has no mesh, using bbox fallback",
                 right_id
             );
-            return analyze_with_bbox_fallback(
-                left_id,
-                right_id,
-                left_bbox,
-                right_bbox,
-                options,
-            );
+            return analyze_with_bbox_fallback(left_id, right_id, left_bbox, right_bbox, options);
         }
         m => m,
     };
@@ -1181,13 +1139,7 @@ pub fn csg_boolean_intersection(
             "csg: pair ({},{}) has {}+{} triangles (>{}), bbox fallback",
             left_id, right_id, left_tri_count, right_tri_count, max_triangles
         );
-        return analyze_with_bbox_fallback(
-            left_id,
-            right_id,
-            left_bbox,
-            right_bbox,
-            options,
-        );
+        return analyze_with_bbox_fallback(left_id, right_id, left_bbox, right_bbox, options);
     }
 
     // Convert to csgrs CSG solids
@@ -1195,13 +1147,7 @@ pub fn csg_boolean_intersection(
         Some(m) => m,
         None => {
             debug!("csg: left element {} failed csgrs conversion", left_id);
-            return analyze_with_bbox_fallback(
-                left_id,
-                right_id,
-                left_bbox,
-                right_bbox,
-                options,
-            );
+            return analyze_with_bbox_fallback(left_id, right_id, left_bbox, right_bbox, options);
         }
     };
 
@@ -1209,13 +1155,7 @@ pub fn csg_boolean_intersection(
         Some(m) => m,
         None => {
             debug!("csg: right element {} failed csgrs conversion", right_id);
-            return analyze_with_bbox_fallback(
-                left_id,
-                right_id,
-                left_bbox,
-                right_bbox,
-                options,
-            );
+            return analyze_with_bbox_fallback(left_id, right_id, left_bbox, right_bbox, options);
         }
     };
 
@@ -1339,14 +1279,18 @@ impl Default for ExactPairAnalysis {
 }
 
 // ---------------------------------------------------------------------------
-// Batch CSG analysis for topology pipeline
+// Batch CSG analysis for memory-bounded topology pipeline
 // ---------------------------------------------------------------------------
 
 /// Analyze candidate pairs using csgrs mesh boolean intersection.
 /// Returns geometry relations (IntersectingElement + InterfaceOf).
 ///
-/// Uses pair limiting to prevent stack overflow from deep BSP recursion.
-/// Pairs beyond the limit fall back to bbox analysis.
+/// **Memory-bounded**: processes pairs in small batches to prevent OOM
+/// in WASM/browser environments. For each batch, extracts only the meshes
+/// needed for those pairs, runs CSG, then frees the meshes before the next batch.
+///
+/// `csg_batch_size` controls how many pairs are processed concurrently.
+/// Default: 50 (adjust based on WASM memory budget).
 pub fn derive_relations_with_csg(
     model: &IfcModel,
     step: &StepFile,
@@ -1354,10 +1298,21 @@ pub fn derive_relations_with_csg(
     options: &ExactCheckOptions,
     fallback_bboxes: &HashMap<EntityId, [f64; 6]>,
 ) -> Vec<crate::GeometryRelation> {
+    derive_relations_with_csg_batched(model, step, candidate_pairs, options, fallback_bboxes, 50)
+}
+
+/// Batched CSG analysis with explicit batch size control.
+pub fn derive_relations_with_csg_batched(
+    model: &IfcModel,
+    step: &StepFile,
+    candidate_pairs: &[(EntityId, EntityId)],
+    options: &ExactCheckOptions,
+    fallback_bboxes: &HashMap<EntityId, [f64; 6]>,
+    batch_size: usize,
+) -> Vec<crate::GeometryRelation> {
     // Build unique, canonical pairs
     let mut unique_pairs = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    let mut all_element_ids = std::collections::HashSet::new();
 
     for &(left, right) in candidate_pairs {
         if left == right
@@ -1366,8 +1321,6 @@ pub fn derive_relations_with_csg(
         {
             continue;
         }
-        all_element_ids.insert(left);
-        all_element_ids.insert(right);
         let canonical = if left < right {
             (left, right)
         } else {
@@ -1382,152 +1335,169 @@ pub fn derive_relations_with_csg(
         return Vec::new();
     }
 
-    // Extract and cache mesh + transform for each unique element
-    let mut mesh_cache: HashMap<EntityId, TriangleMesh> = HashMap::new();
-    let mut transform_cache: HashMap<EntityId, Affine3> = HashMap::new();
-    let mut elem_count = 0usize;
-
-    for &eid in &all_element_ids {
-        if let Some(entity) = step.entities.get(&eid) {
-            if let Some(StepValue::Ref(placement_id)) = entity.args.get(5) {
-                let world = extract_placement_transform(step, *placement_id);
-                let mesh = extract_element_mesh(step, eid, &world);
-                let tri_count = mesh.triangle_count();
-                if !mesh.is_empty() {
-                    mesh_cache.insert(eid, mesh);
-                    transform_cache.insert(eid, world);
-                    elem_count += 1;
-                    if elem_count <= 5 {
-                        info!(
-                            "csg: element {} mesh: {} triangles",
-                            eid, tri_count
-                        );
-                    }
-                }
-            }
-        }
-    }
-
+    let total_pairs = unique_pairs.len();
     info!(
-        "csg: cached {} element meshes",
-        elem_count
+        "csg: processing {} candidate pairs in batches of {}",
+        total_pairs, batch_size
     );
 
-    // Process pairs with CSG, with pair limiting to prevent stack overflow
     let mut relations = Vec::new();
     let mut csg_pairs_processed = 0usize;
     let max_csg_pairs = 200; // Cap CSG pairs to prevent stack overflow
 
-    for (left, right) in &unique_pairs {
-        csg_pairs_processed += 1;
-        if csg_pairs_processed > max_csg_pairs {
-            info!(
-                "csg: stopping CSG after {} pairs (capped), using bbox fallback for remaining {} pairs",
-                csg_pairs_processed - 1,
-                unique_pairs.len().saturating_sub(csg_pairs_processed - 1)
-            );
-            break;
+    // Process pairs in batches — each batch extracts only the meshes it needs
+    for pair_chunk in unique_pairs.chunks(batch_size) {
+        // Collect unique element IDs in this batch
+        let mut batch_elem_ids: std::collections::HashSet<EntityId> =
+            std::collections::HashSet::new();
+        for &(left, right) in pair_chunk {
+            batch_elem_ids.insert(left);
+            batch_elem_ids.insert(right);
         }
 
-        let left_mesh = match mesh_cache.get(left) {
-            Some(m) => m,
-            None => {
-                let left_bbox = fallback_bboxes.get(left).map(|b| b.as_slice());
-                let right_bbox = fallback_bboxes.get(right).map(|b| b.as_slice());
-                let analysis = analyze_with_bbox_fallback(
-                    *left,
-                    *right,
-                    left_bbox,
-                    right_bbox,
-                    options,
-                )
-                .unwrap_or(ExactPairAnalysis::default());
-                append_pair_relations((*left, *right), analysis, &mut relations);
-                continue;
+        // Extract meshes for elements in this batch only
+        let mut batch_meshes: HashMap<EntityId, TriangleMesh> =
+            HashMap::with_capacity(batch_elem_ids.len());
+        for &eid in &batch_elem_ids {
+            let entity = match step.entities.get(&eid) {
+                Some(e) => e,
+                None => continue,
+            };
+            let placement_id = match entity.args.get(5) {
+                Some(StepValue::Ref(id)) => *id,
+                _ => continue,
+            };
+            let world = extract_placement_transform(step, placement_id);
+            let mesh = extract_element_mesh(step, eid, &world);
+            if !mesh.is_empty() {
+                batch_meshes.insert(eid, mesh);
             }
-        };
-
-        let right_mesh = match mesh_cache.get(right) {
-            Some(m) => m,
-            None => {
-                let left_bbox = fallback_bboxes.get(left).map(|b| b.as_slice());
-                let right_bbox = fallback_bboxes.get(right).map(|b| b.as_slice());
-                let analysis = analyze_with_bbox_fallback(
-                    *left,
-                    *right,
-                    left_bbox,
-                    right_bbox,
-                    options,
-                )
-                .unwrap_or(ExactPairAnalysis::default());
-                append_pair_relations((*left, *right), analysis, &mut relations);
-                continue;
-            }
-        };
-
-        // Convert cached meshes to csgrs solids
-        let left_csg = match to_csgrs_csg(left_mesh) {
-            Some(m) => m,
-            None => {
-                let left_bbox = fallback_bboxes.get(left).map(|b| b.as_slice());
-                let right_bbox = fallback_bboxes.get(right).map(|b| b.as_slice());
-                let analysis = analyze_with_bbox_fallback(
-                    *left,
-                    *right,
-                    left_bbox,
-                    right_bbox,
-                    options,
-                )
-                .unwrap_or(ExactPairAnalysis::default());
-                append_pair_relations((*left, *right), analysis, &mut relations);
-                continue;
-            }
-        };
-
-        let right_csg = match to_csgrs_csg(right_mesh) {
-            Some(m) => m,
-            None => {
-                let left_bbox = fallback_bboxes.get(left).map(|b| b.as_slice());
-                let right_bbox = fallback_bboxes.get(right).map(|b| b.as_slice());
-                let analysis = analyze_with_bbox_fallback(
-                    *left,
-                    *right,
-                    left_bbox,
-                    right_bbox,
-                    options,
-                )
-                .unwrap_or(ExactPairAnalysis::default());
-                append_pair_relations((*left, *right), analysis, &mut relations);
-                continue;
-            }
-        };
-
-        // Perform boolean intersection
-        let result = left_csg.intersection(&right_csg);
-        let intersects = !result.polygons.is_empty();
-
-        if intersects {
-            info!(
-                "csg: pair {} intersects with {} ({} polygons)",
-                left, right, result.polygons.len()
-            );
-            append_pair_relations(
-                (*left, *right),
-                ExactPairAnalysis {
-                    intersects: true,
-                    touches_within_tolerance: false,
-                    minimum_distance: None,
-                    interface: None,
-                },
-                &mut relations,
-            );
         }
+
+        // Process each pair in this batch
+        for &(left, right) in pair_chunk {
+            csg_pairs_processed += 1;
+            if csg_pairs_processed > max_csg_pairs {
+                info!(
+                    "csg: stopping CSG after {} pairs (capped), {} pairs remaining for bbox fallback",
+                    csg_pairs_processed - 1,
+                    total_pairs.saturating_sub(csg_pairs_processed - 1)
+                );
+                // Process remaining pairs with bbox fallback
+                for remaining in &unique_pairs[csg_pairs_processed - 1..] {
+                    let analysis = analyze_with_bbox_fallback(
+                        remaining.0,
+                        remaining.1,
+                        fallback_bboxes.get(&remaining.0).map(|b| b.as_slice()),
+                        fallback_bboxes.get(&remaining.1).map(|b| b.as_slice()),
+                        options,
+                    )
+                    .unwrap_or(ExactPairAnalysis::default());
+                    append_pair_relations((remaining.0, remaining.1), analysis, &mut relations);
+                }
+                break;
+            }
+
+            let left_mesh = match batch_meshes.get(&left) {
+                Some(m) => m,
+                None => {
+                    let analysis = analyze_with_bbox_fallback(
+                        left,
+                        right,
+                        fallback_bboxes.get(&left).map(|b| b.as_slice()),
+                        fallback_bboxes.get(&right).map(|b| b.as_slice()),
+                        options,
+                    )
+                    .unwrap_or(ExactPairAnalysis::default());
+                    append_pair_relations((left, right), analysis, &mut relations);
+                    continue;
+                }
+            };
+
+            let right_mesh = match batch_meshes.get(&right) {
+                Some(m) => m,
+                None => {
+                    let analysis = analyze_with_bbox_fallback(
+                        left,
+                        right,
+                        fallback_bboxes.get(&left).map(|b| b.as_slice()),
+                        fallback_bboxes.get(&right).map(|b| b.as_slice()),
+                        options,
+                    )
+                    .unwrap_or(ExactPairAnalysis::default());
+                    append_pair_relations((left, right), analysis, &mut relations);
+                    continue;
+                }
+            };
+
+            // Convert to csgrs CSG solids
+            let left_csg = match to_csgrs_csg(left_mesh) {
+                Some(m) => m,
+                None => {
+                    let analysis = analyze_with_bbox_fallback(
+                        left,
+                        right,
+                        fallback_bboxes.get(&left).map(|b| b.as_slice()),
+                        fallback_bboxes.get(&right).map(|b| b.as_slice()),
+                        options,
+                    )
+                    .unwrap_or(ExactPairAnalysis::default());
+                    append_pair_relations((left, right), analysis, &mut relations);
+                    continue;
+                }
+            };
+
+            let right_csg = match to_csgrs_csg(right_mesh) {
+                Some(m) => m,
+                None => {
+                    let analysis = analyze_with_bbox_fallback(
+                        left,
+                        right,
+                        fallback_bboxes.get(&left).map(|b| b.as_slice()),
+                        fallback_bboxes.get(&right).map(|b| b.as_slice()),
+                        options,
+                    )
+                    .unwrap_or(ExactPairAnalysis::default());
+                    append_pair_relations((left, right), analysis, &mut relations);
+                    continue;
+                }
+            };
+
+            // Perform boolean intersection
+            let result = left_csg.intersection(&right_csg);
+            let intersects = !result.polygons.is_empty();
+
+            if intersects {
+                info!(
+                    "csg: pair {} intersects with {} ({} polygons)",
+                    left,
+                    right,
+                    result.polygons.len()
+                );
+                append_pair_relations(
+                    (left, right),
+                    ExactPairAnalysis {
+                        intersects: true,
+                        touches_within_tolerance: false,
+                        minimum_distance: None,
+                        interface: None,
+                    },
+                    &mut relations,
+                );
+            }
+        }
+
+        // Meshes are dropped here — batch memory is freed before next batch
     }
 
     info!(
         "csg: processed {} CSG pairs, found {} intersection pairs, {} total relations",
         csg_pairs_processed,
-        relations.iter().filter(|r| r.kind == crate::GeometryRelationKind::IntersectingElement).count() / 2,
+        relations
+            .iter()
+            .filter(|r| r.kind == crate::GeometryRelationKind::IntersectingElement)
+            .count()
+            / 2,
         relations.len(),
     );
 
@@ -1560,9 +1530,7 @@ impl ExactGeometryKernel for CsgrsGeometryKernel {
         _right: EntityId,
         _options: &ExactCheckOptions,
     ) -> Result<ExactPairAnalysis, GeometryKernelError> {
-        tracing::warn!(
-            "CsgrsGeometryKernel::analyze_pair not efficient for single pairs"
-        );
+        tracing::warn!("CsgrsGeometryKernel::analyze_pair not efficient for single pairs");
         Ok(ExactPairAnalysis::default())
     }
 }
@@ -1575,10 +1543,7 @@ impl ExactGeometryKernel for CsgrsGeometryKernel {
 pub fn collect_mesh_bounding_boxes(
     step: &StepFile,
     element_ids: &[EntityId],
-) -> (
-    HashMap<EntityId, [f64; 6]>,
-    HashMap<EntityId, String>,
-) {
+) -> (HashMap<EntityId, [f64; 6]>, HashMap<EntityId, String>) {
     let mut bboxes = HashMap::new();
     let mut wkts = HashMap::new();
 
@@ -1599,14 +1564,7 @@ pub fn collect_mesh_bounding_boxes(
             continue;
         }
 
-        let mut bbox = [
-            f64::MAX,
-            f64::MAX,
-            f64::MAX,
-            f64::MIN,
-            f64::MIN,
-            f64::MIN,
-        ];
+        let mut bbox = [f64::MAX, f64::MAX, f64::MAX, f64::MIN, f64::MIN, f64::MIN];
         for chunk in mesh.vertices.chunks_exact(3) {
             bbox[0] = bbox[0].min(chunk[0]);
             bbox[1] = bbox[1].min(chunk[1]);
