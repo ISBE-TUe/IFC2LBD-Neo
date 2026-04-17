@@ -100,7 +100,32 @@
         }
       ],
       "trend": "stable"
+    },
+    "web/wasm-prototype/src/main.js": {
+      "latest": {
+        "commit": "3341a1d",
+        "timestamp": "2026-04-17T12:07:31.893Z",
+        "mi": 18.9,
+        "cognitive": 199,
+        "nesting": 9,
+        "lines": 280,
+        "maxCyclomatic": 78,
+        "entropy": 6.99
+      },
+      "history": [
+        {
+          "commit": "3341a1d",
+          "timestamp": "2026-04-17T12:07:31.893Z",
+          "mi": 18.9,
+          "cognitive": 199,
+          "nesting": 9,
+          "lines": 280,
+          "maxCyclomatic": 78,
+          "entropy": 6.99
+        }
+      ],
+      "trend": "stable"
     }
   },
-  "capturedAt": "2026-04-17T11:16:46.799Z"
+  "capturedAt": "2026-04-17T12:07:36.911Z"
 }

@@ -180,6 +180,8 @@ impl PipelineRunner {
             OutputFormat::Nquads => NQUADS_SERIALIZER_ID,
         };
         let sink_config = SinkConfig::from_request(request);
+        let stream_batch_size = options.stream_batch_size;
+        let ifcowl_max_workers = options.ifcowl_max_workers;
         let (output_files, sink_max_pending_bytes, sink_chunk_size_bytes) =
             export_browser_files_to_sink_streaming(
                 step,
@@ -207,8 +209,8 @@ impl PipelineRunner {
             warnings,
             telemetry: ConversionTelemetry {
                 execution_mode: execution_mode_str(mode).to_string(),
-                stream_batch_size: options.stream_batch_size,
-                ifcowl_max_workers: options.ifcowl_max_workers,
+                stream_batch_size,
+                ifcowl_max_workers,
                 sink_chunk_size_bytes,
                 sink_max_pending_bytes,
             },
