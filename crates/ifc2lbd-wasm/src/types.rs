@@ -210,6 +210,7 @@ pub struct ExecutionSettings {
     pub output_formats: OutputFormats,
     pub emit_ifcowl: bool,
     pub emit_topology: bool,
+    pub emit_full_topology: bool,
     pub emit_bbox: bool,
     pub nquads: NquadsModuleOptions,
     pub output_stem: String,

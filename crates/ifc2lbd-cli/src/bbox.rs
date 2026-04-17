@@ -12,6 +12,7 @@ use ifc_model::IfcModel;
 use ifc_step::{EntityId, StepFile, StepValue};
 use lbd_geometry::{BoundingBox, GeometryRelation, GeometryRelationKind};
 use rayon::prelude::*;
+use rstar::{RTree, RTreeObject, AABB};
 use serde::Serialize;
 
 use crate::mesh;
@@ -247,125 +248,141 @@ pub(crate) fn semantic_candidate_pairs(
     model: &IfcModel,
     step: &StepFile,
 ) -> (Vec<(EntityId, EntityId)>, HashMap<EntityId, [f64; 6]>) {
-    use std::collections::HashSet;
-    let mut by_space: HashMap<EntityId, Vec<EntityId>> = HashMap::new();
-    for boundary in &model.rel_space_boundaries {
-        let Some(element) = boundary.element else {
-            continue;
-        };
-        if model.elements.contains_key(&element) {
-            by_space.entry(boundary.space).or_default().push(element);
-        }
-    }
+    // Legacy function — delegates to the new R-tree based approach.
+    rtree_candidate_pairs(model, step)
+}
 
-    let mut pairs = HashSet::new();
-    for elements in by_space.values_mut() {
-        elements.sort_unstable();
-        elements.dedup();
-        for i in 0..elements.len() {
-            for j in (i + 1)..elements.len() {
-                let a = elements[i];
-                let b = elements[j];
-                let canonical = if a < b { (a, b) } else { (b, a) };
-                pairs.insert(canonical);
-            }
-        }
-    }
+// ---------------------------------------------------------------------------
+// R-tree based candidate pair generation
+// ---------------------------------------------------------------------------
 
-    // If we found pairs from space boundaries, return them (no bboxes needed — space boundary path).
-    if !pairs.is_empty() {
-        let mut out: Vec<_> = pairs.into_iter().collect();
-        out.sort_unstable();
-        return (out, HashMap::new());
-    }
+/// A spatially-indexed bounding box entry for the R-tree.
+/// Stores the element's EntityId and its approximate axis-aligned bbox.
+#[derive(Clone, Debug)]
+struct SpatialBbox {
+    entity_id: EntityId,
+    bbox: [f64; 6], // [xmin, ymin, zmin, xmax, ymax, zmax]
+}
 
-    // Fallback: no IfcRelSpaceBoundary records — group elements by storey/structure containment.
-    // Only consider structural/architectural elements that can generate bot:Interface.
-    // Furniture, MEP, and distribution elements never share structural surfaces.
-    tracing::info!(
-        "No IfcRelSpaceBoundary records found; falling back to storey-scoped candidate pairs (structural elements only)"
-    );
-    let mut by_structure: HashMap<EntityId, Vec<EntityId>> = HashMap::new();
-    for (&element_id, &structure_id) in &model.contained_in {
-        if let Some(node) = model.elements.get(&element_id) {
-            if is_structural_ifc_type(node.entity_name.as_str()) {
-                by_structure
-                    .entry(structure_id)
-                    .or_default()
-                    .push(element_id);
-            }
-        }
+impl RTreeObject for SpatialBbox {
+    type Envelope = AABB<[f64; 3]>;
+
+    fn envelope(&self) -> Self::Envelope {
+        AABB::from_corners(
+            [self.bbox[0], self.bbox[1], self.bbox[2]],
+            [self.bbox[3], self.bbox[4], self.bbox[5]],
+        )
     }
-    // Compute approximate bboxes for all candidate elements from STEP data (pure Rust, fast).
+}
+
+/// Generate candidate element pairs using R-tree spatial indexing.
+///
+/// Unlike the old storey-scoped approach, this finds ALL pairs of structural
+/// elements whose bounding boxes overlap — regardless of which storey they
+/// belong to. This correctly catches multi-storey columns, slab-to-wall
+/// connections across storeys, foundation-to-column connections, etc.
+///
+/// Returns (sorted candidate pairs, approximate bboxes per element).
+pub(crate) fn rtree_candidate_pairs(
+    model: &IfcModel,
+    step: &StepFile,
+) -> (Vec<(EntityId, EntityId)>, HashMap<EntityId, [f64; 6]>) {
+    let rtree_start = Instant::now();
+
+    // Step 1: Compute approximate bboxes for all structural elements.
     let mut element_bboxes: HashMap<EntityId, [f64; 6]> = HashMap::new();
-    for elements in by_structure.values() {
-        for &id in elements {
-            if let Some(bbox) = approximate_bbox(step, id) {
-                element_bboxes.insert(id, bbox);
-            }
+    for (&entity_id, node) in &model.elements {
+        if !is_structural_ifc_type(node.entity_name.as_str()) {
+            continue;
+        }
+        if let Some(bbox) = approximate_bbox(step, entity_id) {
+            element_bboxes.insert(entity_id, bbox);
         }
     }
 
-    // Generate pairs only where bboxes overlap (XY plane, 5cm tolerance).
-    // Adjacent elements share a face so their bboxes truly overlap; 5cm covers
-    // placement approximation errors without pairing distant elements.
-    const BBOX_TOLERANCE: f64 = 0.05; // 5cm — touching elements have overlapping bboxes
-    for elements in by_structure.values_mut() {
-        elements.sort_unstable();
-        elements.dedup();
-        for i in 0..elements.len() {
-            for j in (i + 1)..elements.len() {
-                let a = elements[i];
-                let b = elements[j];
-                // Require both elements to have a bbox. Elements without a bbox have
-                // complex/freeform geometry (furniture, MEP) or no geometry — skip them.
-                // Among elements with bboxes, only pair those whose bboxes overlap.
-                match (element_bboxes.get(&a), element_bboxes.get(&b)) {
-                    (Some(ba), Some(bb)) => {
-                        if !bboxes_overlap_3d(ba, bb, BBOX_TOLERANCE) {
-                            continue;
-                        }
-                    }
-                    _ => continue,
-                }
-                let canonical = if a < b { (a, b) } else { (b, a) };
-                pairs.insert(canonical);
+    let total_structural = element_bboxes.len();
+
+    // Step 2: Build R-tree from all structural element bboxes.
+    let entries: Vec<SpatialBbox> = element_bboxes
+        .iter()
+        .map(|(&entity_id, bbox)| SpatialBbox {
+            entity_id,
+            bbox: *bbox,
+        })
+        .collect();
+    let rtree: RTree<SpatialBbox> = RTree::bulk_load(entries);
+
+    // Step 3: Query overlapping pairs with 5cm tolerance.
+    // For each element, expand its bbox by the tolerance and find all overlapping
+    // entries. Collect unique canonical pairs (smaller ID first).
+    const BBOX_TOLERANCE: f64 = 0.05; // 5cm — covers placement approximation errors
+    let mut pairs = HashSet::new();
+    for (&entity_id, bbox) in &element_bboxes {
+        // Expand query envelope by tolerance
+        let query_envelope = AABB::from_corners(
+            [
+                bbox[0] - BBOX_TOLERANCE,
+                bbox[1] - BBOX_TOLERANCE,
+                bbox[2] - BBOX_TOLERANCE,
+            ],
+            [
+                bbox[3] + BBOX_TOLERANCE,
+                bbox[4] + BBOX_TOLERANCE,
+                bbox[5] + BBOX_TOLERANCE,
+            ],
+        );
+        for neighbor in rtree.locate_in_envelope_intersecting(&query_envelope) {
+            if neighbor.entity_id == entity_id {
+                continue;
             }
+            let canonical = if entity_id < neighbor.entity_id {
+                (entity_id, neighbor.entity_id)
+            } else {
+                (neighbor.entity_id, entity_id)
+            };
+            pairs.insert(canonical);
         }
     }
+
     if pairs.len() > 100_000 {
         tracing::warn!(
-            "storey-scoped candidate pairs ({}) exceeds 100k — this is unexpected after bbox filtering",
+            "R-tree candidate pairs ({}) exceeds 100k — consider stricter filtering",
             pairs.len()
         );
     }
 
     let mut out: Vec<_> = pairs.into_iter().collect();
     out.sort_unstable();
+
+    tracing::info!(
+        "R-tree broad-phase: {} structural elements, {} candidate pairs in {:.3}s",
+        total_structural,
+        out.len(),
+        rtree_start.elapsed().as_secs_f64(),
+    );
+
     (out, element_bboxes)
 }
 
-/// Voxel-based adjacency detection: extract meshes, voxelize, and check adjacency.
+/// Voxel-based adjacency detection with externally provided candidate pairs.
 ///
-/// 1. Generate candidate pairs (same as before: storey-scoped, bbox-filtered)
-/// 2. For each unique element in the pairs, extract its triangle mesh and voxelize it
-/// 3. For each candidate pair, check voxel adjacency
-/// 4. Return GeometryRelation::AdjacentElement for each adjacent pair
-/// Returns (relations, mesh_bboxes) where mesh_bboxes maps EntityId → [xmin,ymin,zmin,xmax,ymax,zmax]
-/// computed from the actual triangle mesh in world coordinates.
-pub(crate) fn voxel_adjacency_relations(
-    model: &IfcModel,
+/// For each unique element in the pairs, extract its triangle mesh, voxelize it,
+/// and check face-adjacency (6-connectivity) between each candidate pair.
+///
+/// Returns (relations, mesh_bboxes) where mesh_bboxes maps EntityId → world-space bbox
+/// computed from the actual triangle mesh.
+pub(crate) fn voxel_adjacency_relations_with_candidates(
     step: &StepFile,
+    candidate_pairs: &[(EntityId, EntityId)],
     cell_size: f64,
     max_element_voxels: usize,
 ) -> (Vec<GeometryRelation>, HashMap<EntityId, [f64; 6]>) {
-    let (candidates, _element_bboxes) = semantic_candidate_pairs(model, step);
     tracing::info!(
-        "voxel adjacency: {} candidate pairs from {} structural elements",
-        candidates.len(),
+        "voxel narrow-phase: {} candidate pairs from {} unique elements",
+        candidate_pairs.len(),
         {
             let mut ids = HashSet::new();
-            for (a, b) in &candidates {
+            for (a, b) in candidate_pairs {
                 ids.insert(*a);
                 ids.insert(*b);
             }
@@ -373,14 +390,14 @@ pub(crate) fn voxel_adjacency_relations(
         }
     );
 
-    if candidates.is_empty() {
+    if candidate_pairs.is_empty() {
         return (Vec::new(), HashMap::new());
     }
 
     // Collect unique element IDs
     let mut element_ids: Vec<EntityId> = {
         let mut ids = HashSet::new();
-        for (a, b) in &candidates {
+        for (a, b) in candidate_pairs {
             ids.insert(*a);
             ids.insert(*b);
         }
@@ -450,7 +467,7 @@ pub(crate) fn voxel_adjacency_relations(
 
     // Step 2: Check adjacency for all candidate pairs in parallel
     let adj_start = Instant::now();
-    let adjacent_pairs: Vec<(EntityId, EntityId)> = candidates
+    let adjacent_pairs: Vec<(EntityId, EntityId)> = candidate_pairs
         .par_iter()
         .filter_map(|&(a, b)| {
             let va = voxel_map.get(&a)?;
@@ -497,10 +514,57 @@ pub(crate) fn voxel_adjacency_relations(
     }
 
     tracing::info!(
-        "adjacency check: {} adjacent pairs found from {} candidates in {:.3}s",
+        "voxel narrow-phase: {} adjacent pairs found from {} candidates in {:.3}s",
         adjacent_pairs.len(),
-        candidates.len(),
+        candidate_pairs.len(),
         adj_start.elapsed().as_secs_f64(),
+    );
+
+    (relations, mesh_bboxes)
+}
+
+/// Legacy voxel adjacency function — uses R-tree candidate generation internally.
+pub(crate) fn voxel_adjacency_relations(
+    model: &IfcModel,
+    step: &StepFile,
+    cell_size: f64,
+    max_element_voxels: usize,
+) -> (Vec<GeometryRelation>, HashMap<EntityId, [f64; 6]>) {
+    let (candidates, _) = rtree_candidate_pairs(model, step);
+    voxel_adjacency_relations_with_candidates(step, &candidates, cell_size, max_element_voxels)
+}
+
+// ---------------------------------------------------------------------------
+// Combined R-tree + Voxel topology pipeline
+// ---------------------------------------------------------------------------
+
+/// Two-stage topology detection pipeline:
+///   Stage 1 (broad-phase): R-tree spatial indexing finds all element pairs
+///            whose approximate bboxes overlap (no storey constraint).
+///   Stage 2 (narrow-phase): Voxel adjacency confirms actual surface contact
+///            between candidate pairs.
+///
+/// Returns (geometry relations, mesh bboxes in world coordinates).
+pub(crate) fn rtree_voxel_topology_relations(
+    model: &IfcModel,
+    step: &StepFile,
+    cell_size: f64,
+    max_element_voxels: usize,
+) -> (Vec<GeometryRelation>, HashMap<EntityId, [f64; 6]>) {
+    let total_start = Instant::now();
+
+    // Stage 1: R-tree broad-phase
+    let (candidates, _approx_bboxes) = rtree_candidate_pairs(model, step);
+
+    // Stage 2: Voxel narrow-phase
+    let (relations, mesh_bboxes) =
+        voxel_adjacency_relations_with_candidates(step, &candidates, cell_size, max_element_voxels);
+
+    tracing::info!(
+        "R-tree + Voxel pipeline: {} broad-phase → {} confirmed relations in {:.3}s",
+        candidates.len(),
+        relations.len(),
+        total_start.elapsed().as_secs_f64(),
     );
 
     (relations, mesh_bboxes)

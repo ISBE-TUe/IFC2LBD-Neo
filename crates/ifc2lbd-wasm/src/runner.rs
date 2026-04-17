@@ -466,12 +466,14 @@ impl PipelineRunner {
     ) -> ConvertOptions {
         let stream_batch_size = effective_stream_batch_size(mode, request);
         let ifcowl_max_workers = effective_ifcowl_workers(mode, request);
-        // When Bbox enricher is active, enable topology extension (adjacency from bboxes)
-        let enable_topology_extension = settings.emit_bbox;
+        // FullTopology uses topology extension (adjacency from bboxes).
+        // IfcTopology lite does NOT use extension.
+        // Bbox standalone does NOT enable topology — it only adds geometry triples to LBD.
+        let enable_topology_extension = settings.emit_full_topology;
         ConvertOptions {
             base_uri: base_uri.to_string(),
             emit_ifcowl_links: settings.emit_ifcowl,
-            enable_topology: settings.emit_topology || settings.emit_bbox,
+            enable_topology: settings.emit_topology,
             enable_topology_extension,
             topology_only: false,
             suppress_non_topology_fallback: false,
@@ -1673,9 +1675,18 @@ fn nquads_to_sink(
                 }
                 if evt.plugin_id != IFC_TOPOLOGY_PRODUCER_ID {
                     emit_stage_event(
-                        sink, evt.plugin_id, evt.stage, "success",
-                        evt.duration_ms, 0,
-                        triple_count_for!(evt.plugin_id, lbd_triple_count, ifcowl_triple_count, topology_triple_count),
+                        sink,
+                        evt.plugin_id,
+                        evt.stage,
+                        "success",
+                        evt.duration_ms,
+                        0,
+                        triple_count_for!(
+                            evt.plugin_id,
+                            lbd_triple_count,
+                            ifcowl_triple_count,
+                            topology_triple_count
+                        ),
                         None,
                     )?;
                 }
@@ -1683,7 +1694,16 @@ fn nquads_to_sink(
 
             // Emit topology success with CORRECT triple count (now final)
             if topology_produce_ms > 0 {
-                emit_stage_event(sink, IFC_TOPOLOGY_PRODUCER_ID, "Produce", "success", topology_produce_ms, 0, topology_triple_count, None)?;
+                emit_stage_event(
+                    sink,
+                    IFC_TOPOLOGY_PRODUCER_ID,
+                    "Produce",
+                    "success",
+                    topology_produce_ms,
+                    0,
+                    topology_triple_count,
+                    None,
+                )?;
             }
 
             for _ in 0..n_fwd {

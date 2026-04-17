@@ -7,7 +7,7 @@ mod tests {
     use crate::types::ConversionRequest;
     use lbd_pipeline::{
         BBOX_ENRICHER_ID, FILE_EXPORT_ID, IFCOWL_PRODUCER_ID, LBD_PRODUCER_ID,
-        NQUADS_SERIALIZER_ID, IFC_TOPOLOGY_PRODUCER_ID, TURTLE_SERIALIZER_ID,
+        NQUADS_SERIALIZER_ID, IFC_TOPOLOGY_PRODUCER_ID, TOPOLOGY_FULL_PRODUCER_ID, TURTLE_SERIALIZER_ID,
     };
 
     fn tiny_ifc() -> Vec<u8> {
@@ -28,7 +28,7 @@ mod tests {
         assert!(ids.contains(FILE_EXPORT_ID));
         assert!(ids.contains(IFC_TOPOLOGY_PRODUCER_ID));
         assert!(ids.contains(BBOX_ENRICHER_ID));
-        assert!(!ids.contains("neo-topology-full-producer"));
+        assert!(ids.contains(TOPOLOGY_FULL_PRODUCER_ID));
     }
 
     #[test]

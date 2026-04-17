@@ -11,7 +11,7 @@ use lbd_pipeline::{
     PluginRegistry, ProducerError, ProducerPlugin, SerializeStats, SerializerError,
     SerializerPlugin, TaggedBatch, BBOX_ENRICHER_ID, FILE_EXPORT_ID, IFCOWL_PRODUCER_ID,
     IFC_TOPOLOGY_PRODUCER_ID, LBD_PRODUCER_ID, NQUADS_CHUNKED_SERIALIZER_ID, NQUADS_SERIALIZER_ID,
-    TURTLE_SERIALIZER_ID,
+    TOPOLOGY_FULL_PRODUCER_ID, TURTLE_SERIALIZER_ID,
 };
 use lbd_serializer::{
     serialize_nquads_batches_to_writer, serialize_turtle_batch_raw_to_writer,
@@ -56,6 +56,10 @@ pub(crate) fn module_option_keys(module_id: &str) -> Vec<String> {
         TURTLE_SERIALIZER_ID => vec!["grouping".to_string()],
         FILE_EXPORT_ID => vec!["output_stem".to_string()],
         BBOX_ENRICHER_ID => vec!["inflation_threshold".to_string()],
+        TOPOLOGY_FULL_PRODUCER_ID => vec![
+            "geometry_tolerance".to_string(),
+            "inflation_threshold".to_string(),
+        ],
         _ => Vec::new(),
     }
 }
@@ -68,6 +72,9 @@ pub(crate) fn browser_registry() -> PluginRegistry {
         .register_producer(IfcTopologyProducerPlugin)
         .unwrap();
     registry.register_producer(BboxEnricherPlugin).unwrap();
+    registry
+        .register_producer(TopologyFullProducerPlugin)
+        .unwrap();
     registry
         .register_serializer(TurtleSerializerPlugin)
         .unwrap();
@@ -288,7 +295,8 @@ impl ProducerPlugin for IfcTopologyProducerPlugin {
 }
 
 // ---------------------------------------------------------------------------
-// Bbox Enricher
+// Bbox Enricher — adds bounding-box geometry triples (geo:asWKT, hasBoundingBox)
+// to the LBD output. Standalone: does NOT implicitly enable topology.
 // ---------------------------------------------------------------------------
 
 struct BboxEnricherPlugin;
@@ -299,10 +307,10 @@ impl PipelinePlugin for BboxEnricherPlugin {
             id: BBOX_ENRICHER_ID,
             display_name: "Bbox",
             stage: PipelineStage::Produce,
-            description: "Adds bbox geometry enrichment for topology adjacency detection.",
+            description: "Adds bounding-box geometry triples (GeoSPARQL WKT) to LBD output.",
             inputs: vec!["ifc-model", "step-file"],
             outputs: vec!["bbox-geometry"],
-            requires: vec![LBD_PRODUCER_ID, IFC_TOPOLOGY_PRODUCER_ID],
+            requires: vec![LBD_PRODUCER_ID],
             conflicts_with: vec![],
             failure_policy: FailurePolicy::Optional,
             parallelism: ParallelismMode::ParallelByPartition,
@@ -319,6 +327,44 @@ impl ProducerPlugin for BboxEnricherPlugin {
     ) -> Result<(), ProducerError> {
         Err(ProducerError::Conversion(
             "BboxEnricherPlugin::produce() not yet wired through PipelineRunner in WASM"
+                .to_string(),
+        ))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Topology Full — IfcTopology + bbox-based adjacency/intersection detection
+// Produces enriched topology with bot:adjacentElement, bot:intersectingElement edges.
+// ---------------------------------------------------------------------------
+
+struct TopologyFullProducerPlugin;
+
+impl PipelinePlugin for TopologyFullProducerPlugin {
+    fn manifest(&self) -> PluginManifest {
+        PluginManifest {
+            id: TOPOLOGY_FULL_PRODUCER_ID,
+            display_name: "TopologyFull",
+            stage: PipelineStage::Produce,
+            description: "Full topology with bbox-derived adjacency and intersection detection.",
+            inputs: vec!["ifc-model", "step-file"],
+            outputs: vec!["topology-triples", "adjacency-relations"],
+            requires: vec![],
+            conflicts_with: vec![IFC_TOPOLOGY_PRODUCER_ID],
+            failure_policy: FailurePolicy::Optional,
+            parallelism: ParallelismMode::ParallelByPartition,
+            wasm_compatible: true,
+        }
+    }
+}
+
+impl ProducerPlugin for TopologyFullProducerPlugin {
+    fn produce(
+        &self,
+        _ctx: &PipelineContext,
+        _sender: &Sender<TaggedBatch>,
+    ) -> Result<(), ProducerError> {
+        Err(ProducerError::Conversion(
+            "TopologyFullProducerPlugin::produce() not yet wired through PipelineRunner in WASM"
                 .to_string(),
         ))
     }
