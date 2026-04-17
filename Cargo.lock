@@ -693,6 +693,7 @@ dependencies = [
  "ifc-step",
  "js-sys",
  "lbd-converter",
+ "lbd-ontology",
  "lbd-pipeline",
  "lbd-serializer",
  "rayon",
@@ -831,6 +832,9 @@ version = "0.1.0"
 name = "lbd-pipeline"
 version = "0.1.0"
 dependencies = [
+ "crossbeam",
+ "lbd-ontology",
+ "rayon",
  "serde",
  "thiserror",
 ]

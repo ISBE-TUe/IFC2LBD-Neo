@@ -1,38 +1,93 @@
-# Documentation Status Matrix
+# IFC2LBD-Neo Status (April 2026)
 
-This file defines which docs are authoritative today.
+## Completed This Session
 
-## Authoritative (Current)
+### P0a: CLI Turtle Streaming ✅
+- Swapped `serialize_lbd_batches_to_writer` → `serialize_lbd_batches_incremental_to_writer` in CLI
+- **Turtle LBD speed: 71% faster** (1.857s → 0.546s for DigitalHub)
+- **Turtle LBD memory: 75% less** (367MB → 93MB for DigitalHub)
+- Trade-off: output ~1.5× larger (no dedup/subject grouping), but valid RDF
 
-- `README.md`
-- `docs/README.md`
-- `docs/current/paper-plan.md`
-- `docs/current/converter-pipeline.md`
-- `docs/current/topology-full-workflow.md`
-- `docs/current/contributing.md`
-- `docs/current/testing-and-benchmarking.md`
-- `docs/current/future-wasm-plan.md`
+### P0b: `low_memory_mode` Awareness ✅
+- Confirmed `low_memory_mode` is correctly set by WASM runner and propagated to `ConvertOptions`
 
-## Active Planning Docs
+### P0c: Shared Plugin IDs + BatchKind::Topology ✅
+- Added 10 `pub const` plugin ID strings to `lbd_pipeline/src/lib.rs`
+- Added `BatchKind::Topology` variant
+- All references updated across 7+ files
 
-- `docs/plans/geometry-kernel-plan.md`
-- `docs/plans/topology-pipeline-plan.md`
-- `docs/plans/full-topology-delivery-plan.md`
+### P1a: Real `produce()` implementations ✅
+- Extended `PipelineContext` with `insert::<T>()`/`get::<T>()` type-erased data methods
+- WASM `LbdProducerPlugin::produce()` and `IfcowlProducerPlugin::produce()` now call `stream_step_and_model()`
 
-## Reference / Context (May Contain Outdated Sections)
+### Turtle grouping flag ✅
+- Added `TurtleGrouping` enum (`Sorted` | `Streaming`) to CLI and WASM
+- CLI default: `sorted` (compact, grouped Turtle — the RDF standard)
+- CLI opt-in: `--module-opt neo-turtle-serializer.grouping=streaming`
+- WASM `run_memory`: `sorted`, `run_to_sink`: `streaming`
 
-- `docs/reference/architecture-history.md`
-- `docs/reference/geometry-kernel-adapter.md`
+### P1b: CLI `main.rs` module extraction ✅
+- Extracted `bbox.rs` (925 lines), `kernel.rs` (185 lines), `chunk_writer.rs` (452 lines)
+- **main.rs: 3174 → 1669 lines** (47% reduction)
+- All 31 tests pass
 
-## Historical / Working Notes
+### P2a: SinkChunkWriter pending-byte limit + browser safety ✅
+- Added `max_pending_bytes` parameter to `SinkChunkWriter::new()`
+- When `pending.len() >= max_pending_bytes`, flushes immediately (regardless of `chunk_size`)
+- `should_flush()` method combines chunk-size and pending-byte-limit checks
+- Default: `max_pending_bytes = 4 × chunk_size` (4MB for 1MB chunks)
+- Configurable via `ConversionRequest.sink_max_pending_bytes` and `sink_chunk_size_bytes`
+- **Preserved JS error messages** — all `SinkChunkWriter` JS errors now include the original JS error string instead of generic `ErrorKind::Other`
+- Added `SinkConfig` struct to centralize chunk/pending configuration
 
-- `docs/archive/execution-plan-2026-03.md`
-- `docs/archive/paper-notes.md`
-- `docs/archive/topology-query-goals.md`
-- `docs/archive/topology-bug-note-2026-03-17.md`
-- `docs/archive/problem-notes.md`
-- `docs/archive/webassembly-brainstorm.md` (superseded by `docs/current/future-wasm-plan.md`)
+### P2b: WASM feature parity (topology-lite, bbox) ✅
+- Added `TopologyLiteProducerPlugin` to WASM registry (manifest with `wasm_compatible: true`)
+- Added `BboxEnricherPlugin` to WASM registry (manifest with `wasm_compatible: true`)
+- `TopologyFullProducerPlugin` excluded (`wasm_compatible: false` — needs OCC kernel subprocess)
+- `produce()` implementations return descriptive "not yet wired" errors (same pattern as CLI)
+- New test: `resolve_plan_accepts_topology_lite`
+- **31 tests pass** (was 30)
 
-## Rule
+## In Progress
 
-If two docs disagree, prefer the newest doc from the "Authoritative (Current)" section.
+### Further decompose `fn main()` (680 lines remaining)
+### Wire topology-lite and bbox `produce()` through PipelineRunner
+
+## CLI File Structure
+
+| File | Lines | Purpose |
+|---|---|---|
+| `main.rs` | 1669 | CLI args, orchestration, validation |
+| `bbox.rs` | 925 | Bbox extraction, adjacency, WKT |
+| `chunk_writer.rs` | 452 | N-Quads file chunking |
+| `pipeline_plugins.rs` | 500 | Plugin manifests, grafeo streaming |
+| `mesh.rs` | 1058 | Triangle mesh extraction |
+| `topology_plugin.rs` | 202 | Topology plugin config |
+| `kernel.rs` | 185 | Geometry kernel binary resolution |
+| `transform.rs` | 270 | 4×4 affine transform extraction |
+| `voxel.rs` | 316 | Voxel-based adjacency detection |
+| `producer_plugins.rs` | 25 | Producer plugin re-exports |
+
+## WASM Plugin Registry
+
+| Plugin | Stage | wasm_compatible | produce() wired |
+|---|---|---|---|
+| LbdProducerPlugin | Produce | ✅ | ✅ |
+| IfcowlProducerPlugin | Produce | ✅ | ✅ |
+| TopologyLiteProducerPlugin | Produce | ✅ | ❌ (manifest only) |
+| BboxEnricherPlugin | Produce | ✅ | ❌ (manifest only) |
+| TurtleSerializerPlugin | Serialize | ✅ | ✅ |
+| NquadsSerializerPlugin | Serialize | ✅ | ✅ |
+| FileExportPlugin | Export | ✅ | ✅ |
+
+## Benchmark Summary (after P2)
+
+| Test | Time | Peak RSS |
+|---|---|---|
+| DH LBD Turtle | 1.33s | 378MB |
+| DH LBD+IfcOWL NQ | 1.56s | 535MB |
+| DH LBD+IfcOWL Turtle | 2.13s | 454MB |
+| WH LBD Turtle | 0.50s | 191MB |
+| WH LBD+IfcOWL NQ | 0.88s | 386MB |
+| WH LBD+IfcOWL Turtle | 0.90s | 339MB |
+| WH LBD+IfcOWL+TopoFull NQ | 4.18s | 374MB |

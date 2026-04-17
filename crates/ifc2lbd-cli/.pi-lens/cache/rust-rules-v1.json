@@ -1,0 +1,49 @@
+{
+  "version": "v1",
+  "timestamp": 1776423831445,
+  "ruleHash": "e3b0c44298fc1c14",
+  "queries": [
+    {
+      "id": "rust-clone-in-loop",
+      "name": "Clone in Hot Loop",
+      "severity": "info",
+      "language": "rust",
+      "message": "clone() in loop may hurt performance — consider borrowing or moving",
+      "query": "  (for_expression\n    body: (block\n      (call_expression\n        function: (field_expression\n          field: (field_identifier) @METHOD)\n        (#eq? @METHOD \"clone\")) @CALL))",
+      "metavars": [
+        "METHOD",
+        "CALL"
+      ],
+      "defect_class": "safety",
+      "inline_tier": "warning"
+    },
+    {
+      "id": "rust-lock-held-across-await",
+      "name": "Lock Held Across Await",
+      "severity": "warning",
+      "language": "rust",
+      "message": "Lock guard may be held across await — release lock before awaiting other work",
+      "query": "  (block\n    (let_declaration\n      pattern: (identifier) @GUARD\n      value: (await_expression\n        expression: (call_expression\n          function: (field_expression\n            field: (field_identifier) @LOCKFN))))\n    (_)*\n    (await_expression) @LATER_AWAIT)\n  (#eq? @LOCKFN \"lock\")",
+      "metavars": [
+        "GUARD",
+        "LOCKFN",
+        "LATER_AWAIT"
+      ],
+      "defect_class": "async-misuse",
+      "inline_tier": "warning"
+    },
+    {
+      "id": "rust-unwrap",
+      "name": "Unwrap Instead of Proper Error Handling",
+      "severity": "error",
+      "language": "rust",
+      "message": "unwrap() can panic — use ? or match for proper error handling",
+      "query": "  (call_expression\n    function: (field_expression\n      field: (field_identifier) @METHOD)\n    (#eq? @METHOD \"unwrap\"))",
+      "metavars": [
+        "METHOD"
+      ],
+      "defect_class": "correctness",
+      "inline_tier": "blocking"
+    }
+  ]
+}

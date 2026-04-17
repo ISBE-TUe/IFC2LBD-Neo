@@ -1,0 +1,544 @@
+{
+  "success": true,
+  "clones": [
+    {
+      "fileA": "web/wasm-prototype/src/wasm/ifc2lbd_wasm.js",
+      "startA": 180,
+      "fileB": "web/wasm-prototype/src/wasm/ifc2lbd_wasm.js",
+      "startB": 162,
+      "lines": 7,
+      "tokens": 0
+    },
+    {
+      "fileA": "crates/lbd-converter/src/modules/ifcowl.rs",
+      "startA": 42,
+      "fileB": "crates/lbd-converter/src/modules/ifcowl.rs",
+      "startB": 11,
+      "lines": 8,
+      "tokens": 0
+    },
+    {
+      "fileA": "crates/lbd-converter/src/modules/ifcowl.rs",
+      "startA": 60,
+      "fileB": "crates/lbd-converter/src/modules/ifcowl.rs",
+      "startB": 18,
+      "lines": 12,
+      "tokens": 0
+    },
+    {
+      "fileA": "crates/ifc2lbd-cli/src/bin/compare_turtle.rs",
+      "startA": 325,
+      "fileB": "crates/ifc2lbd-cli/src/bin/compare_turtle.rs",
+      "startB": 217,
+      "lines": 15,
+      "tokens": 0
+    },
+    {
+      "fileA": "vendor/chijin/src/shape.rs",
+      "startA": 570,
+      "fileB": "vendor/chijin/src/shape.rs",
+      "startB": 539,
+      "lines": 26,
+      "tokens": 0
+    },
+    {
+      "fileA": "vendor/chijin/src/shape.rs",
+      "startA": 602,
+      "fileB": "vendor/chijin/src/shape.rs",
+      "startB": 539,
+      "lines": 25,
+      "tokens": 0
+    },
+    {
+      "fileA": "vendor/chijin/src/shape.rs",
+      "startA": 679,
+      "fileB": "vendor/chijin/src/shape.rs",
+      "startB": 461,
+      "lines": 15,
+      "tokens": 0
+    },
+    {
+      "fileA": "vendor/chijin/examples/stretch.rs",
+      "startA": 16,
+      "fileB": "vendor/chijin/src/utils.rs",
+      "startB": 6,
+      "lines": 13,
+      "tokens": 0
+    },
+    {
+      "fileA": "vendor/chijin/examples/stretch.rs",
+      "startA": 31,
+      "fileB": "vendor/chijin/src/utils.rs",
+      "startB": 51,
+      "lines": 13,
+      "tokens": 0
+    },
+    {
+      "fileA": "crates/lbd-serializer/src/lib.rs",
+      "startA": 541,
+      "fileB": "crates/lbd-serializer/src/lib.rs",
+      "startB": 92,
+      "lines": 7,
+      "tokens": 0
+    },
+    {
+      "fileA": "crates/lbd-serializer/src/lib.rs",
+      "startA": 554,
+      "fileB": "crates/lbd-serializer/src/lib.rs",
+      "startB": 104,
+      "lines": 18,
+      "tokens": 0
+    },
+    {
+      "fileA": "crates/lbd-serializer/src/lib.rs",
+      "startA": 687,
+      "fileB": "crates/lbd-serializer/src/lib.rs",
+      "startB": 617,
+      "lines": 13,
+      "tokens": 0
+    },
+    {
+      "fileA": "crates/ifc2lbd-wasm/src/tests.rs",
+      "startA": 97,
+      "fileB": "crates/ifc2lbd-wasm/src/tests.rs",
+      "startB": 65,
+      "lines": 17,
+      "tokens": 0
+    },
+    {
+      "fileA": "crates/ifc2lbd-wasm/src/sink.rs",
+      "startA": 129,
+      "fileB": "crates/ifc2lbd-wasm/src/sink.rs",
+      "startB": 89,
+      "lines": 7,
+      "tokens": 0
+    },
+    {
+      "fileA": "crates/ifc2lbd-wasm/src/runner.rs",
+      "startA": 157,
+      "fileB": "crates/ifc2lbd-wasm/src/runner.rs",
+      "startB": 51,
+      "lines": 18,
+      "tokens": 0
+    },
+    {
+      "fileA": "crates/ifc2lbd-wasm/src/runner.rs",
+      "startA": 195,
+      "fileB": "crates/ifc2lbd-wasm/src/runner.rs",
+      "startB": 127,
+      "lines": 18,
+      "tokens": 0
+    },
+    {
+      "fileA": "crates/ifc2lbd-wasm/src/runner.rs",
+      "startA": 309,
+      "fileB": "crates/ifc2lbd-wasm/src/runner.rs",
+      "startB": 223,
+      "lines": 7,
+      "tokens": 0
+    },
+    {
+      "fileA": "crates/ifc2lbd-wasm/src/runner.rs",
+      "startA": 600,
+      "fileB": "crates/ifc2lbd-wasm/src/runner.rs",
+      "startB": 342,
+      "lines": 11,
+      "tokens": 0
+    },
+    {
+      "fileA": "crates/ifc2lbd-wasm/src/runner.rs",
+      "startA": 619,
+      "fileB": "crates/ifc2lbd-wasm/src/runner.rs",
+      "startB": 363,
+      "lines": 10,
+      "tokens": 0
+    },
+    {
+      "fileA": "crates/ifc2lbd-wasm/src/runner.rs",
+      "startA": 646,
+      "fileB": "crates/ifc2lbd-wasm/src/runner.rs",
+      "startB": 374,
+      "lines": 6,
+      "tokens": 0
+    },
+    {
+      "fileA": "crates/ifc2lbd-wasm/src/runner.rs",
+      "startA": 662,
+      "fileB": "crates/ifc2lbd-wasm/src/runner.rs",
+      "startB": 388,
+      "lines": 6,
+      "tokens": 0
+    },
+    {
+      "fileA": "crates/ifc2lbd-wasm/src/runner.rs",
+      "startA": 665,
+      "fileB": "crates/ifc2lbd-wasm/src/runner.rs",
+      "startB": 649,
+      "lines": 9,
+      "tokens": 0
+    },
+    {
+      "fileA": "crates/ifc2lbd-wasm/src/runner.rs",
+      "startA": 714,
+      "fileB": "crates/ifc2lbd-wasm/src/runner.rs",
+      "startB": 413,
+      "lines": 13,
+      "tokens": 0
+    },
+    {
+      "fileA": "crates/ifc2lbd-wasm/src/runner.rs",
+      "startA": 746,
+      "fileB": "crates/ifc2lbd-wasm/src/runner.rs",
+      "startB": 448,
+      "lines": 9,
+      "tokens": 0
+    },
+    {
+      "fileA": "crates/ifc2lbd-wasm/src/runner.rs",
+      "startA": 769,
+      "fileB": "crates/ifc2lbd-wasm/src/runner.rs",
+      "startB": 489,
+      "lines": 14,
+      "tokens": 0
+    },
+    {
+      "fileA": "crates/ifc2lbd-wasm/src/runner.rs",
+      "startA": 864,
+      "fileB": "crates/ifc2lbd-wasm/src/runner.rs",
+      "startB": 768,
+      "lines": 14,
+      "tokens": 0
+    },
+    {
+      "fileA": "crates/ifc2lbd-wasm/src/plugins.rs",
+      "startA": 182,
+      "fileB": "crates/ifc2lbd-wasm/src/plugins.rs",
+      "startB": 115,
+      "lines": 9,
+      "tokens": 0
+    },
+    {
+      "fileA": "crates/ifc2lbd-wasm/src/plugins.rs",
+      "startA": 390,
+      "fileB": "crates/ifc2lbd-wasm/src/plugins.rs",
+      "startB": 346,
+      "lines": 10,
+      "tokens": 0
+    },
+    {
+      "fileA": "crates/ifc2lbd-cli/src/transform.rs",
+      "startA": 220,
+      "fileB": "crates/ifc2lbd-cli/src/voxel.rs",
+      "startB": 240,
+      "lines": 20,
+      "tokens": 0
+    },
+    {
+      "fileA": "crates/ifc2lbd-cli/src/pipeline_plugins.rs",
+      "startA": 14,
+      "fileB": "crates/ifc2lbd-wasm/src/plugins.rs",
+      "startB": 62,
+      "lines": 9,
+      "tokens": 0
+    },
+    {
+      "fileA": "crates/ifc2lbd-cli/src/pipeline_plugins.rs",
+      "startA": 22,
+      "fileB": "crates/ifc2lbd-wasm/src/plugins.rs",
+      "startB": 67,
+      "lines": 11,
+      "tokens": 0
+    },
+    {
+      "fileA": "crates/ifc2lbd-cli/src/pipeline_plugins.rs",
+      "startA": 46,
+      "fileB": "crates/ifc2lbd-wasm/src/plugins.rs",
+      "startB": 95,
+      "lines": 24,
+      "tokens": 0
+    },
+    {
+      "fileA": "crates/ifc2lbd-cli/src/pipeline_plugins.rs",
+      "startA": 78,
+      "fileB": "crates/ifc2lbd-wasm/src/plugins.rs",
+      "startB": 164,
+      "lines": 22,
+      "tokens": 0
+    },
+    {
+      "fileA": "crates/ifc2lbd-cli/src/pipeline_plugins.rs",
+      "startA": 96,
+      "fileB": "crates/ifc2lbd-cli/src/pipeline_plugins.rs",
+      "startB": 66,
+      "lines": 13,
+      "tokens": 0
+    },
+    {
+      "fileA": "crates/ifc2lbd-cli/src/pipeline_plugins.rs",
+      "startA": 108,
+      "fileB": "crates/ifc2lbd-wasm/src/plugins.rs",
+      "startB": 254,
+      "lines": 11,
+      "tokens": 0
+    },
+    {
+      "fileA": "crates/ifc2lbd-cli/src/pipeline_plugins.rs",
+      "startA": 126,
+      "fileB": "crates/ifc2lbd-cli/src/pipeline_plugins.rs",
+      "startB": 66,
+      "lines": 13,
+      "tokens": 0
+    },
+    {
+      "fileA": "crates/ifc2lbd-cli/src/pipeline_plugins.rs",
+      "startA": 156,
+      "fileB": "crates/ifc2lbd-cli/src/pipeline_plugins.rs",
+      "startB": 66,
+      "lines": 13,
+      "tokens": 0
+    },
+    {
+      "fileA": "crates/ifc2lbd-cli/src/pipeline_plugins.rs",
+      "startA": 168,
+      "fileB": "crates/ifc2lbd-wasm/src/plugins.rs",
+      "startB": 291,
+      "lines": 22,
+      "tokens": 0
+    },
+    {
+      "fileA": "crates/ifc2lbd-cli/src/pipeline_plugins.rs",
+      "startA": 186,
+      "fileB": "crates/ifc2lbd-cli/src/pipeline_plugins.rs",
+      "startB": 66,
+      "lines": 13,
+      "tokens": 0
+    },
+    {
+      "fileA": "crates/ifc2lbd-cli/src/pipeline_plugins.rs",
+      "startA": 204,
+      "fileB": "crates/ifc2lbd-wasm/src/plugins.rs",
+      "startB": 334,
+      "lines": 16,
+      "tokens": 0
+    },
+    {
+      "fileA": "crates/ifc2lbd-cli/src/pipeline_plugins.rs",
+      "startA": 237,
+      "fileB": "crates/ifc2lbd-wasm/src/plugins.rs",
+      "startB": 380,
+      "lines": 14,
+      "tokens": 0
+    },
+    {
+      "fileA": "crates/ifc2lbd-cli/src/pipeline_plugins.rs",
+      "startA": 247,
+      "fileB": "crates/ifc2lbd-cli/src/pipeline_plugins.rs",
+      "startB": 216,
+      "lines": 14,
+      "tokens": 0
+    },
+    {
+      "fileA": "crates/ifc2lbd-cli/src/pipeline_plugins.rs",
+      "startA": 308,
+      "fileB": "crates/ifc2lbd-cli/src/pipeline_plugins.rs",
+      "startB": 278,
+      "lines": 13,
+      "tokens": 0
+    },
+    {
+      "fileA": "crates/ifc2lbd-cli/src/pipeline_plugins.rs",
+      "startA": 338,
+      "fileB": "crates/ifc2lbd-cli/src/pipeline_plugins.rs",
+      "startB": 278,
+      "lines": 13,
+      "tokens": 0
+    },
+    {
+      "fileA": "crates/ifc2lbd-cli/src/bbox.rs",
+      "startA": 128,
+      "fileB": "crates/ifc2lbd-cli/src/transform.rs",
+      "startB": 159,
+      "lines": 15,
+      "tokens": 0
+    },
+    {
+      "fileA": "crates/ifc2lbd-cli/src/bbox.rs",
+      "startA": 171,
+      "fileB": "crates/ifc2lbd-cli/src/bbox.rs",
+      "startB": 159,
+      "lines": 10,
+      "tokens": 0
+    },
+    {
+      "fileA": "crates/ifc2lbd-cli/src/bbox.rs",
+      "startA": 313,
+      "fileB": "crates/ifc2lbd-cli/src/bbox.rs",
+      "startB": 262,
+      "lines": 8,
+      "tokens": 0
+    },
+    {
+      "fileA": "crates/ifc-step/src/header.rs",
+      "startA": 146,
+      "fileB": "crates/ifc-step/src/header.rs",
+      "startB": 120,
+      "lines": 13,
+      "tokens": 0
+    },
+    {
+      "fileA": "scripts/run_large_nq_modes.py",
+      "startA": 1,
+      "fileB": "scripts/run_large_ttl_modes.py",
+      "startB": 1,
+      "lines": 24,
+      "tokens": 0
+    },
+    {
+      "fileA": "scripts/run_large_nq_modes.py",
+      "startA": 38,
+      "fileB": "scripts/run_large_ttl_modes.py",
+      "startB": 43,
+      "lines": 10,
+      "tokens": 0
+    },
+    {
+      "fileA": "scripts/run_large_nq_modes.py",
+      "startA": 70,
+      "fileB": "scripts/run_large_ttl_modes.py",
+      "startB": 69,
+      "lines": 12,
+      "tokens": 0
+    },
+    {
+      "fileA": "scripts/run_large_nq_modes.py",
+      "startA": 90,
+      "fileB": "scripts/run_large_ttl_modes.py",
+      "startB": 93,
+      "lines": 13,
+      "tokens": 0
+    },
+    {
+      "fileA": "scripts/run_large_nq_modes.py",
+      "startA": 130,
+      "fileB": "scripts/run_large_ttl_modes.py",
+      "startB": 113,
+      "lines": 28,
+      "tokens": 0
+    },
+    {
+      "fileA": "scripts/run_allowed_fixtures.py",
+      "startA": 132,
+      "fileB": "scripts/run_release_benchmarks.py",
+      "startB": 94,
+      "lines": 10,
+      "tokens": 0
+    },
+    {
+      "fileA": "scripts/run_allowed_fixtures.py",
+      "startA": 319,
+      "fileB": "scripts/run_release_benchmarks.py",
+      "startB": 106,
+      "lines": 13,
+      "tokens": 0
+    },
+    {
+      "fileA": "scripts/run_allowed_fixtures.py",
+      "startA": 332,
+      "fileB": "scripts/run_release_benchmarks.py",
+      "startB": 115,
+      "lines": 12,
+      "tokens": 0
+    },
+    {
+      "fileA": "scripts/run_allowed_fixtures.py",
+      "startA": 434,
+      "fileB": "scripts/run_release_benchmarks.py",
+      "startB": 146,
+      "lines": 18,
+      "tokens": 0
+    },
+    {
+      "fileA": "scripts/render_large_scalability_report.py",
+      "startA": 219,
+      "fileB": "scripts/run_large_nq_modes.py",
+      "startB": 116,
+      "lines": 7,
+      "tokens": 0
+    },
+    {
+      "fileA": "scripts/paper_benchmarks.py",
+      "startA": 346,
+      "fileB": "scripts/paper_benchmarks.py",
+      "startB": 286,
+      "lines": 13,
+      "tokens": 0
+    },
+    {
+      "fileA": "scripts/paper_benchmarks.py",
+      "startA": 396,
+      "fileB": "scripts/paper_benchmarks.py",
+      "startB": 283,
+      "lines": 14,
+      "tokens": 0
+    },
+    {
+      "fileA": "scripts/paper_benchmarks.py",
+      "startA": 647,
+      "fileB": "scripts/paper_benchmarks.py",
+      "startB": 614,
+      "lines": 10,
+      "tokens": 0
+    },
+    {
+      "fileA": "scripts/paper_benchmarks.py",
+      "startA": 722,
+      "fileB": "scripts/paper_benchmarks.py",
+      "startB": 614,
+      "lines": 12,
+      "tokens": 0
+    },
+    {
+      "fileA": "scripts/paper_benchmark_digitalhub.py",
+      "startA": 573,
+      "fileB": "scripts/paper_benchmarks.py",
+      "startB": 470,
+      "lines": 14,
+      "tokens": 0
+    },
+    {
+      "fileA": "scripts/paper_benchmark_digitalhub.py",
+      "startA": 615,
+      "fileB": "scripts/render_large_scalability_report.py",
+      "startB": 462,
+      "lines": 12,
+      "tokens": 0
+    },
+    {
+      "fileA": "scripts/paper_benchmark_digitalhub.py",
+      "startA": 720,
+      "fileB": "scripts/paper_benchmark_digitalhub.py",
+      "startB": 698,
+      "lines": 8,
+      "tokens": 0
+    },
+    {
+      "fileA": "scripts/paper_benchmark_digitalhub.py",
+      "startA": 873,
+      "fileB": "scripts/paper_benchmark_digitalhub.py",
+      "startB": 791,
+      "lines": 6,
+      "tokens": 0
+    },
+    {
+      "fileA": "scripts/paper_benchmark_digitalhub.py",
+      "startA": 878,
+      "fileB": "scripts/paper_benchmark_digitalhub.py",
+      "startB": 795,
+      "lines": 12,
+      "tokens": 0
+    }
+  ],
+  "duplicatedLines": 818,
+  "totalLines": 17029,
+  "percentage": 4.8
+}
