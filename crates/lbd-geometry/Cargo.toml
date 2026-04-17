@@ -7,6 +7,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+nalgebra = "0.33"
 ifc-model = { workspace = true }
 ifc-step = { workspace = true }
 lbd-topology = { workspace = true }
@@ -16,3 +17,5 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+csgrs = { version = "0.16.0", features = ["f64"] }
+uuid = { version = "1.20.0", features = ["js"] }
