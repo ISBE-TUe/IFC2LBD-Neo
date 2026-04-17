@@ -18,17 +18,13 @@ use ifc_model::build_model;
 use ifc_model::IfcModel;
 use ifc_step::{parse_step_file, EntityId, StepFile};
 use lbd_converter::ConvertOptions;
-use lbd_geometry::{
-    derive_relations_with_exact_kernel_subprocess_batch, BoundingBox, ExactCheckOptions,
-    GeometryRelation, GeometryRelationKind, SubprocessKernelExecutionOptions,
-};
+use lbd_geometry::{BoundingBox, GeometryRelation};
 use lbd_pipeline::FailurePolicy;
 use lbd_serializer::{
     serialize_lbd_batches_incremental_to_writer, serialize_lbd_batches_to_writer,
     serialize_nquads_batches_to_writer, serialize_nquads_merged_batches_to_writer,
     serialize_turtle_batches_to_writer,
 };
-use rayon::prelude::*;
 
 mod bbox;
 mod chunk_writer;
@@ -86,8 +82,9 @@ struct Args {
 
     /// Development tuning.
     #[arg(long = "geometry-tolerance", default_value_t = 1e-6, hide = true)]
-    geometry_tolerance: f64,
+    geometry_tolerance: f64, /* used by future CSG boolean intersection */
 
+    // used for future CSG boolean intersection,
     /// Voxel cell size in meters (default 0.1 = 10cm).
     #[arg(long = "voxel-cell-size", default_value_t = 0.1, hide = true)]
     voxel_cell_size: f64,
@@ -1309,14 +1306,15 @@ fn run_producer_plugin_tasks<'a>(tasks: Vec<ProducerTaskSpec<'a>>) -> anyhow::Re
     })
 }
 
-pub(crate) fn topology_full_occ_relations(
+pub(crate) fn topology_full_relations(
     model: &IfcModel,
     step: &StepFile,
-    input_path: &Path,
-    geometry_tolerance: f64,
+    _input_path: &Path,
+    geometry_tolerance: f64, /* used by future CSG boolean intersection */
+    // used for future CSG boolean intersection,
     bbox_inflation_threshold: f64,
-    kernel_timeout: Duration,
-    max_pairs_per_batch: usize,
+    _kernel_timeout: Duration,
+    _max_pairs_per_batch: usize,
 ) -> anyhow::Result<(
     Vec<GeometryRelation>,
     HashMap<EntityId, [f64; 6]>,
@@ -1371,85 +1369,19 @@ pub(crate) fn topology_full_occ_relations(
         prefilter_bboxes.entry(*eid).or_insert(*bbox);
     }
 
-    // Try OCC exact kernel; fall back to voxel adjacency if unavailable.
-    let relations = match kernel::resolve_geometry_kernel_bin() {
-        Ok(kernel_bin) => {
-            let (kernel_args, _cache_guard) = kernel::prepare_kernel_cache_args(input_path)?;
-            tracing::info!("topology-full OCC kernel: {}", kernel_bin.display());
-
-            let options = ExactCheckOptions {
-                tolerance: geometry_tolerance,
-            };
-            let execution = SubprocessKernelExecutionOptions {
-                timeout: kernel_timeout,
-                max_pairs_per_batch,
-            };
-
-            match derive_relations_with_exact_kernel_subprocess_batch(
-                model,
-                kernel_bin,
-                kernel_args,
-                input_path.to_path_buf(),
-                &candidate_pairs,
-                &options,
-                &execution,
-                &prefilter_bboxes,
-            ) {
-                Ok(rels) => rels,
-                Err(err) => {
-                    tracing::warn!(
-                        "OCC kernel failed ({}), falling back to voxel adjacency",
-                        err
-                    );
-                    let (voxel_relations, _voxel_bboxes) =
-                        bbox::voxel_adjacency_relations_with_candidates(
-                            step,
-                            &candidate_pairs,
-                            0.1,
-                            50_000,
-                        );
-                    voxel_relations
-                }
-            }
-        }
-        Err(err) => {
-            tracing::info!(
-                "OCC kernel not available ({}), using voxel adjacency instead",
-                err
-            );
-            let (voxel_relations, _voxel_bboxes) = bbox::voxel_adjacency_relations_with_candidates(
-                step,
-                &candidate_pairs,
-                0.1,
-                50_000,
-            );
-            voxel_relations
-        }
-    };
-
-    let intersecting_triples = relations
-        .iter()
-        .filter(|r| r.kind == GeometryRelationKind::IntersectingElement)
-        .count();
-    let interface_of_triples = relations
-        .iter()
-        .filter(|r| r.kind == GeometryRelationKind::InterfaceOf)
-        .count();
-    let interface_nodes = relations
-        .iter()
-        .filter(|r| r.kind == GeometryRelationKind::InterfaceOf)
-        .map(|r| r.source)
-        .collect::<HashSet<_>>()
-        .len();
+    // 3-stage pipeline: R-tree broad-phase → voxel adjacency (exact boolean via mesh voxelization)
+    // Voxel adjacency replaces the external OCC subprocess with pure Rust code that compiles to WASM.
     tracing::info!(
-        "topology-full OCC relations: intersecting triples={}, interfaceOf triples={}, intersecting pairs={}, interface nodes={}",
-        intersecting_triples,
-        interface_of_triples,
-        intersecting_triples / 2,
-        interface_nodes,
+        "topology-full: running voxel adjacency ({} candidates)",
+        candidate_pairs.len()
     );
-
-    Ok((relations, mesh_bboxes, mesh_wkts, bbox_report))
+    let (relations, _voxel_bboxes) =
+        bbox::voxel_adjacency_relations_with_candidates(step, &candidate_pairs, 0.1, 50_000);
+    tracing::info!(
+        "topology-full: voxel adjacency produced {} relations",
+        relations.len()
+    );
+    return Ok((relations, mesh_bboxes, mesh_wkts, bbox_report));
 }
 
 fn normalize_base_for_graph_iri(base_uri: &str) -> String {

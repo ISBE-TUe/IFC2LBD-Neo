@@ -124,7 +124,7 @@ fn run_full_topology_plugin(
         bbox_report_path,
         write_report,
         |model, step, input_path, geometry_tolerance, bbox_inflation_threshold| {
-            let (relations, _mesh_bboxes, _mesh_wkts, report) = crate::topology_full_occ_relations(
+            let (relations, _mesh_bboxes, _mesh_wkts, report) = crate::topology_full_relations(
                 model,
                 step,
                 input_path,
