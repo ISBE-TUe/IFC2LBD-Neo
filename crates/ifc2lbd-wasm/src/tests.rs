@@ -7,7 +7,7 @@ mod tests {
     use crate::types::ConversionRequest;
     use lbd_pipeline::{
         BBOX_ENRICHER_ID, FILE_EXPORT_ID, IFCOWL_PRODUCER_ID, LBD_PRODUCER_ID,
-        NQUADS_SERIALIZER_ID, TOPOLOGY_LITE_PRODUCER_ID, TURTLE_SERIALIZER_ID,
+        NQUADS_SERIALIZER_ID, IFC_TOPOLOGY_PRODUCER_ID, TURTLE_SERIALIZER_ID,
     };
 
     fn tiny_ifc() -> Vec<u8> {
@@ -26,7 +26,7 @@ mod tests {
         assert!(ids.contains(TURTLE_SERIALIZER_ID));
         assert!(ids.contains(NQUADS_SERIALIZER_ID));
         assert!(ids.contains(FILE_EXPORT_ID));
-        assert!(ids.contains(TOPOLOGY_LITE_PRODUCER_ID));
+        assert!(ids.contains(IFC_TOPOLOGY_PRODUCER_ID));
         assert!(ids.contains(BBOX_ENRICHER_ID));
         assert!(!ids.contains("neo-topology-full-producer"));
     }
@@ -38,10 +38,10 @@ mod tests {
     }
 
     #[test]
-    fn resolve_plan_accepts_topology_lite() {
+    fn resolve_plan_accepts_ifc_topology() {
         let result = resolve_plan_impl(
             vec![
-                TOPOLOGY_LITE_PRODUCER_ID.to_string(),
+                IFC_TOPOLOGY_PRODUCER_ID.to_string(),
                 LBD_PRODUCER_ID.to_string(),
                 TURTLE_SERIALIZER_ID.to_string(),
                 FILE_EXPORT_ID.to_string(),
@@ -52,7 +52,7 @@ mod tests {
         assert!(result
             .unwrap()
             .enabled_ids
-            .contains(&TOPOLOGY_LITE_PRODUCER_ID.to_string()));
+            .contains(&IFC_TOPOLOGY_PRODUCER_ID.to_string()));
     }
 
     #[test]

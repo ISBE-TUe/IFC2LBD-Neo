@@ -1,2 +1,3 @@
+pub mod bbox;
 pub(crate) mod core_entities;
-pub(crate) mod ifcowl;
+pub mod ifcowl;

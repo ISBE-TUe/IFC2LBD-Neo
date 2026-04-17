@@ -83,7 +83,8 @@ impl PipelineContext {
 
     /// Insert a typed value into the context.
     pub fn insert<T: 'static + Send + Sync>(&mut self, value: Arc<T>) {
-        self.data.push(value as Arc<dyn std::any::Any + Send + Sync>);
+        self.data
+            .push(value as Arc<dyn std::any::Any + Send + Sync>);
     }
 
     /// Retrieve a typed value from the context.
@@ -117,11 +118,12 @@ pub enum BatchKind {
 
 pub const LBD_PRODUCER_ID: &str = "neo-lbd-producer";
 pub const IFCOWL_PRODUCER_ID: &str = "neo-ifcowl-producer";
-pub const TOPOLOGY_LITE_PRODUCER_ID: &str = "neo-topology-lite-producer";
+pub const IFC_TOPOLOGY_PRODUCER_ID: &str = "neo-ifc-topology-producer";
 pub const TOPOLOGY_FULL_PRODUCER_ID: &str = "neo-topology-full-producer";
 pub const BBOX_ENRICHER_ID: &str = "neo-bbox-enricher";
 pub const TURTLE_SERIALIZER_ID: &str = "neo-turtle-serializer";
 pub const NQUADS_SERIALIZER_ID: &str = "neo-nquads-serializer";
+pub const NQUADS_CHUNKED_SERIALIZER_ID: &str = "neo-nquads-chunked-serializer";
 pub const FILE_EXPORT_ID: &str = "neo-file-export";
 pub const STDOUT_EXPORT_ID: &str = "neo-stdout-export";
 pub const GRAFEO_EXPORT_ID: &str = "neo-grafeo-export";

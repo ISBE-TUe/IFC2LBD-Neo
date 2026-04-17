@@ -98,6 +98,7 @@ pub struct BenchmarkBundle {
     pub output_files: Vec<OutputFileSummary>,
     pub warnings: Vec<String>,
     pub telemetry: ConversionTelemetry,
+    pub stage_telemetry: Vec<StageTelemetry>,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -111,6 +112,7 @@ pub struct StreamConversionBundle {
     pub output_files: Vec<OutputFileSummary>,
     pub warnings: Vec<String>,
     pub telemetry: ConversionTelemetry,
+    pub stage_telemetry: Vec<StageTelemetry>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -121,6 +123,22 @@ pub struct ConversionTelemetry {
     pub ifcowl_max_workers: usize,
     pub sink_chunk_size_bytes: usize,
     pub sink_max_pending_bytes: usize,
+}
+
+/// Per-stage telemetry for a single plugin execution.
+///
+/// Emitted live through the sink callback as `stageEvent` events,
+/// and included in the final result bundle for post-hoc inspection.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StageTelemetry {
+    pub plugin_id: String,
+    pub stage: String,
+    pub status: String,
+    pub duration_ms: u64,
+    pub bytes_out: u64,
+    pub triples_out: u64,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -141,10 +159,21 @@ pub struct OutputFileSummary {
     pub bytes: u64,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum OutputFormat {
-    Turtle,
-    Nquads,
+#[derive(Clone, Debug, Default)]
+pub struct OutputFormats {
+    pub turtle: bool,
+    pub nquads: bool,
+    pub nquads_chunked: bool,
+}
+
+impl OutputFormats {
+    pub fn is_empty(&self) -> bool {
+        !self.turtle && !self.nquads && !self.nquads_chunked
+    }
+
+    pub fn has_any_nquads(&self) -> bool {
+        self.nquads || self.nquads_chunked
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -163,12 +192,25 @@ pub enum TurtleBatchKind {
 pub struct NquadsModuleOptions {
     pub lbd_graph_iri: Option<String>,
     pub ifcowl_graph_iri: Option<String>,
+    pub chunking: NquadsChunkingMode,
+    pub chunk_size_lines: usize,
+    pub chunk_size_bytes: usize,
+    pub chunk_prefix: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NquadsChunkingMode {
+    None,
+    Lines,
+    Bytes,
 }
 
 #[derive(Debug, Clone)]
 pub struct ExecutionSettings {
-    pub output_format: OutputFormat,
+    pub output_formats: OutputFormats,
     pub emit_ifcowl: bool,
+    pub emit_topology: bool,
+    pub emit_bbox: bool,
     pub nquads: NquadsModuleOptions,
     pub output_stem: String,
     pub turtle_grouping: TurtleGrouping,

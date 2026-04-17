@@ -1,4 +1,4 @@
-use crate::types::{ConversionRequest, ExecutionMode, ExecutionSettings, OutputFormat};
+use crate::types::{ConversionRequest, ExecutionMode, ExecutionSettings, OutputFormats};
 
 pub(crate) fn execution_mode_str(mode: ExecutionMode) -> &'static str {
     match mode {
@@ -38,11 +38,10 @@ pub(crate) fn select_execution_mode(
     settings: &ExecutionSettings,
 ) -> (ExecutionMode, u64, u64, String) {
     let input_mb = (input_size_bytes / (1024 * 1024)).max(1);
-    let multiplier = match (settings.output_format, settings.emit_ifcowl) {
-        (OutputFormat::Nquads, true) => 26,
-        (OutputFormat::Nquads, false) => 16,
-        (OutputFormat::Turtle, true) => 22,
-        (OutputFormat::Turtle, false) => 14,
+    let multiplier = if settings.output_formats.has_any_nquads() {
+        if settings.emit_ifcowl { 26 } else { 16 }
+    } else {
+        if settings.emit_ifcowl { 22 } else { 14 }
     };
     let estimated_peak_mb = 96 + input_mb.saturating_mul(multiplier);
     let feasibility_check_mb = request

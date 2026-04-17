@@ -40,7 +40,7 @@ struct TopologyExecutor {
 
 const TOPOLOGY_EXECUTORS: &[TopologyExecutor] = &[
     TopologyExecutor {
-        plugin_id: lbd_pipeline::TOPOLOGY_LITE_PRODUCER_ID,
+        plugin_id: lbd_pipeline::IFC_TOPOLOGY_PRODUCER_ID,
         requires_geometry_relations: false,
         execute: execute_topology_lite,
     },

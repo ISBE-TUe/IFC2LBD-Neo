@@ -7,7 +7,7 @@ use lbd_pipeline::{
     ExportPlugin, FailurePolicy, ParallelismMode, PipelinePlugin, PipelineStage, PluginManifest,
     PluginRegistry, ProducerPlugin, SerializerPlugin, BBOX_ENRICHER_ID, FILE_EXPORT_ID,
     GRAFEO_EXPORT_ID, IFCOWL_PRODUCER_ID, LBD_PRODUCER_ID, NQUADS_SERIALIZER_ID, STDOUT_EXPORT_ID,
-    TOPOLOGY_FULL_PRODUCER_ID, TOPOLOGY_LITE_PRODUCER_ID, TURTLE_SERIALIZER_ID,
+    TOPOLOGY_FULL_PRODUCER_ID, IFC_TOPOLOGY_PRODUCER_ID, TURTLE_SERIALIZER_ID,
 };
 use serde::{Deserialize, Serialize};
 
@@ -16,7 +16,7 @@ pub fn built_in_registry() -> PluginRegistry {
     registry.register_producer(LbdProducerPlugin).unwrap();
     registry.register_producer(IfcowlProducerPlugin).unwrap();
     registry
-        .register_producer(TopologyLiteProducerPlugin)
+        .register_producer(IfcTopologyProducerPlugin)
         .unwrap();
     registry
         .register_producer(TopologyFullProducerPlugin)
@@ -36,7 +36,7 @@ pub fn built_in_registry() -> PluginRegistry {
 
 struct LbdProducerPlugin;
 struct IfcowlProducerPlugin;
-struct TopologyLiteProducerPlugin;
+struct IfcTopologyProducerPlugin;
 struct TopologyFullProducerPlugin;
 struct BboxEnricherPlugin;
 struct TurtleSerializerPlugin;
@@ -105,10 +105,10 @@ impl ProducerPlugin for IfcowlProducerPlugin {
     }
 }
 
-impl PipelinePlugin for TopologyLiteProducerPlugin {
+impl PipelinePlugin for IfcTopologyProducerPlugin {
     fn manifest(&self) -> PluginManifest {
         PluginManifest {
-            id: TOPOLOGY_LITE_PRODUCER_ID,
+            id: IFC_TOPOLOGY_PRODUCER_ID,
             display_name: "Built-in topology producer (light)",
             stage: PipelineStage::Produce,
             description: "Generates BOT topology triples from IFC relationship evidence.",
@@ -123,7 +123,7 @@ impl PipelinePlugin for TopologyLiteProducerPlugin {
     }
 }
 
-impl ProducerPlugin for TopologyLiteProducerPlugin {
+impl ProducerPlugin for IfcTopologyProducerPlugin {
     fn produce(
         &self,
         _ctx: &lbd_pipeline::PipelineContext,
@@ -145,7 +145,7 @@ impl PipelinePlugin for TopologyFullProducerPlugin {
             inputs: vec!["ifc-model", "step-file", "geometry-relations"],
             outputs: vec!["topology-triples"],
             requires: vec![],
-            conflicts_with: vec![TOPOLOGY_LITE_PRODUCER_ID],
+            conflicts_with: vec![IFC_TOPOLOGY_PRODUCER_ID],
             failure_policy: FailurePolicy::Optional,
             parallelism: ParallelismMode::ParallelByPartition,
             wasm_compatible: false,
