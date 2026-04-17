@@ -4,7 +4,11 @@
 //! Implements the producer logic that emits triples in bounded batches (streaming) and can run multiple producer paths (LBD, ifcOWL, topology) in parallel.
 //! Follows an emitter-based pattern so LBD-specific concerns can be factored into separate modules while sharing buffering and streaming infrastructure.
 
-mod modules;
+pub mod modules;
+
+/// Compute approximate bounding boxes from STEP data (no mesh/OCC dependency).
+/// Used by the WASM bbox enricher for topology enrichment.
+pub use modules::bbox::compute_approximate_bboxes;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -193,7 +197,7 @@ fn convert_lbd(model: &IfcModel, options: &ConvertOptions, base: &str) -> Vec<Tr
     triples
 }
 
-fn stream_lbd(
+pub fn stream_lbd(
     model: &IfcModel,
     options: &ConvertOptions,
     base: &str,
@@ -964,7 +968,7 @@ fn adjacent_elements_by_space(model: &IfcModel) -> HashMap<EntityId, Vec<EntityI
     adjacent_by_space
 }
 
-fn normalize_base_uri(base_uri: &str) -> String {
+pub fn normalize_base_uri(base_uri: &str) -> String {
     base_uri.trim_end_matches('/').to_string()
 }
 

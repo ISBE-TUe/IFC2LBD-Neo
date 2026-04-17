@@ -14,14 +14,84 @@
       "modifiedRanges": [
         {
           "start": 1,
-          "end": 59
+          "end": 141
         }
       ],
       "importsChanged": true,
-      "lastEdit": "2026-04-17T12:07:41.864Z"
+      "lastEdit": "2026-04-17T13:12:52.199Z"
+    },
+    "src/pipeline/state.js": {
+      "modifiedRanges": [
+        {
+          "start": 1,
+          "end": 93
+        }
+      ],
+      "importsChanged": false,
+      "lastEdit": "2026-04-17T12:46:46.207Z"
+    },
+    "src/pipeline/stage-panel.js": {
+      "modifiedRanges": [
+        {
+          "start": 1,
+          "end": 125
+        }
+      ],
+      "importsChanged": true,
+      "lastEdit": "2026-04-17T12:32:21.144Z"
+    },
+    "src/pipeline/sidebar.js": {
+      "modifiedRanges": [
+        {
+          "start": 1,
+          "end": 161
+        }
+      ],
+      "importsChanged": true,
+      "lastEdit": "2026-04-17T12:32:36.281Z"
+    },
+    "src/pipeline/log-panel.js": {
+      "modifiedRanges": [
+        {
+          "start": 1,
+          "end": 34
+        }
+      ],
+      "importsChanged": false,
+      "lastEdit": "2026-04-17T12:32:40.431Z"
+    },
+    "src/pipeline/config.js": {
+      "modifiedRanges": [
+        {
+          "start": 1,
+          "end": 77
+        }
+      ],
+      "importsChanged": true,
+      "lastEdit": "2026-04-17T12:32:47.302Z"
+    },
+    "src/pipeline/app.js": {
+      "modifiedRanges": [
+        {
+          "start": 1,
+          "end": 368
+        }
+      ],
+      "importsChanged": true,
+      "lastEdit": "2026-04-17T12:48:30.171Z"
+    },
+    "src/pipeline/session.js": {
+      "modifiedRanges": [
+        {
+          "start": 1,
+          "end": 322
+        }
+      ],
+      "importsChanged": true,
+      "lastEdit": "2026-04-17T13:30:00.647Z"
     }
   },
   "turnCycles": 0,
   "maxCycles": 3,
-  "lastUpdated": "2026-04-17T12:07:41.864Z"
+  "lastUpdated": "2026-04-17T13:30:00.647Z"
 }

@@ -31,19 +31,43 @@ self.addEventListener("message", async (event) => {
     const input = new Uint8Array(payload.inputBuffer);
     const request = payload.request || {};
 
+    // Rust now emits real measured durations in stage events.
+    // We just forward them — no JS-side timing needed.
     const sink = (sinkEvent) => {
-      if (!sinkEvent || sinkEvent.type !== "fileChunk" || !sinkEvent.filename || !sinkEvent.chunk) return;
-      const chunk = sinkEvent.chunk instanceof Uint8Array ? sinkEvent.chunk : new Uint8Array(sinkEvent.chunk);
-      const chunkCopy = chunk.slice();
-      self.postMessage(
-        {
+      if (!sinkEvent || !sinkEvent.type) return;
+
+      // Forward stage events — Rust provides real durationMs
+      if (sinkEvent.type === "stageEvent") {
+        self.postMessage({
           id,
-          type: "chunk",
-          filename: sinkEvent.filename,
-          chunk: chunkCopy
-        },
-        [chunkCopy.buffer]
-      );
+          type: "stageEvent",
+          pluginId: sinkEvent.pluginId,
+          stage: sinkEvent.stage,
+          status: sinkEvent.status,
+          durationMs: sinkEvent.durationMs || 0,
+          bytesOut: sinkEvent.bytesOut || 0,
+          triplesOut: sinkEvent.triplesOut || 0,
+          error: sinkEvent.error || null,
+        });
+        return;
+      }
+
+      // Forward file lifecycle events
+      if (sinkEvent.type === "fileStart" || sinkEvent.type === "fileEnd") {
+        self.postMessage({ id, ...sinkEvent });
+        return;
+      }
+
+      // Forward file chunks with transfer
+      if (sinkEvent.type === "fileChunk" && sinkEvent.filename && sinkEvent.chunk) {
+        const chunk = sinkEvent.chunk instanceof Uint8Array ? sinkEvent.chunk : new Uint8Array(sinkEvent.chunk);
+        const chunkCopy = chunk.slice();
+        self.postMessage(
+          { id, type: "chunk", filename: sinkEvent.filename, chunk: chunkCopy },
+          [chunkCopy.buffer]
+        );
+        return;
+      }
     };
 
     const streamResult = convertIfcToSink(input, request, sink);

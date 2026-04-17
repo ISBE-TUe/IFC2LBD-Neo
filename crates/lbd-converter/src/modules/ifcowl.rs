@@ -4,9 +4,7 @@ use crossbeam::channel::Sender;
 use ifc_step::{StepFile, StepSchema};
 use lbd_ontology::Triple;
 
-use crate::{
-    ifcowl_entity_subjects, ifcowl_lookup, ifcowl_namespace, IfcOwlEmitter, StreamError,
-};
+use crate::{ifcowl_entity_subjects, ifcowl_lookup, ifcowl_namespace, IfcOwlEmitter, StreamError};
 
 pub(crate) fn convert_ifcowl(step: &StepFile, base: &str, schema: StepSchema) -> Vec<Triple> {
     let mut ids: Vec<_> = step.entities.keys().copied().collect();
@@ -32,7 +30,7 @@ pub(crate) fn convert_ifcowl(step: &StepFile, base: &str, schema: StepSchema) ->
     deduplicate_triples(emitter.finish())
 }
 
-pub(crate) fn stream_ifcowl(
+pub fn stream_ifcowl(
     step: &StepFile,
     base: &str,
     schema: StepSchema,

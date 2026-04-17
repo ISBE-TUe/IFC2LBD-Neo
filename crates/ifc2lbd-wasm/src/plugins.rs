@@ -10,7 +10,8 @@ use lbd_pipeline::{
     ParallelismMode, PipelineContext, PipelinePlugin, PipelineStage, PluginManifest,
     PluginRegistry, ProducerError, ProducerPlugin, SerializeStats, SerializerError,
     SerializerPlugin, TaggedBatch, BBOX_ENRICHER_ID, FILE_EXPORT_ID, IFCOWL_PRODUCER_ID,
-    LBD_PRODUCER_ID, NQUADS_SERIALIZER_ID, TOPOLOGY_LITE_PRODUCER_ID, TURTLE_SERIALIZER_ID,
+    IFC_TOPOLOGY_PRODUCER_ID, LBD_PRODUCER_ID, NQUADS_CHUNKED_SERIALIZER_ID, NQUADS_SERIALIZER_ID,
+    TURTLE_SERIALIZER_ID,
 };
 use lbd_serializer::{
     serialize_nquads_batches_to_writer, serialize_turtle_batch_raw_to_writer,
@@ -43,18 +44,18 @@ pub(crate) fn to_view(manifest: PluginManifest) -> ModuleManifestView {
 
 pub(crate) fn module_option_keys(module_id: &str) -> Vec<String> {
     match module_id {
-        NQUADS_SERIALIZER_ID => vec![
+        NQUADS_SERIALIZER_ID => vec!["lbd_graph_iri".to_string(), "ifcowl_graph_iri".to_string()],
+        NQUADS_CHUNKED_SERIALIZER_ID => vec![
             "chunking".to_string(),
             "chunk_size_lines".to_string(),
             "chunk_size_bytes".to_string(),
             "chunk_prefix".to_string(),
-            "chunk_min_count".to_string(),
-            "chunk_core_count".to_string(),
             "lbd_graph_iri".to_string(),
             "ifcowl_graph_iri".to_string(),
         ],
         TURTLE_SERIALIZER_ID => vec!["grouping".to_string()],
         FILE_EXPORT_ID => vec!["output_stem".to_string()],
+        BBOX_ENRICHER_ID => vec!["inflation_threshold".to_string()],
         _ => Vec::new(),
     }
 }
@@ -64,7 +65,7 @@ pub(crate) fn browser_registry() -> PluginRegistry {
     registry.register_producer(LbdProducerPlugin).unwrap();
     registry.register_producer(IfcowlProducerPlugin).unwrap();
     registry
-        .register_producer(TopologyLiteProducerPlugin)
+        .register_producer(IfcTopologyProducerPlugin)
         .unwrap();
     registry.register_producer(BboxEnricherPlugin).unwrap();
     registry
@@ -72,6 +73,9 @@ pub(crate) fn browser_registry() -> PluginRegistry {
         .unwrap();
     registry
         .register_serializer(NquadsSerializerPlugin)
+        .unwrap();
+    registry
+        .register_serializer(NquadsChunkedSerializerPlugin)
         .unwrap();
     registry.register_export(FileExportPlugin).unwrap();
     registry
@@ -246,18 +250,19 @@ impl ProducerPlugin for IfcowlProducerPlugin {
 }
 
 // ---------------------------------------------------------------------------
-// Topology Lite Producer
+// IfcTopology Producer
 // ---------------------------------------------------------------------------
 
-struct TopologyLiteProducerPlugin;
+struct IfcTopologyProducerPlugin;
 
-impl PipelinePlugin for TopologyLiteProducerPlugin {
+impl PipelinePlugin for IfcTopologyProducerPlugin {
     fn manifest(&self) -> PluginManifest {
         PluginManifest {
-            id: TOPOLOGY_LITE_PRODUCER_ID,
-            display_name: "Built-in topology producer (light)",
+            id: IFC_TOPOLOGY_PRODUCER_ID,
+            display_name: "IfcTopology",
             stage: PipelineStage::Produce,
-            description: "Generates BOT topology triples from IFC relationship evidence.",
+            description:
+                "Generates BOT topology triples from IFC spatial and element relationships.",
             inputs: vec!["ifc-model"],
             outputs: vec!["topology-triples"],
             requires: vec![],
@@ -269,14 +274,14 @@ impl PipelinePlugin for TopologyLiteProducerPlugin {
     }
 }
 
-impl ProducerPlugin for TopologyLiteProducerPlugin {
+impl ProducerPlugin for IfcTopologyProducerPlugin {
     fn produce(
         &self,
         _ctx: &PipelineContext,
         _sender: &Sender<TaggedBatch>,
     ) -> Result<(), ProducerError> {
         Err(ProducerError::Conversion(
-            "TopologyLiteProducerPlugin::produce() not yet wired through PipelineRunner in WASM"
+            "IfcTopologyProducerPlugin::produce() not yet wired through PipelineRunner in WASM"
                 .to_string(),
         ))
     }
@@ -292,12 +297,12 @@ impl PipelinePlugin for BboxEnricherPlugin {
     fn manifest(&self) -> PluginManifest {
         PluginManifest {
             id: BBOX_ENRICHER_ID,
-            display_name: "Neo bbox enricher",
+            display_name: "Bbox",
             stage: PipelineStage::Produce,
-            description: "Adds bbox geometry enrichment data for LBD output.",
+            description: "Adds bbox geometry enrichment for topology adjacency detection.",
             inputs: vec!["ifc-model", "step-file"],
             outputs: vec!["bbox-geometry"],
-            requires: vec![LBD_PRODUCER_ID],
+            requires: vec![LBD_PRODUCER_ID, IFC_TOPOLOGY_PRODUCER_ID],
             conflicts_with: vec![],
             failure_policy: FailurePolicy::Optional,
             parallelism: ParallelismMode::ParallelByPartition,
@@ -335,8 +340,8 @@ impl PipelinePlugin for TurtleSerializerPlugin {
             inputs: vec!["triples"],
             outputs: vec!["turtle-bytes"],
             requires: vec![LBD_PRODUCER_ID],
-            conflicts_with: vec![NQUADS_SERIALIZER_ID],
-            failure_policy: FailurePolicy::Required,
+            conflicts_with: vec![],
+            failure_policy: FailurePolicy::Optional,
             parallelism: ParallelismMode::Serial,
             wasm_compatible: true,
         }
@@ -379,8 +384,8 @@ impl PipelinePlugin for NquadsSerializerPlugin {
             inputs: vec!["quads"],
             outputs: vec!["nquads-bytes"],
             requires: vec![LBD_PRODUCER_ID],
-            conflicts_with: vec![TURTLE_SERIALIZER_ID],
-            failure_policy: FailurePolicy::Required,
+            conflicts_with: vec![],
+            failure_policy: FailurePolicy::Optional,
             parallelism: ParallelismMode::ParallelByPartition,
             wasm_compatible: true,
         }
@@ -422,6 +427,54 @@ fn write_nquads_batch<W: Write>(
         .map_err(|_| SerializerError::ChannelClosed)?;
     drop(tx);
     serialize_nquads_batches_to_writer(rx, writer, graph_iri).map_err(map_ser_err)
+}
+
+// ---------------------------------------------------------------------------
+// N-Quads Chunked Serializer (produces chunked N-Quads output)
+// ---------------------------------------------------------------------------
+
+struct NquadsChunkedSerializerPlugin;
+
+impl PipelinePlugin for NquadsChunkedSerializerPlugin {
+    fn manifest(&self) -> PluginManifest {
+        PluginManifest {
+            id: NQUADS_CHUNKED_SERIALIZER_ID,
+            display_name: "Built-in N-Quads chunked serializer",
+            stage: PipelineStage::Serialize,
+            description: "Serializes graph streams into chunked N-Quads output with configurable chunk boundaries.",
+            inputs: vec!["quads"],
+            outputs: vec!["nquads-bytes"],
+            requires: vec![LBD_PRODUCER_ID],
+            conflicts_with: vec![],
+            failure_policy: FailurePolicy::Optional,
+            parallelism: ParallelismMode::ParallelByPartition,
+            wasm_compatible: true,
+        }
+    }
+}
+
+impl SerializerPlugin for NquadsChunkedSerializerPlugin {
+    fn serialize(
+        &self,
+        _ctx: &PipelineContext,
+        receiver: Receiver<TaggedBatch>,
+        writer: &mut dyn Write,
+    ) -> Result<SerializeStats, SerializerError> {
+        // For now, same as regular N-Quads — chunking logic to be added
+        let mut stats = SerializeStats::default();
+        let mut counting = CountingWriterWrap::new(writer);
+        for batch in receiver {
+            stats.triples_written += batch.triples.len() as u64;
+            let graph_iri = match batch.kind {
+                BatchKind::Lbd => "https://lbd.example.com/lbd",
+                BatchKind::Ifcowl => "https://lbd.example.com/ifcowl",
+                BatchKind::Topology => "https://lbd.example.com/topology",
+            };
+            write_nquads_batch(&mut counting, &batch.triples, graph_iri)?;
+        }
+        stats.bytes_written = counting.bytes;
+        Ok(stats)
+    }
 }
 
 // ---------------------------------------------------------------------------

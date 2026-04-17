@@ -1,12 +1,13 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::types::{
-    ConversionRequest, ExecutionSettings, NquadsModuleOptions, OutputFormat, TurtleGrouping,
-    WasmApiError,
+    ConversionRequest, ExecutionSettings, NquadsChunkingMode, NquadsModuleOptions, OutputFormats,
+    TurtleGrouping, WasmApiError,
 };
 use lbd_pipeline::ActivationPlan;
 use lbd_pipeline::{
-    FILE_EXPORT_ID, IFCOWL_PRODUCER_ID, LBD_PRODUCER_ID, NQUADS_SERIALIZER_ID, TURTLE_SERIALIZER_ID,
+    FILE_EXPORT_ID, IFCOWL_PRODUCER_ID, IFC_TOPOLOGY_PRODUCER_ID, LBD_PRODUCER_ID,
+    NQUADS_CHUNKED_SERIALIZER_ID, NQUADS_SERIALIZER_ID, TURTLE_SERIALIZER_ID,
 };
 
 pub(crate) fn normalize_base_for_graph_iri(base_uri: &str) -> String {
@@ -38,11 +39,12 @@ pub(crate) fn validate_activation_plan(plan: &ActivationPlan) -> Result<(), Wasm
             FILE_EXPORT_ID
         )));
     }
-    let has_nquads = active.contains(NQUADS_SERIALIZER_ID);
+    let has_nquads =
+        active.contains(NQUADS_SERIALIZER_ID) || active.contains(NQUADS_CHUNKED_SERIALIZER_ID);
     let has_turtle = active.contains(TURTLE_SERIALIZER_ID);
-    if has_nquads == has_turtle {
+    if !has_nquads && !has_turtle {
         return Err(WasmApiError::Message(
-            "module plan must include exactly one serializer".to_string(),
+            "module plan must include at least one serializer".to_string(),
         ));
     }
     Ok(())
@@ -55,30 +57,64 @@ pub(crate) fn resolve_execution_settings(
     warnings: &mut Vec<String>,
 ) -> Result<ExecutionSettings, WasmApiError> {
     let active: HashSet<&str> = plan.enabled_ids.iter().map(|id| id.as_str()).collect();
-    let output_format = match (
-        active.contains(TURTLE_SERIALIZER_ID),
-        active.contains(NQUADS_SERIALIZER_ID),
-    ) {
-        (true, false) => OutputFormat::Turtle,
-        (false, true) => OutputFormat::Nquads,
-        _ => {
-            return Err(WasmApiError::Message(
-                "module plan must include exactly one serializer".to_string(),
-            ))
-        }
+    let output_formats = OutputFormats {
+        turtle: active.contains(TURTLE_SERIALIZER_ID),
+        nquads: active.contains(NQUADS_SERIALIZER_ID),
+        nquads_chunked: active.contains(NQUADS_CHUNKED_SERIALIZER_ID),
     };
-
-    let nquads_entries = configs.get(NQUADS_SERIALIZER_ID);
-    let nquads_chunking = nquads_entries
-        .and_then(|m| m.get("chunking"))
-        .cloned()
-        .unwrap_or_else(|| "none".to_string());
-    if nquads_chunking != "none" {
-        warnings.push(format!(
-            "neo-nquads-serializer.chunking={} is not implemented in wasm phase 1; falling back to none",
-            nquads_chunking
+    if output_formats.is_empty() {
+        return Err(WasmApiError::Message(
+            "module plan must include at least one serializer".to_string(),
         ));
     }
+
+    // Chunking config: check both neo-nquads-serializer and neo-nquads-chunked-serializer
+    let nquads_entries = configs.get(NQUADS_SERIALIZER_ID);
+    let chunked_entries = configs.get(NQUADS_CHUNKED_SERIALIZER_ID);
+    // If the chunked serializer is active, its options take priority
+    let effective_nquads_entries = if active.contains(NQUADS_CHUNKED_SERIALIZER_ID) {
+        chunked_entries.or(nquads_entries)
+    } else {
+        nquads_entries
+    };
+    let nquads_chunking_str = effective_nquads_entries
+        .and_then(|m| m.get("chunking"))
+        .cloned()
+        .unwrap_or_else(|| {
+            if active.contains(NQUADS_CHUNKED_SERIALIZER_ID) {
+                "lines".to_string() // default for chunked serializer
+            } else {
+                "none".to_string()
+            }
+        });
+    let nquads_chunking = match nquads_chunking_str.as_str() {
+        "none" => NquadsChunkingMode::None,
+        "lines" => NquadsChunkingMode::Lines,
+        "bytes" => NquadsChunkingMode::Bytes,
+        // "cores" mode maps to "lines" in WASM (no thread-based round-robin in browser)
+        "cores" => {
+            warnings.push("neo-nquads-serializer.chunking=cores maps to lines in WASM (no thread round-robin in browser)".to_string());
+            NquadsChunkingMode::Lines
+        }
+        other => {
+            return Err(WasmApiError::Message(format!(
+                "invalid `neo-nquads-serializer.chunking={}` (expected none|lines|bytes|cores)",
+                other
+            )));
+        }
+    };
+    let chunk_size_lines = effective_nquads_entries
+        .and_then(|m| m.get("chunk_size_lines"))
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(2_000_000);
+    let chunk_size_bytes = effective_nquads_entries
+        .and_then(|m| m.get("chunk_size_bytes"))
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(268_435_456);
+    let chunk_prefix = effective_nquads_entries
+        .and_then(|m| m.get("chunk_prefix"))
+        .cloned()
+        .unwrap_or_else(|| "out".to_string());
 
     let output_stem = configs
         .get(FILE_EXPORT_ID)
@@ -104,13 +140,21 @@ pub(crate) fn resolve_execution_settings(
     };
 
     Ok(ExecutionSettings {
-        output_format,
+        output_formats,
         emit_ifcowl: active.contains(IFCOWL_PRODUCER_ID),
+        emit_topology: active.contains(IFC_TOPOLOGY_PRODUCER_ID),
+        emit_bbox: active.contains(lbd_pipeline::BBOX_ENRICHER_ID),
         nquads: NquadsModuleOptions {
-            lbd_graph_iri: nquads_entries.and_then(|m| m.get("lbd_graph_iri")).cloned(),
-            ifcowl_graph_iri: nquads_entries
+            lbd_graph_iri: effective_nquads_entries
+                .and_then(|m| m.get("lbd_graph_iri"))
+                .cloned(),
+            ifcowl_graph_iri: effective_nquads_entries
                 .and_then(|m| m.get("ifcowl_graph_iri"))
                 .cloned(),
+            chunking: nquads_chunking,
+            chunk_size_lines,
+            chunk_size_bytes,
+            chunk_prefix,
         },
         output_stem,
         turtle_grouping,
@@ -167,9 +211,13 @@ pub(crate) fn validate_typed_module_configs(
     for (module_id, entries) in configs {
         match module_id.as_str() {
             NQUADS_SERIALIZER_ID => validate_nquads_serializer_options(entries)?,
+            NQUADS_CHUNKED_SERIALIZER_ID => validate_nquads_chunked_serializer_options(entries)?,
             TURTLE_SERIALIZER_ID => validate_turtle_serializer_options(entries)?,
             FILE_EXPORT_ID => validate_file_export_options(entries)?,
-            LBD_PRODUCER_ID | IFCOWL_PRODUCER_ID => {
+            LBD_PRODUCER_ID
+            | IFCOWL_PRODUCER_ID
+            | IFC_TOPOLOGY_PRODUCER_ID
+            | lbd_pipeline::BBOX_ENRICHER_ID => {
                 if !entries.is_empty() {
                     return Err(WasmApiError::Message(format!(
                         "module `{}` does not support options in wasm phase 1",
@@ -215,37 +263,47 @@ pub(crate) fn validate_turtle_serializer_options(
 pub(crate) fn validate_nquads_serializer_options(
     entries: &HashMap<String, String>,
 ) -> Result<(), WasmApiError> {
+    let allowed = ["lbd_graph_iri", "ifcowl_graph_iri"];
+    for (key, _value) in entries {
+        if !allowed.contains(&key.as_str()) {
+            return Err(WasmApiError::Message(format!(
+                "unsupported option `neo-nquads-serializer.{}` (chunking options are on neo-nquads-chunked-serializer)",
+                key
+            )));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_nquads_chunked_serializer_options(
+    entries: &HashMap<String, String>,
+) -> Result<(), WasmApiError> {
     let allowed = [
         "chunking",
         "chunk_size_lines",
         "chunk_size_bytes",
         "chunk_prefix",
-        "chunk_min_count",
-        "chunk_core_count",
         "lbd_graph_iri",
         "ifcowl_graph_iri",
     ];
     for (key, value) in entries {
         if !allowed.contains(&key.as_str()) {
             return Err(WasmApiError::Message(format!(
-                "unsupported option `neo-nquads-serializer.{}` in wasm phase 1",
+                "unsupported option `neo-nquads-chunked-serializer.{}`",
                 key
             )));
         }
-        if matches!(
-            key.as_str(),
-            "chunk_size_lines" | "chunk_size_bytes" | "chunk_min_count" | "chunk_core_count"
-        ) {
+        if matches!(key.as_str(), "chunk_size_lines" | "chunk_size_bytes") {
             value.parse::<usize>().map_err(|_| {
                 WasmApiError::Message(format!(
-                    "invalid integer for `neo-nquads-serializer.{}`: `{}`",
+                    "invalid integer for `neo-nquads-chunked-serializer.{}`: `{}`",
                     key, value
                 ))
             })?;
         }
         if key == "chunking" && !matches!(value.as_str(), "none" | "lines" | "bytes" | "cores") {
             return Err(WasmApiError::Message(format!(
-                "invalid `neo-nquads-serializer.chunking={}` (expected none|lines|bytes|cores)",
+                "invalid `neo-nquads-chunked-serializer.chunking={}` (expected none|lines|bytes|cores)",
                 value
             )));
         }

@@ -8,10 +8,17 @@
       "column": 18
     },
     {
+      "type": "XXX",
+      "message": ".nq, manifest.json, etc.)",
+      "file": "web/wasm-prototype/src/pipeline/app.js",
+      "line": 142,
+      "column": 64
+    },
+    {
       "type": "TODO",
       "message": "we could test for more things here, like `Set`s and `Map`s.",
       "file": "web/wasm-prototype/src/wasm/ifc2lbd_wasm.js",
-      "line": 482,
+      "line": 486,
       "column": 7
     },
     {

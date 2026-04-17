@@ -53,6 +53,28 @@
 ### Further decompose `fn main()` (680 lines remaining)
 ### Wire topology-lite and bbox `produce()` through PipelineRunner
 
+## Recently Completed
+
+### WASM v6: Web Worker Architecture ✅
+- Moved WASM conversion from main thread to dedicated Web Worker (`wasm-lowmem-worker.js`)
+- Fixes Chrome/mobile freezing and WASM trap isolation
+- Removed `showSaveFilePicker` (Chrome-only) → universal Blob downloads
+- Removed fast→lowmem JS retry — auto mode handles it; worker isolation means failures are clean errors
+- `role` field on expected files for cleaner metadata
+- Runtime build: `worker-v6-2026-04-17Z`
+
+### WASM v7: Pipeline Dashboard UI ✅
+- Full-width DAG pipeline visualization (SVG, CSS-animated)
+- Left slide-out settings panel (⚙ button) — plugin toggles, file input, base URI, output stem
+- Right slide-out detail panel (click DAG node) — status, timing, options, telemetry, metadata
+- Bottom collapsible log panel
+- Per-stage telemetry from Rust: `StageTelemetry` struct + `stageEvent` sink events
+- Config save/load (JSON export/import)
+- Mobile fallback (width < 900px shows simple v6 form)
+- Ableton-inspired grey palette with cool pastel status colors
+- TU/e logo in white, no red
+- Files: `pipeline/app.js`, `dag.js`, `stage-panel.js`, `sidebar.js`, `log-panel.js`, `config.js`, `state.js`, `pipeline.css`
+
 ## CLI File Structure
 
 | File | Lines | Purpose |

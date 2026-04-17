@@ -523,7 +523,7 @@ fn ensure_trailing_slash(base: &str) -> &str {
     }
 }*/
 
-fn write_nquads_batch<W: Write>(
+pub fn write_nquads_batch<W: Write>(
     writer: &mut W,
     triples: &[Triple],
     graph_iri: &str,

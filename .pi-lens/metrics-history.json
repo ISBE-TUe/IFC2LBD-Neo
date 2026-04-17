@@ -125,7 +125,177 @@
         }
       ],
       "trend": "stable"
+    },
+    "web/wasm-prototype/src/pipeline/stage-panel.js": {
+      "latest": {
+        "commit": "0e9c4f2",
+        "timestamp": "2026-04-17T12:35:27.532Z",
+        "mi": 38.5,
+        "cognitive": 39,
+        "nesting": 7,
+        "lines": 94,
+        "maxCyclomatic": 37,
+        "entropy": 5.62
+      },
+      "history": [
+        {
+          "commit": "0e9c4f2",
+          "timestamp": "2026-04-17T12:35:27.532Z",
+          "mi": 38.5,
+          "cognitive": 39,
+          "nesting": 7,
+          "lines": 94,
+          "maxCyclomatic": 37,
+          "entropy": 5.62
+        }
+      ],
+      "trend": "stable"
+    },
+    "web/wasm-prototype/src/wasm-lowmem-worker.js": {
+      "latest": {
+        "commit": "0e9c4f2",
+        "timestamp": "2026-04-17T12:44:57.416Z",
+        "mi": 41,
+        "cognitive": 28,
+        "nesting": 4,
+        "lines": 50,
+        "maxCyclomatic": 20,
+        "entropy": 5.57
+      },
+      "history": [
+        {
+          "commit": "0e9c4f2",
+          "timestamp": "2026-04-17T12:44:57.416Z",
+          "mi": 41,
+          "cognitive": 28,
+          "nesting": 4,
+          "lines": 50,
+          "maxCyclomatic": 20,
+          "entropy": 5.57
+        }
+      ],
+      "trend": "stable"
+    },
+    "web/wasm-prototype/src/pipeline/state.js": {
+      "latest": {
+        "commit": "0e9c4f2",
+        "timestamp": "2026-04-17T12:46:46.202Z",
+        "mi": 49.2,
+        "cognitive": 20,
+        "nesting": 4,
+        "lines": 68,
+        "maxCyclomatic": 9,
+        "entropy": 5.34
+      },
+      "history": [
+        {
+          "commit": "0e9c4f2",
+          "timestamp": "2026-04-17T12:46:46.202Z",
+          "mi": 49.2,
+          "cognitive": 20,
+          "nesting": 4,
+          "lines": 68,
+          "maxCyclomatic": 9,
+          "entropy": 5.34
+        }
+      ],
+      "trend": "stable"
+    },
+    "web/wasm-prototype/src/pipeline/app.js": {
+      "latest": {
+        "commit": "0e9c4f2",
+        "timestamp": "2026-04-17T16:31:07.535Z",
+        "mi": 24.4,
+        "cognitive": 189,
+        "nesting": 5,
+        "lines": 283,
+        "maxCyclomatic": 49,
+        "entropy": 6.63
+      },
+      "history": [
+        {
+          "commit": "0e9c4f2",
+          "timestamp": "2026-04-17T12:48:02.690Z",
+          "mi": 26.3,
+          "cognitive": 136,
+          "nesting": 5,
+          "lines": 236,
+          "maxCyclomatic": 42,
+          "entropy": 7.03
+        },
+        {
+          "commit": "0e9c4f2",
+          "timestamp": "2026-04-17T16:31:07.535Z",
+          "mi": 24.4,
+          "cognitive": 189,
+          "nesting": 5,
+          "lines": 283,
+          "maxCyclomatic": 49,
+          "entropy": 6.63
+        }
+      ],
+      "trend": "regressing"
+    },
+    "web/wasm-prototype/src/pipeline/session.js": {
+      "latest": {
+        "commit": "0e9c4f2",
+        "timestamp": "2026-04-17T14:54:51.204Z",
+        "mi": 27.6,
+        "cognitive": 164,
+        "nesting": 6,
+        "lines": 247,
+        "maxCyclomatic": 105,
+        "entropy": 6.17
+      },
+      "history": [
+        {
+          "commit": "0e9c4f2",
+          "timestamp": "2026-04-17T12:51:40.790Z",
+          "mi": 37.6,
+          "cognitive": 47,
+          "nesting": 4,
+          "lines": 113,
+          "maxCyclomatic": 56,
+          "entropy": 5.72
+        },
+        {
+          "commit": "0e9c4f2",
+          "timestamp": "2026-04-17T14:54:51.204Z",
+          "mi": 27.6,
+          "cognitive": 164,
+          "nesting": 6,
+          "lines": 247,
+          "maxCyclomatic": 105,
+          "entropy": 6.17
+        }
+      ],
+      "trend": "regressing"
+    },
+    "web/wasm-prototype/src/pipeline/sidebar.js": {
+      "latest": {
+        "commit": "0e9c4f2",
+        "timestamp": "2026-04-17T13:13:07.433Z",
+        "mi": 31.9,
+        "cognitive": 75,
+        "nesting": 4,
+        "lines": 130,
+        "maxCyclomatic": 35,
+        "entropy": 5.58
+      },
+      "history": [
+        {
+          "commit": "0e9c4f2",
+          "timestamp": "2026-04-17T13:13:07.433Z",
+          "mi": 31.9,
+          "cognitive": 75,
+          "nesting": 4,
+          "lines": 130,
+          "maxCyclomatic": 35,
+          "entropy": 5.58
+        }
+      ],
+      "trend": "stable"
     }
   },
-  "capturedAt": "2026-04-17T12:07:36.911Z"
+  "capturedAt": "2026-04-17T16:31:12.536Z"
 }
