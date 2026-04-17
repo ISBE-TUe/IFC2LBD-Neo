@@ -18,7 +18,7 @@ use ifc_model::build_model;
 use ifc_model::IfcModel;
 use ifc_step::{parse_step_file, EntityId, StepFile};
 use lbd_converter::ConvertOptions;
-use lbd_geometry::{BoundingBox, GeometryRelation};
+use lbd_geometry::{BoundingBox, ExactCheckOptions, GeometryRelation, GeometryRelationKind};
 use lbd_pipeline::FailurePolicy;
 use lbd_serializer::{
     serialize_lbd_batches_incremental_to_writer, serialize_lbd_batches_to_writer,
@@ -1369,19 +1369,76 @@ pub(crate) fn topology_full_relations(
         prefilter_bboxes.entry(*eid).or_insert(*bbox);
     }
 
-    // 3-stage pipeline: R-tree broad-phase → voxel adjacency (exact boolean via mesh voxelization)
-    // Voxel adjacency replaces the external OCC subprocess with pure Rust code that compiles to WASM.
+    // 3-stage pipeline: R-tree broad-phase → voxel adjacency (fast surface detection)
+    // → CSG boolean (exact volumetric check) → combine results.
+    // Voxel + CSG replace the external OCC subprocess with pure Rust code that compiles to WASM.
     tracing::info!(
         "topology-full: running voxel adjacency ({} candidates)",
         candidate_pairs.len()
     );
-    let (relations, _voxel_bboxes) =
+    let (voxel_relations, _voxel_bboxes) =
         bbox::voxel_adjacency_relations_with_candidates(step, &candidate_pairs, 0.1, 50_000);
     tracing::info!(
         "topology-full: voxel adjacency produced {} relations",
-        relations.len()
+        voxel_relations.len()
     );
-    return Ok((relations, mesh_bboxes, mesh_wkts, bbox_report));
+
+    // Collect voxel relation set for dedup against CSG results
+    let mut voxel_relation_set = HashSet::new();
+    for r in &voxel_relations {
+        if r.kind == GeometryRelationKind::IntersectingElement {
+            let pair = if r.source < r.target {
+                (r.source, r.target)
+            } else {
+                (r.target, r.source)
+            };
+            voxel_relation_set.insert(pair);
+        }
+    }
+
+    // CSG pass: run boolean intersection on candidate pairs not already found by voxel.
+    // Memory-bounded: processes pairs in batches, extracting only needed meshes per batch.
+    let csg_tolerance = geometry_tolerance;
+    tracing::info!(
+        "topology-full: running CSG boolean on {} remaining candidate pairs",
+        candidate_pairs.len()
+    );
+    let csg_options = ExactCheckOptions {
+        tolerance: csg_tolerance,
+    };
+    let csg_relations = lbd_geometry::csg::derive_relations_with_csg(
+        model,
+        step,
+        &candidate_pairs,
+        &csg_options,
+        &mesh_bboxes,
+    );
+
+    // Merge voxel + CSG results (deduplicated)
+    let mut all_relations = Vec::with_capacity(voxel_relations.len() + csg_relations.len());
+    let mut seen_relation_ids = HashSet::new();
+
+    // Add voxel relations first
+    for r in &voxel_relations {
+        all_relations.push(r.clone());
+        seen_relation_ids.insert((r.source, r.target, r.kind.clone()));
+    }
+
+    // Add CSG relations that aren't already in voxel set
+    for r in &csg_relations {
+        if seen_relation_ids.insert((r.source, r.target, r.kind.clone())) {
+            all_relations.push(r.clone());
+        }
+    }
+
+    tracing::info!(
+        "topology-full: voxel {} + CSG {} = {} total relations",
+        voxel_relations.len(),
+        csg_relations.len(),
+        all_relations.len()
+    );
+
+    return Ok((all_relations, mesh_bboxes, mesh_wkts, bbox_report));
 }
 
 fn normalize_base_for_graph_iri(base_uri: &str) -> String {
