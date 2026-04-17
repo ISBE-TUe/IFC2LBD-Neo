@@ -677,6 +677,7 @@ dependencies = [
  "rayon",
  "rio_api",
  "rio_turtle",
+ "rstar",
  "serde",
  "serde_json",
  "thiserror",

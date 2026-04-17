@@ -7,7 +7,8 @@ use crate::types::{
 use lbd_pipeline::ActivationPlan;
 use lbd_pipeline::{
     FILE_EXPORT_ID, IFCOWL_PRODUCER_ID, IFC_TOPOLOGY_PRODUCER_ID, LBD_PRODUCER_ID,
-    NQUADS_CHUNKED_SERIALIZER_ID, NQUADS_SERIALIZER_ID, TURTLE_SERIALIZER_ID,
+    NQUADS_CHUNKED_SERIALIZER_ID, NQUADS_SERIALIZER_ID, TOPOLOGY_FULL_PRODUCER_ID,
+    TURTLE_SERIALIZER_ID,
 };
 
 pub(crate) fn normalize_base_for_graph_iri(base_uri: &str) -> String {
@@ -144,6 +145,7 @@ pub(crate) fn resolve_execution_settings(
         emit_ifcowl: active.contains(IFCOWL_PRODUCER_ID),
         emit_topology: active.contains(IFC_TOPOLOGY_PRODUCER_ID),
         emit_bbox: active.contains(lbd_pipeline::BBOX_ENRICHER_ID),
+        emit_full_topology: active.contains(lbd_pipeline::TOPOLOGY_FULL_PRODUCER_ID),
         nquads: NquadsModuleOptions {
             lbd_graph_iri: effective_nquads_entries
                 .and_then(|m| m.get("lbd_graph_iri"))

@@ -42,7 +42,7 @@ const TOPOLOGY_EXECUTORS: &[TopologyExecutor] = &[
     TopologyExecutor {
         plugin_id: lbd_pipeline::IFC_TOPOLOGY_PRODUCER_ID,
         requires_geometry_relations: false,
-        execute: execute_topology_lite,
+        execute: execute_ifc_topology,
     },
     TopologyExecutor {
         plugin_id: lbd_pipeline::TOPOLOGY_FULL_PRODUCER_ID,
@@ -75,7 +75,7 @@ pub(crate) fn plugin_requires_geometry_relations(plugin_id: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn execute_topology_lite(
+fn execute_ifc_topology(
     _context: &TopologyExecutionContext<'_>,
 ) -> anyhow::Result<TopologyExecutionOutput> {
     Ok(TopologyExecutionOutput {

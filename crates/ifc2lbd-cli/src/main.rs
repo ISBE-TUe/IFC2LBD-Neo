@@ -1323,7 +1323,7 @@ pub(crate) fn topology_full_occ_relations(
     HashMap<EntityId, String>,
     bbox::BboxQualityReport,
 )> {
-    let (candidate_pairs, mut prefilter_bboxes) = bbox::semantic_candidate_pairs(model, step);
+    let (candidate_pairs, mut prefilter_bboxes) = bbox::rtree_candidate_pairs(model, step);
     let unique_elements = {
         let mut ids = HashSet::new();
         for (a, b) in &candidate_pairs {
@@ -1371,31 +1371,61 @@ pub(crate) fn topology_full_occ_relations(
         prefilter_bboxes.entry(*eid).or_insert(*bbox);
     }
 
-    let kernel_bin = kernel::resolve_geometry_kernel_bin()?;
-    let (kernel_args, _cache_guard) = kernel::prepare_kernel_cache_args(input_path)?;
-    tracing::info!("topology-full OCC kernel: {}", kernel_bin.display());
+    // Try OCC exact kernel; fall back to voxel adjacency if unavailable.
+    let relations = match kernel::resolve_geometry_kernel_bin() {
+        Ok(kernel_bin) => {
+            let (kernel_args, _cache_guard) = kernel::prepare_kernel_cache_args(input_path)?;
+            tracing::info!("topology-full OCC kernel: {}", kernel_bin.display());
 
-    let options = ExactCheckOptions {
-        tolerance: geometry_tolerance,
-    };
-    let execution = SubprocessKernelExecutionOptions {
-        timeout: kernel_timeout,
-        // Keep one kernel invocation for typical model sizes to avoid rebuilding
-        // in-memory shape maps across multiple subprocess calls.
-        max_pairs_per_batch,
-    };
+            let options = ExactCheckOptions {
+                tolerance: geometry_tolerance,
+            };
+            let execution = SubprocessKernelExecutionOptions {
+                timeout: kernel_timeout,
+                max_pairs_per_batch,
+            };
 
-    let relations = derive_relations_with_exact_kernel_subprocess_batch(
-        model,
-        kernel_bin,
-        kernel_args,
-        input_path.to_path_buf(),
-        &candidate_pairs,
-        &options,
-        &execution,
-        &prefilter_bboxes,
-    )
-    .context("exact OCC topology kernel failed")?;
+            match derive_relations_with_exact_kernel_subprocess_batch(
+                model,
+                kernel_bin,
+                kernel_args,
+                input_path.to_path_buf(),
+                &candidate_pairs,
+                &options,
+                &execution,
+                &prefilter_bboxes,
+            ) {
+                Ok(rels) => rels,
+                Err(err) => {
+                    tracing::warn!(
+                        "OCC kernel failed ({}), falling back to voxel adjacency",
+                        err
+                    );
+                    let (voxel_relations, _voxel_bboxes) =
+                        bbox::voxel_adjacency_relations_with_candidates(
+                            step,
+                            &candidate_pairs,
+                            0.1,
+                            50_000,
+                        );
+                    voxel_relations
+                }
+            }
+        }
+        Err(err) => {
+            tracing::info!(
+                "OCC kernel not available ({}), using voxel adjacency instead",
+                err
+            );
+            let (voxel_relations, _voxel_bboxes) = bbox::voxel_adjacency_relations_with_candidates(
+                step,
+                &candidate_pairs,
+                0.1,
+                50_000,
+            );
+            voxel_relations
+        }
+    };
 
     let intersecting_triples = relations
         .iter()

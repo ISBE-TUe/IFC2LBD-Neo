@@ -128,21 +128,33 @@ function optionControl(pluginId, key) {
       </div>`;
   }
   if (key === "chunking") {
+    // Default to "lines" for chunked serializer (matches Rust default)
+    const chunkingVal = current || "lines";
     return `
       <div class="detail-row">
         <span class="detail-label">${key}</span>
         <select data-option-key="${key}" class="detail-select">
-          <option value="none" ${current === "none" ? "selected" : ""}>None</option>
-          <option value="lines" ${current === "lines" ? "selected" : ""}>Lines</option>
-          <option value="bytes" ${current === "bytes" ? "selected" : ""}>Bytes</option>
+          <option value="none" ${chunkingVal === "none" ? "selected" : ""}>None</option>
+          <option value="lines" ${chunkingVal === "lines" ? "selected" : ""}>Lines</option>
+          <option value="bytes" ${chunkingVal === "bytes" ? "selected" : ""}>Bytes</option>
         </select>
       </div>`;
   }
-  // Default: text input
+  // Default: text input with contextual placeholder
+  const placeholders = {
+    chunk_size_lines: "2000000 (2M lines)",
+    chunk_size_bytes: "268435456 (256MB)",
+    chunk_prefix: "out",
+    inflation_threshold: "0.1",
+    lbd_graph_iri: "https://example.com/lbd",
+    ifcowl_graph_iri: "https://example.com/ifcowl",
+    output_stem: "converted-model",
+  };
+  const placeholder = placeholders[key] || key;
   return `
     <div class="detail-row">
       <span class="detail-label">${key}</span>
-      <input data-option-key="${key}" class="detail-input" type="text" value="${current}" placeholder="${key}" />
+      <input data-option-key="${key}" class="detail-input" type="text" value="${current}" placeholder="${placeholder}" />
     </div>`;
 }
 

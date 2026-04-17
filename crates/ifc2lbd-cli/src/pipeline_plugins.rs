@@ -6,8 +6,8 @@ use crossbeam::channel::Receiver;
 use lbd_pipeline::{
     ExportPlugin, FailurePolicy, ParallelismMode, PipelinePlugin, PipelineStage, PluginManifest,
     PluginRegistry, ProducerPlugin, SerializerPlugin, BBOX_ENRICHER_ID, FILE_EXPORT_ID,
-    GRAFEO_EXPORT_ID, IFCOWL_PRODUCER_ID, LBD_PRODUCER_ID, NQUADS_SERIALIZER_ID, STDOUT_EXPORT_ID,
-    TOPOLOGY_FULL_PRODUCER_ID, IFC_TOPOLOGY_PRODUCER_ID, TURTLE_SERIALIZER_ID,
+    GRAFEO_EXPORT_ID, IFCOWL_PRODUCER_ID, IFC_TOPOLOGY_PRODUCER_ID, LBD_PRODUCER_ID,
+    NQUADS_SERIALIZER_ID, STDOUT_EXPORT_ID, TOPOLOGY_FULL_PRODUCER_ID, TURTLE_SERIALIZER_ID,
 };
 use serde::{Deserialize, Serialize};
 

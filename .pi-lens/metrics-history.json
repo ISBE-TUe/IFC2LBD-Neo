@@ -273,8 +273,8 @@
     },
     "web/wasm-prototype/src/pipeline/sidebar.js": {
       "latest": {
-        "commit": "0e9c4f2",
-        "timestamp": "2026-04-17T13:13:07.433Z",
+        "commit": "432452d",
+        "timestamp": "2026-04-17T16:39:58.586Z",
         "mi": 31.9,
         "cognitive": 75,
         "nesting": 4,
@@ -292,10 +292,20 @@
           "lines": 130,
           "maxCyclomatic": 35,
           "entropy": 5.58
+        },
+        {
+          "commit": "432452d",
+          "timestamp": "2026-04-17T16:39:58.586Z",
+          "mi": 31.9,
+          "cognitive": 75,
+          "nesting": 4,
+          "lines": 130,
+          "maxCyclomatic": 35,
+          "entropy": 5.58
         }
       ],
       "trend": "stable"
     }
   },
-  "capturedAt": "2026-04-17T16:31:12.536Z"
+  "capturedAt": "2026-04-17T16:40:03.586Z"
 }
