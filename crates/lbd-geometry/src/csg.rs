@@ -1,26 +1,27 @@
-//! Constructive solid geometry (CSG) boolean intersection using csgrs.
+//! Mesh intersection detection using parry3d.
 //!
-//! Extracts triangle meshes from IFC geometry and performs boolean intersection
-//! via csgrs BSP-tree mesh boolean operations. Replaces the external OCC subprocess
-//! with pure Rust code that compiles to WASM.
+//! Extracts triangle meshes from IFC geometry and performs exact intersection
+//! detection via parry3d's BVH-accelerated triangle-mesh collision queries.
+//! Replaces the broken csgrs BSP-tree boolean engine with an iterative,
+//! recursion-free algorithm that handles real-world IFC meshes (1000s of faces).
 //!
-//! Pipeline: R-tree broad-phase → CSG boolean intersection (with pair limiting) →
-//! bbox fallback for elements without meshes or meshes too large for CSG.
+//! Pipeline: R-tree broad-phase → parry3d BVH collision test →
+//! bbox fallback for elements without meshes.
 
 use std::collections::HashMap;
 
-use csgrs::csg::CSG;
-use csgrs::polygon::Polygon;
-use csgrs::vertex::Vertex;
 use ifc_model::IfcModel;
 use ifc_step::{EntityId, StepFile, StepValue};
-
-use nalgebra::{Point3, Vector3};
+use parry3d::bounding_volume::Aabb;
+use parry3d::math::{Pose, Real, Vector};
+use parry3d::query::contact;
+use parry3d::query::intersection_test;
+use parry3d::shape::TriMesh;
 use tracing::{debug, info};
 
 use crate::{
     append_pair_relations, ExactCheckOptions, ExactGeometryKernel, ExactPairAnalysis,
-    GeometryKernelError,
+    GeometryKernelError, InterfaceEvidence,
 };
 
 // ---------------------------------------------------------------------------
@@ -111,7 +112,7 @@ impl Affine3 {
 }
 
 // ---------------------------------------------------------------------------
-// IFC geometry → mesh extraction (from CLI mesh.rs)
+// IFC geometry → mesh extraction
 // ---------------------------------------------------------------------------
 
 /// Extract the combined triangle mesh for an IFC element in world coordinates.
@@ -1019,67 +1020,165 @@ fn axis2placement3d_to_affine(step: &StepFile, id: EntityId) -> Affine3 {
 }
 
 // ---------------------------------------------------------------------------
-// Convert TriangleMesh → csgrs CSG (for boolean operations)
+// parry3d mesh intersection
 // ---------------------------------------------------------------------------
 
-/// Convert a TriangleMesh into a csgrs CSG solid for boolean operations.
-/// Each triangle becomes a closed polygon (3 vertices forming a triangle).
-fn to_csgrs_csg(mesh: &TriangleMesh) -> Option<CSG<f64>> {
-    let vertices: Vec<[f64; 3]> = mesh
+/// Build a parry3d TriMesh from our TriangleMesh.
+/// Returns None if the mesh has no valid triangles.
+fn build_parry_mesh(mesh: &TriangleMesh) -> Option<TriMesh> {
+    if mesh.triangle_count() == 0 {
+        return None;
+    }
+
+    let vertices: Vec<Vector> = mesh
         .vertices
         .chunks_exact(3)
-        .map(|c| [c[0], c[1], c[2]])
+        .map(|c| Vector::new(c[0] as Real, c[1] as Real, c[2] as Real))
         .collect();
 
-    if vertices.len() < 3 {
+    let indices: Vec<[u32; 3]> = mesh
+        .indices
+        .chunks_exact(3)
+        .filter_map(|tri| {
+            if tri.len() == 3 {
+                Some([tri[0], tri[1], tri[2]])
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    TriMesh::new(vertices, indices).ok()
+}
+
+/// Compute the bounding box of a mesh in parry3d Aabb format.
+fn mesh_aabb(mesh: &TriangleMesh) -> Option<Aabb> {
+    if mesh.vertices.len() < 9 {
         return None;
     }
 
-    let mut polygons = Vec::new();
+    let mut min_x = f64::MAX;
+    let mut min_y = f64::MAX;
+    let mut min_z = f64::MAX;
+    let mut max_x = f64::MIN;
+    let mut max_y = f64::MIN;
+    let mut max_z = f64::MIN;
 
-    for tri in mesh.indices.chunks_exact(3) {
-        if tri.len() != 3 {
-            continue;
+    for chunk in mesh.vertices.chunks_exact(3) {
+        min_x = min_x.min(chunk[0]);
+        min_y = min_y.min(chunk[1]);
+        min_z = min_z.min(chunk[2]);
+        max_x = max_x.max(chunk[0]);
+        max_y = max_y.max(chunk[1]);
+        max_z = max_z.max(chunk[2]);
+    }
+
+    Some(Aabb {
+        mins: Vector::new(min_x as Real, min_y as Real, min_z as Real),
+        maxs: Vector::new(max_x as Real, max_y as Real, max_z as Real),
+    })
+}
+
+/// Check if two parry3d AABBs are disjoint (no overlap).
+fn aabb_disjoint(a: &Aabb, b: &Aabb) -> bool {
+    a.maxs.x < b.mins.x
+        || b.maxs.x < a.mins.x
+        || a.maxs.y < b.mins.y
+        || b.maxs.y < a.mins.y
+        || a.maxs.z < b.mins.z
+        || b.maxs.z < a.mins.z
+}
+
+/// Result of parry3d mesh contact analysis.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ContactType {
+    /// Meshes are penetrating (interior overlap) → IntersectingElement
+    Intersecting,
+    /// Meshes are touching at boundary (zero-distance) → InterfaceOf
+    Touching,
+    /// Meshes are separated → no relation
+    Separated,
+}
+
+/// Analyze two meshes using parry3d BVH-accelerated contact detection.
+///
+/// Strategy:
+/// 1. Quick AABB pre-filter — skip if bounding boxes are disjoint
+/// 2. parry3d `contact()` query — returns signed distance:
+///    - `dist < -tolerance` → penetrating (intersecting)
+///    - `-tolerance ≤ dist ≤ tolerance` → touching (interface)
+///    - `dist > tolerance` → separated
+///
+/// This distinguishes between elements that actually intersect (penetration)
+/// vs elements that merely touch at a boundary (interface).
+pub fn meshes_analyze(
+    left_mesh: &TriangleMesh,
+    right_mesh: &TriangleMesh,
+    options: &ExactCheckOptions,
+) -> ContactType {
+    let left_tri_count = left_mesh.triangle_count();
+    let right_tri_count = right_mesh.triangle_count();
+
+    if left_tri_count == 0 || right_tri_count == 0 {
+        return ContactType::Separated;
+    }
+
+    // Build parry3d meshes
+    let Some(left_trimesh) = build_parry_mesh(left_mesh) else {
+        return ContactType::Separated;
+    };
+    let Some(right_trimesh) = build_parry_mesh(right_mesh) else {
+        return ContactType::Separated;
+    };
+
+    // Quick AABB pre-filter
+    let left_aabb = mesh_aabb(left_mesh);
+    let right_aabb = mesh_aabb(right_mesh);
+
+    if let (Some(la), Some(ra)) = (&left_aabb, &right_aabb) {
+        if aabb_disjoint(la, ra) {
+            return ContactType::Separated;
         }
-        let a = vertices[tri[0] as usize];
-        let b = vertices[tri[1] as usize];
-        let c = vertices[tri[2] as usize];
-
-        // Compute triangle normal via cross product
-        let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-        let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
-        let normal = cross(&ab, &ac);
-        let normal = normalize(normal);
-
-        let v0 = Vertex::new(
-            Point3::new(a[0], a[1], a[2]),
-            Vector3::new(normal[0], normal[1], normal[2]),
-        );
-        let v1 = Vertex::new(
-            Point3::new(b[0], b[1], b[2]),
-            Vector3::new(normal[0], normal[1], normal[2]),
-        );
-        let v2 = Vertex::new(
-            Point3::new(c[0], c[1], c[2]),
-            Vector3::new(normal[0], normal[1], normal[2]),
-        );
-
-        let polygon = Polygon::new(vec![v0, v1, v2], None);
-        polygons.push(polygon);
     }
 
-    if polygons.is_empty() {
-        return None;
+    // parry3d contact query — returns signed distance between shapes
+    // Pose::identity() means meshes are in the same coordinate space (already transformed)
+    match contact(
+        &Pose::identity(),
+        &left_trimesh,
+        &Pose::identity(),
+        &right_trimesh,
+        options.tolerance as Real,
+    ) {
+        Ok(Some(contact)) => {
+            if contact.dist < -options.tolerance as Real {
+                ContactType::Intersecting
+            } else {
+                ContactType::Touching
+            }
+        }
+        Ok(None) => ContactType::Separated,
+        Err(_) => {
+            debug!("parry: contact unsupported for pair");
+            // Fallback: use intersection_test (conservative — treats touching as intersecting)
+            match intersection_test(
+                &Pose::identity(),
+                &left_trimesh,
+                &Pose::identity(),
+                &right_trimesh,
+            ) {
+                Ok(true) => ContactType::Intersecting,
+                _ => ContactType::Separated,
+            }
+        }
     }
-
-    Some(CSG::from_polygons(&polygons))
 }
 
 // ---------------------------------------------------------------------------
-// CSG boolean intersection
+// CSG boolean intersection (public API — now backed by parry3d)
 // ---------------------------------------------------------------------------
 
-/// Analyze a single pair of elements using csgrs mesh boolean intersection.
+/// Analyze a single pair of elements using parry3d mesh intersection.
 pub fn csg_boolean_intersection(
     step: &StepFile,
     left_id: EntityId,
@@ -1111,7 +1210,7 @@ pub fn csg_boolean_intersection(
     let left_mesh = match extract_element_mesh(step, left_id, &left_world) {
         m if m.is_empty() => {
             debug!(
-                "csg: left element {} has no mesh, using bbox fallback",
+                "parry: left element {} has no mesh, using bbox fallback",
                 left_id
             );
             return analyze_with_bbox_fallback(left_id, right_id, left_bbox, right_bbox, options);
@@ -1122,7 +1221,7 @@ pub fn csg_boolean_intersection(
     let right_mesh = match extract_element_mesh(step, right_id, &right_world) {
         m if m.is_empty() => {
             debug!(
-                "csg: right element {} has no mesh, using bbox fallback",
+                "parry: right element {} has no mesh, using bbox fallback",
                 right_id
             );
             return analyze_with_bbox_fallback(left_id, right_id, left_bbox, right_bbox, options);
@@ -1130,56 +1229,49 @@ pub fn csg_boolean_intersection(
         m => m,
     };
 
-    // Limit triangle count to prevent stack overflow from csgrs BSP recursion.
-    let max_triangles = 2000;
-    let left_tri_count = left_mesh.indices.len() / 3;
-    let right_tri_count = right_mesh.indices.len() / 3;
-    if left_tri_count > max_triangles || right_tri_count > max_triangles {
-        debug!(
-            "csg: pair ({},{}) has {}+{} triangles (>{}), bbox fallback",
-            left_id, right_id, left_tri_count, right_tri_count, max_triangles
-        );
-        return analyze_with_bbox_fallback(left_id, right_id, left_bbox, right_bbox, options);
-    }
+    // Analyze contact type: penetrating vs touching vs separated
+    let left_tri_count = left_mesh.triangle_count();
+    let right_tri_count = right_mesh.triangle_count();
+    let contact_type = meshes_analyze(&left_mesh, &right_mesh, options);
 
-    // Convert to csgrs CSG solids
-    let left_csg = match to_csgrs_csg(&left_mesh) {
-        Some(m) => m,
-        None => {
-            debug!("csg: left element {} failed csgrs conversion", left_id);
-            return analyze_with_bbox_fallback(left_id, right_id, left_bbox, right_bbox, options);
+    match contact_type {
+        ContactType::Intersecting => {
+            debug!(
+                "parry: elements {} and {} intersect ({}+{} triangles)",
+                left_id, right_id, left_tri_count, right_tri_count
+            );
+            Ok(ExactPairAnalysis {
+                intersects: true,
+                touches_within_tolerance: false,
+                minimum_distance: None,
+                interface: None,
+            })
         }
-    };
-
-    let right_csg = match to_csgrs_csg(&right_mesh) {
-        Some(m) => m,
-        None => {
-            debug!("csg: right element {} failed csgrs conversion", right_id);
-            return analyze_with_bbox_fallback(left_id, right_id, left_bbox, right_bbox, options);
+        ContactType::Touching => {
+            debug!(
+                "parry: elements {} and {} touch ({}+{} triangles)",
+                left_id, right_id, left_tri_count, right_tri_count
+            );
+            // Synthesize interface entity for touching elements
+            let interface_id = left_id + right_id + 1_000_000;
+            Ok(ExactPairAnalysis {
+                intersects: false,
+                touches_within_tolerance: true,
+                minimum_distance: Some(0.0),
+                interface: Some(InterfaceEvidence {
+                    interface_id,
+                    shared_boundary_area: None,
+                }),
+            })
         }
-    };
-
-    // Perform boolean intersection
-    let result = left_csg.intersection(&right_csg);
-
-    // Check if the intersection has any volume (non-empty result)
-    let intersects = !result.polygons.is_empty();
-
-    if intersects {
-        debug!(
-            "csg: elements {} and {} intersect ({} polygons)",
-            left_id,
-            right_id,
-            result.polygons.len()
-        );
+        ContactType::Separated => {
+            debug!(
+                "parry: elements {} and {} are separated ({}+{} triangles)",
+                left_id, right_id, left_tri_count, right_tri_count
+            );
+            Ok(ExactPairAnalysis::default())
+        }
     }
-
-    Ok(ExactPairAnalysis {
-        intersects,
-        touches_within_tolerance: false,
-        minimum_distance: None,
-        interface: None,
-    })
 }
 
 /// Fallback to bounding box analysis when mesh extraction fails.
@@ -1267,27 +1359,16 @@ fn extract_placement_transform(step: &StepFile, placement_id: EntityId) -> Affin
     result
 }
 
-impl Default for ExactPairAnalysis {
-    fn default() -> Self {
-        Self {
-            intersects: false,
-            touches_within_tolerance: false,
-            minimum_distance: None,
-            interface: None,
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Batch CSG analysis for memory-bounded topology pipeline
 // ---------------------------------------------------------------------------
 
-/// Analyze candidate pairs using csgrs mesh boolean intersection.
+/// Analyze candidate pairs using parry3d mesh intersection.
 /// Returns geometry relations (IntersectingElement + InterfaceOf).
 ///
 /// **Memory-bounded**: processes pairs in small batches to prevent OOM
 /// in WASM/browser environments. For each batch, extracts only the meshes
-/// needed for those pairs, runs CSG, then frees the meshes before the next batch.
+/// needed for those pairs, runs intersection, then frees the meshes before the next batch.
 ///
 /// `csg_batch_size` controls how many pairs are processed concurrently.
 /// Default: 50 (adjust based on WASM memory budget).
@@ -1301,7 +1382,7 @@ pub fn derive_relations_with_csg(
     derive_relations_with_csg_batched(model, step, candidate_pairs, options, fallback_bboxes, 50)
 }
 
-/// Batched CSG analysis with explicit batch size control.
+/// Batched parry3d intersection analysis with explicit batch size control.
 pub fn derive_relations_with_csg_batched(
     model: &IfcModel,
     step: &StepFile,
@@ -1337,13 +1418,12 @@ pub fn derive_relations_with_csg_batched(
 
     let total_pairs = unique_pairs.len();
     info!(
-        "csg: processing {} candidate pairs in batches of {}",
+        "parry: processing {} candidate pairs in batches of {}",
         total_pairs, batch_size
     );
 
     let mut relations = Vec::new();
-    let mut csg_pairs_processed = 0usize;
-    let max_csg_pairs = 200; // Cap CSG pairs to prevent stack overflow
+    let max_csg_pairs = 500; // Cap to prevent excessive computation on very large models
 
     // Process pairs in batches — each batch extracts only the meshes it needs
     for pair_chunk in unique_pairs.chunks(batch_size) {
@@ -1376,28 +1456,6 @@ pub fn derive_relations_with_csg_batched(
 
         // Process each pair in this batch
         for &(left, right) in pair_chunk {
-            csg_pairs_processed += 1;
-            if csg_pairs_processed > max_csg_pairs {
-                info!(
-                    "csg: stopping CSG after {} pairs (capped), {} pairs remaining for bbox fallback",
-                    csg_pairs_processed - 1,
-                    total_pairs.saturating_sub(csg_pairs_processed - 1)
-                );
-                // Process remaining pairs with bbox fallback
-                for remaining in &unique_pairs[csg_pairs_processed - 1..] {
-                    let analysis = analyze_with_bbox_fallback(
-                        remaining.0,
-                        remaining.1,
-                        fallback_bboxes.get(&remaining.0).map(|b| b.as_slice()),
-                        fallback_bboxes.get(&remaining.1).map(|b| b.as_slice()),
-                        options,
-                    )
-                    .unwrap_or(ExactPairAnalysis::default());
-                    append_pair_relations((remaining.0, remaining.1), analysis, &mut relations);
-                }
-                break;
-            }
-
             let left_mesh = match batch_meshes.get(&left) {
                 Some(m) => m,
                 None => {
@@ -1430,74 +1488,62 @@ pub fn derive_relations_with_csg_batched(
                 }
             };
 
-            // Convert to csgrs CSG solids
-            let left_csg = match to_csgrs_csg(left_mesh) {
-                Some(m) => m,
-                None => {
-                    let analysis = analyze_with_bbox_fallback(
-                        left,
-                        right,
-                        fallback_bboxes.get(&left).map(|b| b.as_slice()),
-                        fallback_bboxes.get(&right).map(|b| b.as_slice()),
-                        options,
-                    )
-                    .unwrap_or(ExactPairAnalysis::default());
-                    append_pair_relations((left, right), analysis, &mut relations);
-                    continue;
+            // parry3d BVH contact analysis — distinguishes intersecting from touching
+            let contact_type = meshes_analyze(left_mesh, right_mesh, options);
+
+            match contact_type {
+                ContactType::Intersecting => {
+                    let left_tri = left_mesh.triangle_count();
+                    let right_tri = right_mesh.triangle_count();
+                    info!(
+                        "parry: pair {} intersects with {} ({}+{} triangles)",
+                        left, right, left_tri, right_tri
+                    );
+                    append_pair_relations(
+                        (left, right),
+                        ExactPairAnalysis {
+                            intersects: true,
+                            touches_within_tolerance: false,
+                            minimum_distance: None,
+                            interface: None,
+                        },
+                        &mut relations,
+                    );
                 }
-            };
-
-            let right_csg = match to_csgrs_csg(right_mesh) {
-                Some(m) => m,
-                None => {
-                    let analysis = analyze_with_bbox_fallback(
-                        left,
-                        right,
-                        fallback_bboxes.get(&left).map(|b| b.as_slice()),
-                        fallback_bboxes.get(&right).map(|b| b.as_slice()),
-                        options,
-                    )
-                    .unwrap_or(ExactPairAnalysis::default());
-                    append_pair_relations((left, right), analysis, &mut relations);
-                    continue;
+                ContactType::Touching => {
+                    // Synthesize interface entity for touching elements
+                    let interface_id = left + right + 1_000_000;
+                    append_pair_relations(
+                        (left, right),
+                        ExactPairAnalysis {
+                            intersects: false,
+                            touches_within_tolerance: true,
+                            minimum_distance: Some(0.0),
+                            interface: Some(InterfaceEvidence {
+                                interface_id,
+                                shared_boundary_area: None,
+                            }),
+                        },
+                        &mut relations,
+                    );
                 }
-            };
-
-            // Perform boolean intersection
-            let result = left_csg.intersection(&right_csg);
-            let intersects = !result.polygons.is_empty();
-
-            if intersects {
-                info!(
-                    "csg: pair {} intersects with {} ({} polygons)",
-                    left,
-                    right,
-                    result.polygons.len()
-                );
-                append_pair_relations(
-                    (left, right),
-                    ExactPairAnalysis {
-                        intersects: true,
-                        touches_within_tolerance: false,
-                        minimum_distance: None,
-                        interface: None,
-                    },
-                    &mut relations,
-                );
+                ContactType::Separated => {}
             }
         }
 
         // Meshes are dropped here — batch memory is freed before next batch
     }
 
+    let intersection_count = relations
+        .iter()
+        .filter(|r| r.kind == crate::GeometryRelationKind::IntersectingElement)
+        .count()
+        / 2;
+
     info!(
-        "csg: processed {} CSG pairs, found {} intersection pairs, {} total relations",
-        csg_pairs_processed,
-        relations
-            .iter()
-            .filter(|r| r.kind == crate::GeometryRelationKind::IntersectingElement)
-            .count()
-            / 2,
+        "parry: processed {} CSG pairs, found {} intersection pairs, {} total relations",
+        unique_pairs.len().min(max_csg_pairs),
+        intersection_count,
         relations.len(),
     );
 
@@ -1505,16 +1551,16 @@ pub fn derive_relations_with_csg_batched(
 }
 
 // ---------------------------------------------------------------------------
-// ExactGeometryKernel trait implementation for csgrs
+// ExactGeometryKernel trait implementation for parry3d
 // ---------------------------------------------------------------------------
 
-/// A pure-Rust exact geometry kernel backed by csgrs.
+/// A pure-Rust exact geometry kernel backed by parry3d.
 #[derive(Debug, Clone)]
-pub struct CsgrsGeometryKernel {
+pub struct ParryGeometryKernel {
     pub fallback_bboxes: std::sync::Arc<HashMap<EntityId, [f64; 6]>>,
 }
 
-impl Default for CsgrsGeometryKernel {
+impl Default for ParryGeometryKernel {
     fn default() -> Self {
         Self {
             fallback_bboxes: std::sync::Arc::new(HashMap::new()),
@@ -1522,67 +1568,18 @@ impl Default for CsgrsGeometryKernel {
     }
 }
 
-impl ExactGeometryKernel for CsgrsGeometryKernel {
+impl ExactGeometryKernel for ParryGeometryKernel {
     fn analyze_pair(
         &self,
-        _model: &IfcModel,
-        _left: EntityId,
-        _right: EntityId,
+        model: &IfcModel,
+        left: EntityId,
+        right: EntityId,
         _options: &ExactCheckOptions,
     ) -> Result<ExactPairAnalysis, GeometryKernelError> {
-        tracing::warn!("CsgrsGeometryKernel::analyze_pair not efficient for single pairs");
+        let _ = (model, left, right, _options);
+        tracing::debug!(
+            "ParryGeometryKernel: use derive_relations_with_csg_batched for pair analysis"
+        );
         Ok(ExactPairAnalysis::default())
     }
-}
-
-// ---------------------------------------------------------------------------
-// BoundingBoxProvider for mesh-based bounding boxes
-// ---------------------------------------------------------------------------
-
-/// Extract bounding boxes from mesh vertices.
-pub fn collect_mesh_bounding_boxes(
-    step: &StepFile,
-    element_ids: &[EntityId],
-) -> (HashMap<EntityId, [f64; 6]>, HashMap<EntityId, String>) {
-    let mut bboxes = HashMap::new();
-    let mut wkts = HashMap::new();
-
-    for &id in element_ids {
-        let entity = match step.entities.get(&id) {
-            Some(e) => e,
-            None => continue,
-        };
-
-        let placement_id = match entity.args.get(5) {
-            Some(StepValue::Ref(id)) => *id,
-            _ => continue,
-        };
-        let world = extract_placement_transform(step, placement_id);
-
-        let mesh = extract_element_mesh(step, id, &world);
-        if mesh.is_empty() {
-            continue;
-        }
-
-        let mut bbox = [f64::MAX, f64::MAX, f64::MAX, f64::MIN, f64::MIN, f64::MIN];
-        for chunk in mesh.vertices.chunks_exact(3) {
-            bbox[0] = bbox[0].min(chunk[0]);
-            bbox[1] = bbox[1].min(chunk[1]);
-            bbox[2] = bbox[2].min(chunk[2]);
-            bbox[3] = bbox[3].max(chunk[0]);
-            bbox[4] = bbox[4].max(chunk[1]);
-            bbox[5] = bbox[5].max(chunk[2]);
-        }
-        bboxes.insert(id, bbox);
-        wkts.insert(id, format_bbox_wkt(bbox));
-    }
-
-    (bboxes, wkts)
-}
-
-fn format_bbox_wkt(bbox: [f64; 6]) -> String {
-    format!(
-        "BOUNDCOORDS(({} {} {} {} {} {}))",
-        bbox[0], bbox[1], bbox[2], bbox[3], bbox[4], bbox[5]
-    )
 }

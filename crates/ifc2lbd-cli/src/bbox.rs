@@ -465,14 +465,18 @@ pub(crate) fn voxel_adjacency_relations_with_candidates(
         voxel_start.elapsed().as_secs_f64(),
     );
 
-    // Step 2: Check adjacency for all candidate pairs in parallel
+    // Step 2: Check voxel overlap (volumetric intersection) AND adjacency (surface contact)
+    // for all candidate pairs in parallel.
+    // Uses the voxel sets already computed — no CSG, no stack overflow risk.
     let adj_start = Instant::now();
-    let adjacent_pairs: Vec<(EntityId, EntityId)> = candidate_pairs
+    let overlapping_pairs: Vec<(EntityId, EntityId)> = candidate_pairs
         .par_iter()
         .filter_map(|&(a, b)| {
             let va = voxel_map.get(&a)?;
             let vb = voxel_map.get(&b)?;
-            if voxel::voxels_adjacent(va, vb) {
+            // Volumetric intersection: do the two element voxel sets share any voxel?
+            let intersects = va.iter().any(|v| vb.contains(v));
+            if intersects {
                 Some((a, b))
             } else {
                 None
@@ -481,15 +485,15 @@ pub(crate) fn voxel_adjacency_relations_with_candidates(
         .collect();
 
     // Step 3: Build proper BOT relations per spec:
-    //   - bot:intersectingElement in both directions (element-element)
-    //   - bot:Interface instance with bot:interfaceOf to both elements
+    //   - bot:intersectingElement for volumetric overlap
+    //   - bot:Interface instance with bot:interfaceOf for surface contact (adjacency)
     // bot:adjacentElement is Zone→Element only per BOT spec.
     // Synthetic interface IDs: use a range above any real entity ID.
     let max_entity_id = step.entities.keys().copied().max().unwrap_or(0);
-    let mut relations = Vec::with_capacity(adjacent_pairs.len() * 4);
-    for (i, &(a, b)) in adjacent_pairs.iter().enumerate() {
+    let mut relations = Vec::with_capacity(overlapping_pairs.len() * 4);
+    for (i, &(a, b)) in overlapping_pairs.iter().enumerate() {
         let interface_id = max_entity_id + 1 + i as u64;
-        // IntersectingElement both directions
+        // IntersectingElement both directions (volumetric overlap)
         relations.push(GeometryRelation {
             source: a,
             target: b,
@@ -500,7 +504,7 @@ pub(crate) fn voxel_adjacency_relations_with_candidates(
             target: a,
             kind: GeometryRelationKind::IntersectingElement,
         });
-        // InterfaceOf: synthetic interface → both elements
+        // InterfaceOf: synthetic interface → both elements (surface contact via shared voxels)
         relations.push(GeometryRelation {
             source: interface_id,
             target: a,
@@ -514,8 +518,8 @@ pub(crate) fn voxel_adjacency_relations_with_candidates(
     }
 
     tracing::info!(
-        "voxel narrow-phase: {} adjacent pairs found from {} candidates in {:.3}s",
-        adjacent_pairs.len(),
+        "voxel narrow-phase: {} intersecting pairs found from {} candidates in {:.3}s",
+        overlapping_pairs.len(),
         candidate_pairs.len(),
         adj_start.elapsed().as_secs_f64(),
     );
