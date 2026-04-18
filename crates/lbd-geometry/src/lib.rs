@@ -94,7 +94,7 @@ pub struct InterfaceEvidence {
     pub shared_boundary_area: Option<f64>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct ExactPairAnalysis {
     pub intersects: bool,
     pub touches_within_tolerance: bool,
@@ -528,11 +528,18 @@ pub fn enrich_topology_with_geometry(
 
     for relation in provider.candidate_relations(model) {
         let kind = map_relation_kind(relation.kind);
-        if !graph.node_kinds.contains_key(&relation.source)
-            || !graph.node_kinds.contains_key(&relation.target)
-        {
+
+        // For InterfaceOf edges, the source is a synthetic interface entity
+        // (not in the graph). Only check that the target is a real element.
+        // For all other relation kinds, both endpoints must exist.
+        let source_ok = match kind {
+            TopologyEdgeKind::InterfaceOf => true, // synthetic interface entity source
+            _ => graph.node_kinds.contains_key(&relation.source),
+        };
+        if !source_ok || !graph.node_kinds.contains_key(&relation.target) {
             continue;
         }
+
         if insert_unique_extension_edge(
             &mut graph.extension_edges,
             relation.source,
