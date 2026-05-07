@@ -1,0 +1,80 @@
+{
+  "success": true,
+  "clones": [
+    {
+      "fileA": "src/wasm/ifc2lbd_wasm.js",
+      "startA": 180,
+      "fileB": "src/wasm/ifc2lbd_wasm.js",
+      "startB": 162,
+      "lines": 7,
+      "tokens": 0
+    },
+    {
+      "fileA": "src/pipeline/dag.js",
+      "startA": 123,
+      "fileB": "src/pipeline/dag.js",
+      "startB": 102,
+      "lines": 7,
+      "tokens": 0
+    },
+    {
+      "fileA": "src/pipeline/app.js",
+      "startA": 268,
+      "fileB": "src/pipeline/config.js",
+      "startB": 12,
+      "lines": 8,
+      "tokens": 0
+    },
+    {
+      "fileA": "src/pipeline/app.js",
+      "startA": 347,
+      "fileB": "src/pipeline/session.js",
+      "startB": 380,
+      "lines": 9,
+      "tokens": 0
+    },
+    {
+      "fileA": "src/main.js",
+      "startA": 66,
+      "fileB": "src/pipeline/app.js",
+      "startB": 339,
+      "lines": 6,
+      "tokens": 0
+    },
+    {
+      "fileA": "src/main.js",
+      "startA": 92,
+      "fileB": "src/pipeline/app.js",
+      "startB": 97,
+      "lines": 11,
+      "tokens": 0
+    },
+    {
+      "fileA": "src/main.js",
+      "startA": 124,
+      "fileB": "src/pipeline/app.js",
+      "startB": 155,
+      "lines": 16,
+      "tokens": 0
+    },
+    {
+      "fileA": "src/main.js",
+      "startA": 142,
+      "fileB": "src/pipeline/app.js",
+      "startB": 169,
+      "lines": 27,
+      "tokens": 0
+    },
+    {
+      "fileA": "src/main.js",
+      "startA": 235,
+      "fileB": "src/pipeline/app.js",
+      "startB": 297,
+      "lines": 8,
+      "tokens": 0
+    }
+  ],
+  "duplicatedLines": 90,
+  "totalLines": 3821,
+  "percentage": 2.36
+}

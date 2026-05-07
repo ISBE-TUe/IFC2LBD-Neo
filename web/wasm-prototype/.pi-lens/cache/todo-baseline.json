@@ -1,0 +1,25 @@
+{
+  "items": [
+    {
+      "type": "XXX",
+      "message": ".nq, manifest.json, etc.)",
+      "file": "src/pipeline/app.js",
+      "line": 142,
+      "column": 64
+    },
+    {
+      "type": "TODO",
+      "message": "we could test for more things here, like `Set`s and `Map`s.",
+      "file": "src/wasm/ifc2lbd_wasm.js",
+      "line": 486,
+      "column": 7
+    },
+    {
+      "type": "TODO",
+      "message": "while `new URL('...', import.meta.url) becomes a semi-standard",
+      "file": "src/wasm/snippets/wasm-bindgen-rayon-38edf6e439f6d70d/src/workerHelpers.js",
+      "line": 84,
+      "column": 9
+    }
+  ]
+}

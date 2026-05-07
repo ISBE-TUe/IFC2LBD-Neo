@@ -195,33 +195,33 @@
     },
     {
       "fileA": "crates/ifc2lbd-wasm/src/plugins.rs",
-      "startA": 186,
+      "startA": 193,
       "fileB": "crates/ifc2lbd-wasm/src/plugins.rs",
-      "startB": 119,
+      "startB": 126,
       "lines": 9,
       "tokens": 0
     },
     {
       "fileA": "crates/ifc2lbd-wasm/src/plugins.rs",
-      "startA": 395,
+      "startA": 441,
       "fileB": "crates/ifc2lbd-wasm/src/plugins.rs",
-      "startB": 351,
+      "startB": 397,
       "lines": 10,
       "tokens": 0
     },
     {
       "fileA": "crates/ifc2lbd-wasm/src/plugins.rs",
-      "startA": 444,
+      "startA": 490,
       "fileB": "crates/ifc2lbd-wasm/src/plugins.rs",
-      "startB": 383,
+      "startB": 429,
       "lines": 13,
       "tokens": 0
     },
     {
       "fileA": "crates/ifc2lbd-wasm/src/plugins.rs",
-      "startA": 464,
+      "startA": 510,
       "fileB": "crates/ifc2lbd-wasm/src/plugins.rs",
-      "startB": 402,
+      "startB": 448,
       "lines": 17,
       "tokens": 0
     },
@@ -245,7 +245,7 @@
       "fileA": "crates/ifc2lbd-cli/src/pipeline_plugins.rs",
       "startA": 14,
       "fileB": "crates/ifc2lbd-wasm/src/plugins.rs",
-      "startB": 63,
+      "startB": 67,
       "lines": 9,
       "tokens": 0
     },
@@ -253,7 +253,7 @@
       "fileA": "crates/ifc2lbd-cli/src/pipeline_plugins.rs",
       "startA": 46,
       "fileB": "crates/ifc2lbd-wasm/src/plugins.rs",
-      "startB": 99,
+      "startB": 106,
       "lines": 24,
       "tokens": 0
     },
@@ -261,7 +261,7 @@
       "fileA": "crates/ifc2lbd-cli/src/pipeline_plugins.rs",
       "startA": 78,
       "fileB": "crates/ifc2lbd-wasm/src/plugins.rs",
-      "startB": 168,
+      "startB": 175,
       "lines": 22,
       "tokens": 0
     },
@@ -287,6 +287,14 @@
       "fileB": "crates/ifc2lbd-cli/src/pipeline_plugins.rs",
       "startB": 66,
       "lines": 13,
+      "tokens": 0
+    },
+    {
+      "fileA": "crates/ifc2lbd-cli/src/pipeline_plugins.rs",
+      "startA": 174,
+      "fileB": "crates/ifc2lbd-wasm/src/plugins.rs",
+      "startB": 310,
+      "lines": 16,
       "tokens": 0
     },
     {
@@ -331,7 +339,7 @@
     },
     {
       "fileA": "crates/ifc2lbd-cli/src/bbox.rs",
-      "startA": 21,
+      "startA": 22,
       "fileB": "crates/lbd-converter/src/modules/bbox.rs",
       "startB": 47,
       "lines": 8,
@@ -339,7 +347,7 @@
     },
     {
       "fileA": "crates/ifc2lbd-cli/src/bbox.rs",
-      "startA": 31,
+      "startA": 32,
       "fileB": "crates/lbd-converter/src/modules/bbox.rs",
       "startB": 54,
       "lines": 14,
@@ -347,7 +355,7 @@
     },
     {
       "fileA": "crates/ifc2lbd-cli/src/bbox.rs",
-      "startA": 46,
+      "startA": 47,
       "fileB": "crates/lbd-converter/src/modules/bbox.rs",
       "startB": 69,
       "lines": 26,
@@ -355,7 +363,7 @@
     },
     {
       "fileA": "crates/ifc2lbd-cli/src/bbox.rs",
-      "startA": 73,
+      "startA": 74,
       "fileB": "crates/lbd-converter/src/modules/bbox.rs",
       "startB": 96,
       "lines": 10,
@@ -363,7 +371,7 @@
     },
     {
       "fileA": "crates/ifc2lbd-cli/src/bbox.rs",
-      "startA": 90,
+      "startA": 91,
       "fileB": "crates/lbd-converter/src/modules/bbox.rs",
       "startB": 112,
       "lines": 22,
@@ -371,7 +379,7 @@
     },
     {
       "fileA": "crates/ifc2lbd-cli/src/bbox.rs",
-      "startA": 111,
+      "startA": 112,
       "fileB": "crates/lbd-converter/src/modules/bbox.rs",
       "startB": 133,
       "lines": 15,
@@ -379,7 +387,7 @@
     },
     {
       "fileA": "crates/ifc2lbd-cli/src/bbox.rs",
-      "startA": 125,
+      "startA": 126,
       "fileB": "crates/lbd-converter/src/modules/bbox.rs",
       "startB": 147,
       "lines": 19,
@@ -387,7 +395,7 @@
     },
     {
       "fileA": "crates/ifc2lbd-cli/src/bbox.rs",
-      "startA": 144,
+      "startA": 145,
       "fileB": "crates/lbd-converter/src/modules/bbox.rs",
       "startB": 165,
       "lines": 40,
@@ -395,18 +403,10 @@
     },
     {
       "fileA": "crates/ifc2lbd-cli/src/bbox.rs",
-      "startA": 184,
+      "startA": 185,
       "fileB": "crates/lbd-converter/src/modules/bbox.rs",
       "startB": 204,
       "lines": 21,
-      "tokens": 0
-    },
-    {
-      "fileA": "crates/ifc2lbd-cli/src/bbox.rs",
-      "startA": 313,
-      "fileB": "crates/ifc2lbd-cli/src/bbox.rs",
-      "startB": 262,
-      "lines": 8,
       "tokens": 0
     },
     {
@@ -570,7 +570,7 @@
       "tokens": 0
     }
   ],
-  "duplicatedLines": 922,
-  "totalLines": 19132,
-  "percentage": 4.82
+  "duplicatedLines": 930,
+  "totalLines": 19261,
+  "percentage": 4.83
 }
