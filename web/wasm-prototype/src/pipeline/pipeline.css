@@ -386,6 +386,12 @@ body {
   border-color: var(--status-success);
   color: var(--status-success);
 }
+.rail-file-btn:disabled,
+.rail-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  pointer-events: none;
+}
 
 .rail-file-btn input[type="file"] {
   position: absolute;
