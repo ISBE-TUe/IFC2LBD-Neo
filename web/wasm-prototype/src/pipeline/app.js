@@ -106,6 +106,9 @@ let threadPoolSize = 0;
 let outputDirectoryHandle = null;
 let outputDirectoryName = "";
 const supportsOutputDirectoryPicker = typeof window.showDirectoryPicker === "function";
+let asciiBgCanvas = null;
+let asciiBgCtx = null;
+let asciiBgAnimId = 0;
 
 const detectFeasibilityBudgetMb = () => {
   const gb = Number(navigator.deviceMemory || 0);
@@ -278,6 +281,7 @@ async function init() {
   initSession(document.querySelector("#session-area"));
   initSidebar();
   initLogPanel();
+  initAsciiBackground();
 
   // Wire template picker (dropdown)
   const templatePicker = document.querySelector("#template-picker");
@@ -533,6 +537,59 @@ function bytesToHuman(bytes) {
   if (bytes < 1024) return `${bytes}B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)}KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+}
+
+function initAsciiBackground() {
+  const area = document.querySelector("#session-area");
+  if (!area) return;
+  asciiBgCanvas?.remove();
+  asciiBgCanvas = document.createElement("canvas");
+  asciiBgCanvas.className = "ascii-bg";
+  area.prepend(asciiBgCanvas);
+  asciiBgCtx = asciiBgCanvas.getContext("2d", { alpha: true });
+  resizeAsciiBackground();
+  window.addEventListener("resize", resizeAsciiBackground);
+  if (asciiBgAnimId) cancelAnimationFrame(asciiBgAnimId);
+  const chars = " .,:;+*xo%#@";
+  const step = 10;
+  const draw = (t) => {
+    if (!asciiBgCtx || !asciiBgCanvas) return;
+    const w = asciiBgCanvas.width;
+    const h = asciiBgCanvas.height;
+    asciiBgCtx.clearRect(0, 0, w, h);
+    asciiBgCtx.font = "8.5px JetBrains Mono, monospace";
+    asciiBgCtx.textBaseline = "top";
+    const tt = t * 0.00045;
+    for (let y = 0; y < h; y += step) {
+      for (let x = 0; x < w; x += step) {
+        const v =
+          Math.sin(x * 0.016 + tt) * 0.6 +
+          Math.cos(y * 0.020 - tt * 1.05) * 0.4 +
+          Math.sin((x + y) * 0.007 + tt * 0.55) * 0.5;
+        const n = Math.max(0, Math.min(chars.length - 1, Math.floor(((v + 1.5) / 3) * chars.length)));
+        const ch = chars[n];
+        const alpha = 0.13 + (n / chars.length) * 0.18;
+        asciiBgCtx.fillStyle = `rgba(46,46,46,${alpha.toFixed(3)})`;
+        asciiBgCtx.fillText(ch, x, y);
+      }
+    }
+    asciiBgAnimId = requestAnimationFrame(draw);
+  };
+  asciiBgAnimId = requestAnimationFrame(draw);
+}
+
+function resizeAsciiBackground() {
+  if (!asciiBgCanvas) return;
+  const area = document.querySelector("#session-area");
+  if (!area) return;
+  const dpr = Math.max(1, window.devicePixelRatio || 1);
+  const w = Math.max(1, area.clientWidth);
+  const h = Math.max(1, area.clientHeight);
+  asciiBgCanvas.width = Math.floor(w * dpr);
+  asciiBgCanvas.height = Math.floor(h * dpr);
+  asciiBgCanvas.style.width = `${w}px`;
+  asciiBgCanvas.style.height = `${h}px`;
+  if (asciiBgCtx) asciiBgCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 
 function setupOutputDirectoryUiSupport() {
