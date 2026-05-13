@@ -10,7 +10,8 @@ use lbd_pipeline::BatchKind;
 use lbd_serializer::{
     serialize_lbd_batches_incremental_to_writer, serialize_nquads_batches_to_writer,
     serialize_nquads_merged_batches_to_writer, serialize_turtle_batch_raw_to_writer,
-    serialize_turtle_batch_to_writer, serialize_turtle_to_writer, write_turtle_prefixes_for_stream,
+    serialize_turtle_batch_to_writer, serialize_turtle_grouped_to_writer, serialize_turtle_to_writer,
+    write_turtle_prefixes_for_stream,
 };
 
 use crate::memory::{
@@ -1271,6 +1272,7 @@ fn serialize_turtle_receiver_to_file(
     sink: &Function,
     sink_config: &SinkConfig,
     options: &ConvertOptions,
+    grouping: TurtleGrouping,
     instance_base: &str,
 ) -> Result<(OutputFileSummary, u64), lbd_serializer::SerializerError> {
     let mut writer = SinkChunkWriter::new(
@@ -1281,16 +1283,26 @@ fn serialize_turtle_receiver_to_file(
         sink_config.chunk_size,
         sink_config.max_pending_bytes,
     )?;
-    if !options.low_memory_mode {
+    let grouped = matches!(grouping, TurtleGrouping::Sorted);
+    if !grouped && !options.low_memory_mode {
         write_turtle_prefixes_for_stream(&mut writer, Some(instance_base))?;
     }
     let mut triple_count: u64 = 0;
-    for batch in rx {
-        triple_count += batch.len() as u64;
-        if options.low_memory_mode {
-            serialize_turtle_batch_raw_to_writer(&batch, &mut writer)?;
-        } else {
-            serialize_turtle_batch_to_writer(&batch, &mut writer, Some(instance_base))?;
+    if grouped {
+        let mut all = Vec::new();
+        for mut batch in rx {
+            triple_count += batch.len() as u64;
+            all.append(&mut batch);
+        }
+        serialize_turtle_grouped_to_writer(&all, &mut writer, Some(instance_base))?;
+    } else {
+        for batch in rx {
+            triple_count += batch.len() as u64;
+            if options.low_memory_mode {
+                serialize_turtle_batch_raw_to_writer(&batch, &mut writer)?;
+            } else {
+                serialize_turtle_batch_to_writer(&batch, &mut writer, Some(instance_base))?;
+            }
         }
     }
     let (summary, _, _) = writer.finish()?;
@@ -1302,18 +1314,42 @@ fn serialize_turtle_receiver_to_writer(
     rx: crossbeam::channel::Receiver<Vec<lbd_ontology::Triple>>,
     writer: &mut SinkChunkWriter,
     options: &ConvertOptions,
+    grouping: TurtleGrouping,
     instance_base: &str,
 ) -> Result<u64, lbd_serializer::SerializerError> {
+    let grouped = matches!(grouping, TurtleGrouping::Sorted);
     let mut triple_count: u64 = 0;
-    for batch in rx {
-        triple_count += batch.len() as u64;
-        if options.low_memory_mode {
-            serialize_turtle_batch_raw_to_writer(&batch, &mut *writer)?;
-        } else {
-            serialize_turtle_batch_to_writer(&batch, &mut *writer, Some(instance_base))?;
+    if grouped {
+        let mut all = Vec::new();
+        for mut batch in rx {
+            triple_count += batch.len() as u64;
+            all.append(&mut batch);
+        }
+        serialize_turtle_grouped_to_writer(&all, &mut *writer, Some(instance_base))?;
+    } else {
+        for batch in rx {
+            triple_count += batch.len() as u64;
+            if options.low_memory_mode {
+                serialize_turtle_batch_raw_to_writer(&batch, &mut *writer)?;
+            } else {
+                serialize_turtle_batch_to_writer(&batch, &mut *writer, Some(instance_base))?;
+            }
         }
     }
     Ok(triple_count)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn collect_turtle_receiver(
+    rx: crossbeam::channel::Receiver<Vec<lbd_ontology::Triple>>,
+) -> (Vec<lbd_ontology::Triple>, u64) {
+    let mut all = Vec::new();
+    let mut triple_count: u64 = 0;
+    for mut batch in rx {
+        triple_count += batch.len() as u64;
+        all.append(&mut batch);
+    }
+    (all, triple_count)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1411,18 +1447,52 @@ fn turtle_to_sink_joined(
         sink_config.chunk_size,
         sink_config.max_pending_bytes,
     )?;
-    if !options.low_memory_mode {
+    if !options.low_memory_mode && !matches!(settings.turtle_grouping, TurtleGrouping::Sorted) {
         write_turtle_prefixes_for_stream(&mut writer, Some(&instance_base))?;
     }
     emit_stage_event(sink, TURTLE_SERIALIZER_ID, "Serialize", "running", 0, 0, 0, None)?;
     let serialize_t0 = now_ms();
-
-    if let Some(rx) = bot_receiver { produce_triples.insert(BOT_PRODUCER_ID, serialize_turtle_receiver_to_writer(rx, &mut writer, &options, &instance_base)?); }
-    if let Some(rx) = beo_receiver { produce_triples.insert(BEO_PRODUCER_ID, serialize_turtle_receiver_to_writer(rx, &mut writer, &options, &instance_base)?); }
-    if let Some(rx) = props_receiver { produce_triples.insert(PROPS_OPM_PRODUCER_ID, serialize_turtle_receiver_to_writer(rx, &mut writer, &options, &instance_base)?); }
-    if let Some(rx) = omg_receiver { produce_triples.insert(lbd_pipeline::OMG_FOG_PRODUCER_ID, serialize_turtle_receiver_to_writer(rx, &mut writer, &options, &instance_base)?); }
-    if let Some(rx) = ifcowl_receiver { produce_triples.insert(IFCOWL_PRODUCER_ID, serialize_turtle_receiver_to_writer(rx, &mut writer, &options, &instance_base)?); }
-    if let Some(rx) = topology_receiver { produce_triples.insert(IFC_TOPOLOGY_PRODUCER_ID, serialize_turtle_receiver_to_writer(rx, &mut writer, &options, &instance_base)?); }
+    if matches!(settings.turtle_grouping, TurtleGrouping::Sorted) {
+        let mut all_triples: Vec<lbd_ontology::Triple> = Vec::new();
+        if let Some(rx) = bot_receiver {
+            let (triples, count) = collect_turtle_receiver(rx);
+            produce_triples.insert(BOT_PRODUCER_ID, count);
+            all_triples.extend(triples);
+        }
+        if let Some(rx) = beo_receiver {
+            let (triples, count) = collect_turtle_receiver(rx);
+            produce_triples.insert(BEO_PRODUCER_ID, count);
+            all_triples.extend(triples);
+        }
+        if let Some(rx) = props_receiver {
+            let (triples, count) = collect_turtle_receiver(rx);
+            produce_triples.insert(PROPS_OPM_PRODUCER_ID, count);
+            all_triples.extend(triples);
+        }
+        if let Some(rx) = omg_receiver {
+            let (triples, count) = collect_turtle_receiver(rx);
+            produce_triples.insert(lbd_pipeline::OMG_FOG_PRODUCER_ID, count);
+            all_triples.extend(triples);
+        }
+        if let Some(rx) = ifcowl_receiver {
+            let (triples, count) = collect_turtle_receiver(rx);
+            produce_triples.insert(IFCOWL_PRODUCER_ID, count);
+            all_triples.extend(triples);
+        }
+        if let Some(rx) = topology_receiver {
+            let (triples, count) = collect_turtle_receiver(rx);
+            produce_triples.insert(IFC_TOPOLOGY_PRODUCER_ID, count);
+            all_triples.extend(triples);
+        }
+        serialize_turtle_grouped_to_writer(&all_triples, &mut writer, Some(&instance_base))?;
+    } else {
+        if let Some(rx) = bot_receiver { produce_triples.insert(BOT_PRODUCER_ID, serialize_turtle_receiver_to_writer(rx, &mut writer, &options, settings.turtle_grouping, &instance_base)?); }
+        if let Some(rx) = beo_receiver { produce_triples.insert(BEO_PRODUCER_ID, serialize_turtle_receiver_to_writer(rx, &mut writer, &options, settings.turtle_grouping, &instance_base)?); }
+        if let Some(rx) = props_receiver { produce_triples.insert(PROPS_OPM_PRODUCER_ID, serialize_turtle_receiver_to_writer(rx, &mut writer, &options, settings.turtle_grouping, &instance_base)?); }
+        if let Some(rx) = omg_receiver { produce_triples.insert(lbd_pipeline::OMG_FOG_PRODUCER_ID, serialize_turtle_receiver_to_writer(rx, &mut writer, &options, settings.turtle_grouping, &instance_base)?); }
+        if let Some(rx) = ifcowl_receiver { produce_triples.insert(IFCOWL_PRODUCER_ID, serialize_turtle_receiver_to_writer(rx, &mut writer, &options, settings.turtle_grouping, &instance_base)?); }
+        if let Some(rx) = topology_receiver { produce_triples.insert(IFC_TOPOLOGY_PRODUCER_ID, serialize_turtle_receiver_to_writer(rx, &mut writer, &options, settings.turtle_grouping, &instance_base)?); }
+    }
     let serialize_ms = now_ms() - serialize_t0;
 
     while let Ok(evt) = stage_rx.try_recv() {
@@ -1621,6 +1691,7 @@ fn turtle_to_sink_separate(
             sink,
             sink_config,
             &options,
+            settings.turtle_grouping,
             &instance_base,
         )?;
         produce_triples.insert(BOT_PRODUCER_ID, triples);
@@ -1634,6 +1705,7 @@ fn turtle_to_sink_separate(
             sink,
             sink_config,
             &options,
+            settings.turtle_grouping,
             &instance_base,
         )?;
         produce_triples.insert(BEO_PRODUCER_ID, triples);
@@ -1647,6 +1719,7 @@ fn turtle_to_sink_separate(
             sink,
             sink_config,
             &options,
+            settings.turtle_grouping,
             &instance_base,
         )?;
         produce_triples.insert(PROPS_OPM_PRODUCER_ID, triples);
@@ -1660,6 +1733,7 @@ fn turtle_to_sink_separate(
             sink,
             sink_config,
             &options,
+            settings.turtle_grouping,
             &instance_base,
         )?;
         produce_triples.insert(lbd_pipeline::OMG_FOG_PRODUCER_ID, triples);
@@ -1673,6 +1747,7 @@ fn turtle_to_sink_separate(
             sink,
             sink_config,
             &options,
+            settings.turtle_grouping,
             &instance_base,
         )?;
         produce_triples.insert(IFCOWL_PRODUCER_ID, triples);
@@ -1686,6 +1761,7 @@ fn turtle_to_sink_separate(
             sink,
             sink_config,
             &options,
+            settings.turtle_grouping,
             &instance_base,
         )?;
         produce_triples.insert(IFC_TOPOLOGY_PRODUCER_ID, triples);
