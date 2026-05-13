@@ -6,9 +6,10 @@ use crate::types::{
 };
 use lbd_pipeline::ActivationPlan;
 use lbd_pipeline::{
-    FILE_EXPORT_ID, IFCOWL_PRODUCER_ID, IFC_TOPOLOGY_PRODUCER_ID, LBD_PRODUCER_ID,
-    NQUADS_CHUNKED_SERIALIZER_ID, NQUADS_SERIALIZER_ID, TOPOLOGY_FULL_PRODUCER_ID,
-    TURTLE_SERIALIZER_ID,
+    BEO_PRODUCER_ID, BOT_PRODUCER_ID, FILE_EXPORT_ID, IFCOWL_PRODUCER_ID,
+    IFC_TOPOLOGY_PRODUCER_ID, NQUADS_CHUNKED_SERIALIZER_ID,
+    NQUADS_SERIALIZER_ID, OMG_FOG_PRODUCER_ID, PROPS_OPM_PRODUCER_ID,
+    TOPOLOGY_FULL_PRODUCER_ID, TURTLE_SERIALIZER_ID,
 };
 
 pub(crate) fn normalize_base_for_graph_iri(base_uri: &str) -> String {
@@ -28,10 +29,16 @@ pub(crate) fn dedupe_modules(ids: Vec<String>) -> Vec<String> {
 
 pub(crate) fn validate_activation_plan(plan: &ActivationPlan) -> Result<(), WasmApiError> {
     let active: HashSet<&str> = plan.enabled_ids.iter().map(|id| id.as_str()).collect();
-    if !active.contains(LBD_PRODUCER_ID) {
+    let has_any_producer = active.contains(BOT_PRODUCER_ID)
+        || active.contains(BEO_PRODUCER_ID)
+        || active.contains(PROPS_OPM_PRODUCER_ID)
+        || active.contains(OMG_FOG_PRODUCER_ID)
+        || active.contains(IFCOWL_PRODUCER_ID)
+        || active.contains(IFC_TOPOLOGY_PRODUCER_ID);
+    if !has_any_producer {
         return Err(WasmApiError::Message(format!(
-            "module plan must include `{}`",
-            LBD_PRODUCER_ID
+            "module plan must include at least one producer (`{}`, `{}`, `{}`, `{}`, …)",
+            BOT_PRODUCER_ID, BEO_PRODUCER_ID, PROPS_OPM_PRODUCER_ID, IFCOWL_PRODUCER_ID
         )));
     }
     if !active.contains(FILE_EXPORT_ID) {
@@ -142,6 +149,11 @@ pub(crate) fn resolve_execution_settings(
 
     Ok(ExecutionSettings {
         output_formats,
+        // Modular LBD producers — add new producers here as emit_<name> flags
+        emit_bot: active.contains(BOT_PRODUCER_ID),
+        emit_beo: active.contains(BEO_PRODUCER_ID),
+        emit_props_opm: active.contains(PROPS_OPM_PRODUCER_ID),
+        emit_omg_fog: active.contains(OMG_FOG_PRODUCER_ID),
         emit_ifcowl: active.contains(IFCOWL_PRODUCER_ID),
         emit_topology: active.contains(IFC_TOPOLOGY_PRODUCER_ID),
         emit_bbox: active.contains(lbd_pipeline::BBOX_ENRICHER_ID),
@@ -216,13 +228,16 @@ pub(crate) fn validate_typed_module_configs(
             NQUADS_CHUNKED_SERIALIZER_ID => validate_nquads_chunked_serializer_options(entries)?,
             TURTLE_SERIALIZER_ID => validate_turtle_serializer_options(entries)?,
             FILE_EXPORT_ID => validate_file_export_options(entries)?,
-            LBD_PRODUCER_ID
+            BOT_PRODUCER_ID
+            | BEO_PRODUCER_ID
+            | PROPS_OPM_PRODUCER_ID
+            | OMG_FOG_PRODUCER_ID
             | IFCOWL_PRODUCER_ID
             | IFC_TOPOLOGY_PRODUCER_ID
             | lbd_pipeline::BBOX_ENRICHER_ID => {
                 if !entries.is_empty() {
                     return Err(WasmApiError::Message(format!(
-                        "module `{}` does not support options in wasm phase 1",
+                        "module `{}` does not support options",
                         module_id
                     )));
                 }

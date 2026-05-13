@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm --version)",
+      "Bash(cargo --version)",
+      "Bash(npx vite *)",
+      "Bash(cargo check *)",
+      "Bash(~/.cargo/bin/cargo +nightly check -p ifc2lbd-wasm --target wasm32-unknown-unknown)",
+      "Bash(~/.cargo/bin/rustup target *)",
+      "Bash(~/.cargo/bin/cargo +nightly check -Z build-std=std,panic_abort -p ifc2lbd-wasm --target wasm32-unknown-unknown)",
+      "Bash(~/.cargo/bin/cargo +nightly check -p ifc2lbd-cli)",
+      "Bash(~/.cargo/bin/cargo +nightly check -Z build-std=std,panic_abort -p lbd-pipeline -p lbd-converter -p ifc2lbd-wasm -p ifc2lbd-cli --target wasm32-unknown-unknown)",
+      "Bash(export PATH=\"$HOME/.cargo/bin:$PATH\")",
+      "Bash(wasm-bindgen --version)",
+      "Bash(cargo +nightly check -p lbd-converter -p ifc2lbd-cli)",
+      "Bash(RUSTFLAGS=\"-C target-feature=+atomics,+bulk-memory\" bash scripts/build_wasm_web.sh)",
+      "Bash(curl -si http://localhost:3000)"
+    ]
+  }
+}

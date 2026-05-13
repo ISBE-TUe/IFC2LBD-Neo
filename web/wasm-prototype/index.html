@@ -38,12 +38,24 @@
           </div>
           <div class="rail-section">
             <div class="rail-field">
-              <span class="rail-field-label">Base URI</span>
+              <span class="rail-field-label">Base IRI</span>
               <input type="text" class="rail-input" id="base-uri-input" value="https://lbd.example.com/" />
             </div>
             <div class="rail-field">
               <span class="rail-field-label">Stem</span>
               <input type="text" class="rail-input" id="output-stem-input" value="converted-model" />
+            </div>
+          </div>
+          <div class="rail-section">
+            <div class="rail-field rail-field-toggles">
+              <label class="rail-toggle-item">
+                <input type="checkbox" class="rail-toggle" id="toggle-preprocess" />
+                <span class="rail-toggle-label">Pre</span>
+              </label>
+              <label class="rail-toggle-item">
+                <input type="checkbox" class="rail-toggle" id="toggle-postprocess" />
+                <span class="rail-toggle-label">Post</span>
+              </label>
             </div>
           </div>
           <div class="rail-section rail-bottom">

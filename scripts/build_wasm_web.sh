@@ -21,7 +21,9 @@ wasm-bindgen \
 
 WORKER_HELPERS="$OUT_DIR/snippets/wasm-bindgen-rayon-38edf6e439f6d70d/src/workerHelpers.js"
 if [[ -f "$WORKER_HELPERS" ]]; then
-  sed -i "s|await import('../../..')|await import('../../../ifc2lbd_wasm.js')|g" "$WORKER_HELPERS"
+  # macOS sed requires an explicit backup extension with -i; use '' for in-place without backup
+  sed -i '' "s|await import('../../..')|await import('../../../ifc2lbd_wasm.js')|g" "$WORKER_HELPERS" 2>/dev/null \
+    || sed -i "s|await import('../../..')|await import('../../../ifc2lbd_wasm.js')|g" "$WORKER_HELPERS"
 fi
 
 echo "WASM web artifacts written to: $OUT_DIR"

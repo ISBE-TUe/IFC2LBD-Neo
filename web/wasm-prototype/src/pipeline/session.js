@@ -12,15 +12,20 @@
 
 import { getState, subscribe, toggleModule, update } from "./state.js";
 
-const STAGES = [
-  { key: "Preprocess", label: "PREPROCESS" },
-  { key: "Produce", label: "PRODUCE" },
-  { key: "Serialize", label: "SERIALIZE" },
-  { key: "Export", label: "EXPORT" },
+const ALL_STAGES = [
+  { key: "Import",      label: "IMPORT" },
+  { key: "Preprocess",  label: "PREPROCESS" },
+  { key: "Produce",     label: "PRODUCE" },
+  { key: "Serialize",   label: "SERIALIZE" },
+  { key: "Postprocess", label: "POSTPROCESS" },
+  { key: "Export",      label: "EXPORT" },
 ];
 
-// Module sort order: LBD first, then IfcOWL, then others
-const PRODUCE_ORDER = ["neo-lbd-producer", "neo-ifcowl-producer", "neo-ifc-topology-producer", "neo-bbox-enricher"];
+// Module sort order: modular producers first, then others
+const PRODUCE_ORDER = [
+  "neo-bot-producer", "neo-beo-producer", "neo-props-opm", "neo-omg-fog",
+  "neo-ifcowl-producer", "neo-ifc-topology-producer", "neo-bbox-enricher",
+];
 const SERIALIZE_ORDER = ["neo-turtle-serializer", "neo-nquads-serializer", "neo-nquads-chunked-serializer"];
 
 const STATUS_COLORS = {
@@ -44,6 +49,8 @@ export function initSession(container) {
   subscribe("running", render);
   subscribe("selectedPluginId", render);
   subscribe("ifcFile", render);
+  subscribe("showPreprocess", render);
+  subscribe("showPostprocess", render);
 
   // Redraw connections on resize
   resizeHandler = () => requestAnimationFrame(() => drawConnections());
@@ -66,17 +73,22 @@ function sortModules(mods, stage) {
 
 function render() {
   if (!containerEl) return;
-  const { activeModules, modules, stageStatuses, running, selectedPluginId, ifcFile } = getState();
+  const { activeModules, modules, stageStatuses, running, selectedPluginId, ifcFile, showPreprocess, showPostprocess } = getState();
+
+  const stages = ALL_STAGES.filter((s) =>
+    (s.key !== "Preprocess" || showPreprocess) &&
+    (s.key !== "Postprocess" || showPostprocess)
+  );
 
   const parseMod = {
-    id: "parse", displayName: "Parse IFC", stage: "Preprocess",
+    id: "parse", displayName: "Parse IFC", stage: "Import",
     failurePolicy: "Required", wasmCompatible: true, optionKeys: [],
     description: "Parse IFC STEP file and build typed model",
   };
 
-  const columns = STAGES.map((s) => ({
+  const columns = stages.map((s) => ({
     ...s,
-    modules: s.key === "Preprocess"
+    modules: s.key === "Import"
       ? [parseMod]
       : sortModules(modules.filter((m) => m.stage === s.key), s.key),
   }));
@@ -100,7 +112,7 @@ function render() {
 
     for (const mod of col.modules) {
       const isActive = mod.id === "parse" || activeModules.has(mod.id);
-      const isRequired = mod.id === "parse" || mod.id === "neo-lbd-producer" || mod.id === "neo-file-export";
+      const isRequired = mod.id === "parse" || mod.id === "neo-file-export";
       const status = stageStatuses[mod.id];
       const statusStr = status?.status || "idle";
       const isSelected = selectedPluginId === mod.id;
@@ -143,7 +155,7 @@ function render() {
     }
 
     // "Add module…" button for adding new modules not yet in this column
-    if (col.key !== "Preprocess") {
+    if (col.key !== "Import" && col.key !== "Preprocess") {
       html += `<div class="session-cell add-plugin" data-add-stage="${col.key}">
         <span class="cell-circle off" style="color:#CCC">+</span>
         <span class="cell-name" style="color:var(--text-dim)">Add module…</span>
@@ -259,7 +271,7 @@ function drawConnections() {
   const body = document.querySelector('#session-body');
   if (!body) return;
 
-  const { stageStatuses } = getState();
+  const { stageStatuses, showPreprocess, showPostprocess } = getState();
 
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.id = "connections-svg";
@@ -276,7 +288,9 @@ function drawConnections() {
   const cols = Array.from(colEls);
 
   // Determine which stages have completed or are running
-  const stageKeys = ["Preprocess", "Produce", "Serialize", "Export"];
+  const stageKeys = ALL_STAGES
+    .filter((s) => (s.key !== "Preprocess" || showPreprocess) && (s.key !== "Postprocess" || showPostprocess))
+    .map((s) => s.key);
   const stageReached = new Set(); // stages that have completed or are running
   for (const key of stageKeys) {
     // Check if any module in this stage has succeeded or is running

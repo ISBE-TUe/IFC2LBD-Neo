@@ -51,8 +51,10 @@ function render() {
   }
 
   const displayName = isParse ? "Parse IFC" : mod.displayName;
-  const stage = isParse ? "Preprocess" : mod.stage;
-  const optionKeys = isParse ? [] : mod.optionKeys || [];
+  const stage = isParse ? "Import" : mod.stage;
+  const rawOptionKeys = isParse ? [] : mod.optionKeys || [];
+  // output_stem is controlled by the global "Stem" field in the left rail
+  const optionKeys = rawOptionKeys.filter((k) => !(mod?.id === "neo-file-export" && k === "output_stem"));
 
   content.innerHTML = `
     <div class="detail-header-row">

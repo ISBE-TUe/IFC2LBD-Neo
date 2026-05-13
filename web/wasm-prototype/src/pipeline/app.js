@@ -16,54 +16,56 @@ const RUNTIME_BUILD = "pipeline-v8-2026-04-17Z";
 // Pipeline Templates
 // ---------------------------------------------------------------------------
 
+const LBD_MODULES = ["neo-bot-producer", "neo-beo-producer", "neo-props-opm"];
+
 const TEMPLATES = [
   {
     id: "lbd-ttl",
     label: "LBD → Turtle",
     desc: "Linked Building Data, sorted grouped Turtle",
-    modules: ["neo-lbd-producer", "neo-turtle-serializer", "neo-file-export"],
+    modules: [...LBD_MODULES, "neo-turtle-serializer", "neo-file-export"],
     options: { "neo-turtle-serializer": { grouping: "sorted" } },
   },
   {
     id: "lbd-ifcowl-ttl",
     label: "LBD+IfcOWL → Turtle",
     desc: "Full LBD + IfcOWL dual-output Turtle",
-    modules: ["neo-lbd-producer", "neo-ifcowl-producer", "neo-turtle-serializer", "neo-file-export"],
+    modules: [...LBD_MODULES, "neo-ifcowl-producer", "neo-turtle-serializer", "neo-file-export"],
     options: { "neo-turtle-serializer": { grouping: "sorted" } },
   },
   {
     id: "lbd-ifcowl-nq",
     label: "LBD+IfcOWL → N-Quads",
     desc: "Merged LBD + IfcOWL in named-graph N-Quads",
-    modules: ["neo-lbd-producer", "neo-ifcowl-producer", "neo-nquads-serializer", "neo-file-export"],
+    modules: [...LBD_MODULES, "neo-ifcowl-producer", "neo-nquads-serializer", "neo-file-export"],
     options: {},
   },
   {
     id: "lbd-ifcowl-nq-chunked",
     label: "LBD+IfcOWL → Chunked NQ",
     desc: "Split LBD + IfcOWL N-Quads into chunked files with manifest",
-    modules: ["neo-lbd-producer", "neo-ifcowl-producer", "neo-nquads-chunked-serializer", "neo-file-export"],
+    modules: [...LBD_MODULES, "neo-ifcowl-producer", "neo-nquads-chunked-serializer", "neo-file-export"],
     options: { "neo-nquads-chunked-serializer": { chunking: "lines" } },
   },
   {
     id: "full-topo-ttl",
     label: "Full + Topology → Turtle",
     desc: "LBD + IfcOWL + IfcTopology, Turtle output",
-    modules: ["neo-lbd-producer", "neo-ifcowl-producer", "neo-ifc-topology-producer", "neo-turtle-serializer", "neo-file-export"],
+    modules: [...LBD_MODULES, "neo-ifcowl-producer", "neo-ifc-topology-producer", "neo-turtle-serializer", "neo-file-export"],
     options: { "neo-turtle-serializer": { grouping: "sorted" } },
   },
   {
     id: "full-bbox-ttl",
     label: "Full + Bbox → Turtle",
     desc: "LBD + IfcOWL + IfcTopology + Bbox enrichment, Turtle output",
-    modules: ["neo-lbd-producer", "neo-ifcowl-producer", "neo-ifc-topology-producer", "neo-bbox-enricher", "neo-turtle-serializer", "neo-file-export"],
+    modules: [...LBD_MODULES, "neo-ifcowl-producer", "neo-ifc-topology-producer", "neo-bbox-enricher", "neo-turtle-serializer", "neo-file-export"],
     options: { "neo-turtle-serializer": { grouping: "sorted" } },
   },
   {
     id: "streaming-ttl",
     label: "LBD → Streaming TTL",
     desc: "Low-memory streaming Turtle (no grouping)",
-    modules: ["neo-lbd-producer", "neo-turtle-serializer", "neo-file-export"],
+    modules: [...LBD_MODULES, "neo-turtle-serializer", "neo-file-export"],
     options: { "neo-turtle-serializer": { grouping: "streaming" } },
   },
 ];
@@ -241,6 +243,8 @@ async function init() {
   });
   document.querySelector("#base-uri-input")?.addEventListener("change", (e) => update({ baseUri: e.target.value.trim() }));
   document.querySelector("#output-stem-input")?.addEventListener("change", (e) => update({ outputStem: e.target.value.trim() || "converted-model" }));
+  document.querySelector("#toggle-preprocess")?.addEventListener("change", (e) => update({ showPreprocess: e.target.checked }));
+  document.querySelector("#toggle-postprocess")?.addEventListener("change", (e) => update({ showPostprocess: e.target.checked }));
   document.querySelector("#btn-load")?.addEventListener("click", loadConfig);
   document.querySelector("#btn-save")?.addEventListener("click", saveConfig);
   document.querySelector("#btn-run")?.addEventListener("click", runConversion);

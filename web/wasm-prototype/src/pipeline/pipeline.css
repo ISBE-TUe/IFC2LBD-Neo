@@ -415,6 +415,24 @@ body {
   margin-bottom: 6px;
 }
 
+.rail-field-toggles {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.rail-toggle-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+
+.rail-toggle-label {
+  font: 500 9px var(--mono);
+  color: var(--text-dim);
+}
+
 .rail-field-label {
   display: block;
   font: 500 9px var(--mono);

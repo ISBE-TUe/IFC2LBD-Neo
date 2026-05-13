@@ -57,7 +57,7 @@ function renderToggles() {
 
     for (const mod of stageMods) {
       const isActive = activeModules.has(mod.id);
-      const isRequired = mod.id === "neo-lbd-producer" || mod.id === "neo-file-export";
+      const isRequired = mod.id === "neo-file-export";
       const isSerializer = stage === "Serialize";
 
       const row = document.createElement("label");

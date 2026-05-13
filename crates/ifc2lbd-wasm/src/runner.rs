@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io::{self};
 
 use ifc_model::build_model;
@@ -27,9 +28,15 @@ use crate::validation::{
 };
 use crate::DEFAULT_BASE_URI;
 use lbd_pipeline::{
-    FILE_EXPORT_ID, IFCOWL_PRODUCER_ID, IFC_TOPOLOGY_PRODUCER_ID, LBD_PRODUCER_ID,
-    NQUADS_CHUNKED_SERIALIZER_ID, NQUADS_SERIALIZER_ID, TURTLE_SERIALIZER_ID,
+    BEO_PRODUCER_ID, BOT_PRODUCER_ID, FILE_EXPORT_ID, IFCOWL_PRODUCER_ID,
+    IFC_TOPOLOGY_PRODUCER_ID, NQUADS_CHUNKED_SERIALIZER_ID, NQUADS_SERIALIZER_ID,
+    PROPS_OPM_PRODUCER_ID, TURTLE_SERIALIZER_ID,
 };
+
+/// Returns true if the named-graph IRI belongs to an IfcOWL (or alignment) graph.
+fn is_ifcowl_graph(iri: &str) -> bool {
+    iri.ends_with("/ifcowl") || iri.ends_with("/alignment")
+}
 
 /// WASM-safe monotonic timestamp in milliseconds.
 #[cfg(target_arch = "wasm32")]
@@ -55,20 +62,33 @@ struct StageDoneEvent {
 
 /// Per-stage measured durations and triple counts.
 struct StageDurations {
-    produce_ms: u64,
-    ifcowl_produce_ms: u64,
-    topology_produce_ms: u64,
+    /// Maps plugin_id → (duration_ms, triple_count)
+    by_producer: HashMap<String, (u64, u64)>,
     bbox_produce_ms: u64,
     serialize_ms: u64,
     export_ms: u64,
-    lbd_triples: u64,
-    ifcowl_triples: u64,
-    topology_triples: u64,
 }
 
 impl StageDurations {
+    fn new() -> Self {
+        Self {
+            by_producer: HashMap::new(),
+            bbox_produce_ms: 0,
+            serialize_ms: 0,
+            export_ms: 0,
+        }
+    }
+
     fn total_triples(&self) -> u64 {
-        self.lbd_triples + self.ifcowl_triples + self.topology_triples
+        self.by_producer.values().map(|(_, t)| t).sum()
+    }
+
+    fn producer_ms(&self, plugin_id: &str) -> u64 {
+        self.by_producer.get(plugin_id).map(|(ms, _)| *ms).unwrap_or(0)
+    }
+
+    fn producer_triples(&self, plugin_id: &str) -> u64 {
+        self.by_producer.get(plugin_id).map(|(_, t)| *t).unwrap_or(0)
     }
 }
 
@@ -223,8 +243,6 @@ impl PipelineRunner {
         let options = self.make_convert_options(&base_uri, mode, &settings, request);
 
         // Emit "running" for produce stages
-        emit_stage_event(sink, LBD_PRODUCER_ID, "Produce", "running", 0, 0, 0, None)
-            .map_err(|e| WasmApiError::Serialization(e.to_string()))?;
         if settings.emit_ifcowl {
             emit_stage_event(
                 sink,
@@ -307,9 +325,14 @@ impl PipelineRunner {
             )
             .map_err(|err| WasmApiError::Serialization(err.to_string()))?;
 
-        // In Turtle mode, topology is bundled with LBD — use LBD timing
-        if settings.emit_topology && stage_durations.topology_produce_ms == 0 {
-            stage_durations.topology_produce_ms = stage_durations.produce_ms;
+        // In Turtle mode, topology is bundled with LBD — if no dedicated timing, use 0
+        if settings.emit_topology
+            && stage_durations.producer_ms(IFC_TOPOLOGY_PRODUCER_ID) == 0
+        {
+            let topo_triples = stage_durations.producer_triples(IFC_TOPOLOGY_PRODUCER_ID);
+            stage_durations
+                .by_producer
+                .insert(IFC_TOPOLOGY_PRODUCER_ID.to_string(), (0, topo_triples));
         }
         // Set bbox timing (computed before streaming function)
         stage_durations.bbox_produce_ms = bbox_produce_ms;
@@ -366,45 +389,23 @@ impl PipelineRunner {
                 sink_max_pending_bytes,
             },
             stage_telemetry: {
-                let mut tel = vec![
-                    StageTelemetry {
-                        plugin_id: "parse".to_string(),
-                        stage: "Preprocess".to_string(),
-                        status: "success".to_string(),
-                        duration_ms: parse_ms,
-                        bytes_out: 0,
-                        triples_out: 0,
-                        error: None,
-                    },
-                    StageTelemetry {
-                        plugin_id: LBD_PRODUCER_ID.to_string(),
-                        stage: "Produce".to_string(),
-                        status: "success".to_string(),
-                        duration_ms: stage_durations.produce_ms,
-                        bytes_out: 0,
-                        triples_out: stage_durations.lbd_triples,
-                        error: None,
-                    },
-                ];
-                if settings.emit_ifcowl {
+                let mut tel = vec![StageTelemetry {
+                    plugin_id: "parse".to_string(),
+                    stage: "Preprocess".to_string(),
+                    status: "success".to_string(),
+                    duration_ms: parse_ms,
+                    bytes_out: 0,
+                    triples_out: 0,
+                    error: None,
+                }];
+                for (plugin_id, (duration_ms, triples)) in &stage_durations.by_producer {
                     tel.push(StageTelemetry {
-                        plugin_id: IFCOWL_PRODUCER_ID.to_string(),
+                        plugin_id: plugin_id.clone(),
                         stage: "Produce".to_string(),
                         status: "success".to_string(),
-                        duration_ms: stage_durations.ifcowl_produce_ms,
+                        duration_ms: *duration_ms,
                         bytes_out: 0,
-                        triples_out: stage_durations.ifcowl_triples,
-                        error: None,
-                    });
-                }
-                if settings.emit_topology {
-                    tel.push(StageTelemetry {
-                        plugin_id: IFC_TOPOLOGY_PRODUCER_ID.to_string(),
-                        stage: "Produce".to_string(),
-                        status: "success".to_string(),
-                        duration_ms: stage_durations.topology_produce_ms,
-                        bytes_out: 0,
-                        triples_out: stage_durations.topology_triples,
+                        triples_out: *triples,
                         error: None,
                     });
                 }
@@ -624,9 +625,13 @@ fn turtle_file_summaries(
             scope.spawn(move |_| {
                 let result = (|| -> Result<(), lbd_serializer::SerializerError> {
                     for batch in lbd_receiver {
-                        lbd_fwd.send((BatchKind::Lbd, batch)).map_err(|_| {
-                            lbd_serializer::SerializerError::Io(io::ErrorKind::BrokenPipe.into())
-                        })?;
+                        lbd_fwd
+                            .send((BatchKind::new("lbd"), batch))
+                            .map_err(|_| {
+                                lbd_serializer::SerializerError::Io(
+                                    io::ErrorKind::BrokenPipe.into(),
+                                )
+                            })?;
                     }
                     Ok(())
                 })();
@@ -638,9 +643,13 @@ fn turtle_file_summaries(
             scope.spawn(move |_| {
                 let result = (|| -> Result<(), lbd_serializer::SerializerError> {
                     for batch in ifcowl_receiver {
-                        ifcowl_fwd.send((BatchKind::Ifcowl, batch)).map_err(|_| {
-                            lbd_serializer::SerializerError::Io(io::ErrorKind::BrokenPipe.into())
-                        })?;
+                        ifcowl_fwd
+                            .send((BatchKind::new("x/ifcowl"), batch))
+                            .map_err(|_| {
+                                lbd_serializer::SerializerError::Io(
+                                    io::ErrorKind::BrokenPipe.into(),
+                                )
+                            })?;
                     }
                     Ok(())
                 })();
@@ -651,9 +660,10 @@ fn turtle_file_summaries(
             drop(forward_result_sender);
 
             for (kind, batch) in merged_receiver {
-                let writer = match kind {
-                    BatchKind::Lbd | BatchKind::Topology => &mut lbd_count,
-                    BatchKind::Ifcowl => &mut ifcowl_count,
+                let writer = if is_ifcowl_graph(kind.iri()) {
+                    &mut ifcowl_count
+                } else {
+                    &mut lbd_count
                 };
                 if options.low_memory_mode {
                     serialize_turtle_batch_raw_to_writer(&batch, writer)?
@@ -904,9 +914,7 @@ fn turtle_to_sink(
     let mut summaries = Vec::new();
     let chan_cap = if options.low_memory_mode { 4 } else { 16 };
     let instance_base = options.base_uri.clone();
-    let mut produce_ms: u64 = 0;
-    let mut ifcowl_produce_ms: u64 = 0;
-    let mut topology_produce_ms: u64 = 0;
+    let mut produce_durations: HashMap<&'static str, u64> = HashMap::new();
 
     let model = std::sync::Arc::new(model);
 
@@ -936,6 +944,10 @@ fn turtle_to_sink(
     let topo_stage_tx = stage_tx.clone();
     let model_prod = model.clone();
     let options_topo = options.clone();
+    let emit_bot_turtle = settings.emit_bot;
+    let emit_beo_turtle = settings.emit_beo;
+    let emit_props_opm_turtle = settings.emit_props_opm;
+    let emit_omg_fog_turtle = settings.emit_omg_fog;
     rayon::spawn(move || {
         // 1. IfcOWL
         if let Some(ifcowl_sender) = ifcowl_sender {
@@ -960,21 +972,52 @@ fn turtle_to_sink(
             let _ = result;
         }
 
-        // 2. LBD (topology disabled to avoid duplicates)
-        {
-            let base = lbd_converter::normalize_base_uri(&options_lbd.base_uri);
+        // 2. Modular LBD producers (BOT / BEO / PROPS_OPM)
+        if emit_bot_turtle {
             let t0 = now_ms();
-            let result = lbd_converter::stream_lbd(&model_prod, &options_lbd, &base, &lbd_sender);
+            let _ = lbd_converter::stream_bot(&model_prod, &options_lbd, &lbd_sender);
             let ms = now_ms() - t0;
-            drop(lbd_sender);
             let _ = lbd_stage_tx.send(StageDoneEvent {
-                plugin_id: LBD_PRODUCER_ID,
+                plugin_id: BOT_PRODUCER_ID,
                 stage: "Produce",
                 duration_ms: ms,
                 triple_count: 0,
             });
-            let _ = result;
         }
+        if emit_beo_turtle {
+            let t0 = now_ms();
+            let _ = lbd_converter::stream_beo(&model_prod, &options_lbd, &lbd_sender);
+            let ms = now_ms() - t0;
+            let _ = lbd_stage_tx.send(StageDoneEvent {
+                plugin_id: BEO_PRODUCER_ID,
+                stage: "Produce",
+                duration_ms: ms,
+                triple_count: 0,
+            });
+        }
+        if emit_props_opm_turtle {
+            let t0 = now_ms();
+            let _ = lbd_converter::stream_props_opm(&model_prod, &options_lbd, &lbd_sender);
+            let ms = now_ms() - t0;
+            let _ = lbd_stage_tx.send(StageDoneEvent {
+                plugin_id: PROPS_OPM_PRODUCER_ID,
+                stage: "Produce",
+                duration_ms: ms,
+                triple_count: 0,
+            });
+        }
+        if emit_omg_fog_turtle {
+            let t0 = now_ms();
+            let _ = lbd_converter::stream_omg_fog(&model_prod, &options_lbd, &lbd_sender);
+            let ms = now_ms() - t0;
+            let _ = lbd_stage_tx.send(StageDoneEvent {
+                plugin_id: lbd_pipeline::OMG_FOG_PRODUCER_ID,
+                stage: "Produce",
+                duration_ms: ms,
+                triple_count: 0,
+            });
+        }
+        drop(lbd_sender);
 
         // 3. Topology (sequential after LBD — lightweight, ~891 triples)
         if let Some(topology_sender) = topology_sender {
@@ -1137,7 +1180,10 @@ fn turtle_to_sink(
 
     // Drain stage events — emit "success" with real triple counts
     while let Ok(evt) = stage_rx.try_recv() {
-        let triples = if evt.plugin_id == LBD_PRODUCER_ID {
+        let triples = if evt.plugin_id == BOT_PRODUCER_ID
+            || evt.plugin_id == BEO_PRODUCER_ID
+            || evt.plugin_id == PROPS_OPM_PRODUCER_ID
+        {
             lbd_triple_count
         } else if evt.plugin_id == IFCOWL_PRODUCER_ID {
             ifcowl_triple_count
@@ -1146,15 +1192,7 @@ fn turtle_to_sink(
         } else {
             0
         };
-        if evt.plugin_id == LBD_PRODUCER_ID {
-            produce_ms = evt.duration_ms;
-        }
-        if evt.plugin_id == IFCOWL_PRODUCER_ID {
-            ifcowl_produce_ms = evt.duration_ms;
-        }
-        if evt.plugin_id == IFC_TOPOLOGY_PRODUCER_ID {
-            topology_produce_ms = evt.duration_ms;
-        }
+        produce_durations.insert(evt.plugin_id, evt.duration_ms);
         emit_stage_event(
             sink,
             evt.plugin_id,
@@ -1182,22 +1220,27 @@ fn turtle_to_sink(
     }
     let export_ms = now_ms() - export_t0;
 
-    Ok((
-        summaries,
-        peak,
-        chunk_size,
-        StageDurations {
-            produce_ms,
-            ifcowl_produce_ms,
-            topology_produce_ms,
-            bbox_produce_ms: 0,
-            serialize_ms,
-            export_ms,
-            lbd_triples: lbd_triple_count,
-            ifcowl_triples: ifcowl_triple_count,
-            topology_triples: topology_triple_count,
-        },
-    ))
+    let mut stage_durations = StageDurations::new();
+    stage_durations.serialize_ms = serialize_ms;
+    stage_durations.export_ms = export_ms;
+    for (plugin_id, ms) in produce_durations {
+        let triples = if plugin_id == BOT_PRODUCER_ID
+            || plugin_id == BEO_PRODUCER_ID
+            || plugin_id == PROPS_OPM_PRODUCER_ID
+        {
+            lbd_triple_count
+        } else if plugin_id == IFCOWL_PRODUCER_ID {
+            ifcowl_triple_count
+        } else if plugin_id == IFC_TOPOLOGY_PRODUCER_ID {
+            topology_triple_count
+        } else {
+            0
+        };
+        stage_durations
+            .by_producer
+            .insert(plugin_id.to_string(), (ms, triples));
+    }
+    Ok((summaries, peak, chunk_size, stage_durations))
 }
 
 // ---------------------------------------------------------------------------
@@ -1236,9 +1279,7 @@ fn nquads_to_sink(
     let topology_graph = format!("{normalized_base}/topology");
 
     let model = std::sync::Arc::new(model);
-    let mut produce_ms: u64 = 0;
-    let mut ifcowl_produce_ms: u64 = 0;
-    let mut topology_produce_ms: u64 = 0;
+    let mut produce_durations: HashMap<&'static str, u64> = HashMap::new();
 
     // Triple count tracking (counted during serialization)
     let mut lbd_triple_count: u64 = 0;
@@ -1248,11 +1289,13 @@ fn nquads_to_sink(
     // Helper: resolve triple count for a plugin — used in emit_stage_event calls.
     // Cannot be a closure because triple count variables are mutated in the loop.
     macro_rules! triple_count_for {
-        ($plugin_id:expr, $lbd:expr, $ifcowl:expr, $topology:expr) => {
-            match $plugin_id {
-                LBD_PRODUCER_ID => $lbd,
-                IFCOWL_PRODUCER_ID => $ifcowl,
-                IFC_TOPOLOGY_PRODUCER_ID => $topology,
+        ($plugin_id:expr) => {
+            match $plugin_id as &str {
+                BOT_PRODUCER_ID | BEO_PRODUCER_ID | PROPS_OPM_PRODUCER_ID => {
+                    lbd_triple_count
+                }
+                IFCOWL_PRODUCER_ID => ifcowl_triple_count,
+                IFC_TOPOLOGY_PRODUCER_ID => topology_triple_count,
                 _ => 0,
             }
         };
@@ -1288,6 +1331,10 @@ fn nquads_to_sink(
     let ifcowl_stage_tx = stage_tx.clone();
     let topo_stage_tx = stage_tx.clone();
     let model_prod = model.clone();
+    let emit_bot_nq = settings.emit_bot;
+    let emit_beo_nq = settings.emit_beo;
+    let emit_props_opm_nq = settings.emit_props_opm;
+    let emit_omg_fog_nq = settings.emit_omg_fog;
     rayon::spawn(move || {
         // 1. IfcOWL
         if let Some(ifcowl_sender) = ifcowl_sender {
@@ -1312,21 +1359,52 @@ fn nquads_to_sink(
             let _ = result;
         }
 
-        // 2. LBD (topology disabled to avoid duplicates)
-        {
-            let base = lbd_converter::normalize_base_uri(&options_lbd.base_uri);
+        // 2. Modular LBD producers (BOT / BEO / PROPS_OPM)
+        if emit_bot_nq {
             let t0 = now_ms();
-            let result = lbd_converter::stream_lbd(&model_prod, &options_lbd, &base, &lbd_sender);
+            let _ = lbd_converter::stream_bot(&model_prod, &options_lbd, &lbd_sender);
             let ms = now_ms() - t0;
-            drop(lbd_sender);
             let _ = lbd_stage_tx.send(StageDoneEvent {
-                plugin_id: LBD_PRODUCER_ID,
+                plugin_id: BOT_PRODUCER_ID,
                 stage: "Produce",
                 duration_ms: ms,
                 triple_count: 0,
             });
-            let _ = result;
         }
+        if emit_beo_nq {
+            let t0 = now_ms();
+            let _ = lbd_converter::stream_beo(&model_prod, &options_lbd, &lbd_sender);
+            let ms = now_ms() - t0;
+            let _ = lbd_stage_tx.send(StageDoneEvent {
+                plugin_id: BEO_PRODUCER_ID,
+                stage: "Produce",
+                duration_ms: ms,
+                triple_count: 0,
+            });
+        }
+        if emit_props_opm_nq {
+            let t0 = now_ms();
+            let _ = lbd_converter::stream_props_opm(&model_prod, &options_lbd, &lbd_sender);
+            let ms = now_ms() - t0;
+            let _ = lbd_stage_tx.send(StageDoneEvent {
+                plugin_id: PROPS_OPM_PRODUCER_ID,
+                stage: "Produce",
+                duration_ms: ms,
+                triple_count: 0,
+            });
+        }
+        if emit_omg_fog_nq {
+            let t0 = now_ms();
+            let _ = lbd_converter::stream_omg_fog(&model_prod, &options_lbd, &lbd_sender);
+            let ms = now_ms() - t0;
+            let _ = lbd_stage_tx.send(StageDoneEvent {
+                plugin_id: lbd_pipeline::OMG_FOG_PRODUCER_ID,
+                stage: "Produce",
+                duration_ms: ms,
+                triple_count: 0,
+            });
+        }
+        drop(lbd_sender);
 
         // 3. Topology (sequential after LBD — lightweight)
         if let Some(topology_sender) = topology_sender {
@@ -1399,15 +1477,7 @@ fn nquads_to_sink(
             let mut topology_done = !settings.emit_topology;
             while !lbd_done || !ifcowl_done || !topology_done {
                 while let Ok(evt) = stage_rx.try_recv() {
-                    if evt.plugin_id == LBD_PRODUCER_ID {
-                        produce_ms = evt.duration_ms;
-                    }
-                    if evt.plugin_id == IFCOWL_PRODUCER_ID {
-                        ifcowl_produce_ms = evt.duration_ms;
-                    }
-                    if evt.plugin_id == IFC_TOPOLOGY_PRODUCER_ID {
-                        topology_produce_ms = evt.duration_ms;
-                    }
+                    produce_durations.insert(evt.plugin_id, evt.duration_ms);
                     emit_stage_event(
                         sink,
                         evt.plugin_id,
@@ -1415,12 +1485,7 @@ fn nquads_to_sink(
                         "success",
                         evt.duration_ms,
                         0,
-                        triple_count_for!(
-                            evt.plugin_id,
-                            lbd_triple_count,
-                            ifcowl_triple_count,
-                            topology_triple_count
-                        ),
+                        triple_count_for!(evt.plugin_id),
                         None,
                     )?;
                 }
@@ -1483,15 +1548,7 @@ fn nquads_to_sink(
             let serialize_ms = now_ms() - serialize_t0;
 
             while let Ok(evt) = stage_rx.try_recv() {
-                if evt.plugin_id == LBD_PRODUCER_ID {
-                    produce_ms = evt.duration_ms;
-                }
-                if evt.plugin_id == IFCOWL_PRODUCER_ID {
-                    ifcowl_produce_ms = evt.duration_ms;
-                }
-                if evt.plugin_id == IFC_TOPOLOGY_PRODUCER_ID {
-                    topology_produce_ms = evt.duration_ms;
-                }
+                produce_durations.insert(evt.plugin_id, evt.duration_ms);
                 emit_stage_event(
                     sink,
                     evt.plugin_id,
@@ -1499,12 +1556,7 @@ fn nquads_to_sink(
                     "success",
                     evt.duration_ms,
                     0,
-                    triple_count_for!(
-                        evt.plugin_id,
-                        lbd_triple_count,
-                        ifcowl_triple_count,
-                        topology_triple_count
-                    ),
+                    triple_count_for!(evt.plugin_id),
                     None,
                 )?;
             }
@@ -1518,22 +1570,14 @@ fn nquads_to_sink(
             }
             let export_ms = now_ms() - export_t0;
 
-            return Ok((
-                summaries,
-                0,
-                sink_config.chunk_size,
-                StageDurations {
-                    produce_ms,
-                    ifcowl_produce_ms,
-                    topology_produce_ms,
-                    bbox_produce_ms: 0,
-                    serialize_ms,
-                    export_ms,
-                    lbd_triples: lbd_triple_count,
-                    ifcowl_triples: ifcowl_triple_count,
-                    topology_triples: topology_triple_count,
-                },
-            ));
+            let mut sd = StageDurations::new();
+            sd.serialize_ms = serialize_ms;
+            sd.export_ms = export_ms;
+            for (plugin_id, ms) in &produce_durations {
+                let triples = triple_count_for!(plugin_id);
+                sd.by_producer.insert(plugin_id.to_string(), (*ms, triples));
+            }
+            return Ok((summaries, 0, sink_config.chunk_size, sd));
         } else {
             // ── MERGED: LBD + IfcOWL + Topology into one .nq file ──
             let (merged_sender, merged_receiver) = crossbeam::channel::bounded(chan_cap * 2);
@@ -1544,12 +1588,17 @@ fn nquads_to_sink(
             // LBD forwarder
             let lbd_fwd = merged_sender.clone();
             let lbd_res = fwd_result_sender.clone();
+            let lbd_graph_fwd = lbd_graph.clone();
             rayon::spawn(move || {
                 let result = (|| -> Result<(), lbd_serializer::SerializerError> {
                     for batch in lbd_receiver {
-                        lbd_fwd.send((BatchKind::Lbd, batch)).map_err(|_| {
-                            lbd_serializer::SerializerError::Io(io::ErrorKind::BrokenPipe.into())
-                        })?;
+                        lbd_fwd
+                            .send((BatchKind::new(lbd_graph_fwd.clone()), batch))
+                            .map_err(|_| {
+                                lbd_serializer::SerializerError::Io(
+                                    io::ErrorKind::BrokenPipe.into(),
+                                )
+                            })?;
                     }
                     Ok(())
                 })();
@@ -1559,12 +1608,17 @@ fn nquads_to_sink(
             // IfcOWL forwarder
             let ifcowl_fwd = merged_sender.clone();
             let ifcowl_res = fwd_result_sender.clone();
+            let ifcowl_graph_fwd2 = ifcowl_graph.clone();
             rayon::spawn(move || {
                 let result = (|| -> Result<(), lbd_serializer::SerializerError> {
                     for batch in ifcowl_rx {
-                        ifcowl_fwd.send((BatchKind::Ifcowl, batch)).map_err(|_| {
-                            lbd_serializer::SerializerError::Io(io::ErrorKind::BrokenPipe.into())
-                        })?;
+                        ifcowl_fwd
+                            .send((BatchKind::new(ifcowl_graph_fwd2.clone()), batch))
+                            .map_err(|_| {
+                                lbd_serializer::SerializerError::Io(
+                                    io::ErrorKind::BrokenPipe.into(),
+                                )
+                            })?;
                     }
                     Ok(())
                 })();
@@ -1576,14 +1630,17 @@ fn nquads_to_sink(
                 if let Some(topo_rx) = topology_receiver {
                     let topo_fwd = merged_sender.clone();
                     let topo_res = fwd_result_sender.clone();
+                    let topology_graph_fwd = topology_graph.clone();
                     rayon::spawn(move || {
                         let result = (|| -> Result<(), lbd_serializer::SerializerError> {
                             for batch in topo_rx {
-                                topo_fwd.send((BatchKind::Topology, batch)).map_err(|_| {
-                                    lbd_serializer::SerializerError::Io(
-                                        io::ErrorKind::BrokenPipe.into(),
-                                    )
-                                })?;
+                                topo_fwd
+                                    .send((BatchKind::new(topology_graph_fwd.clone()), batch))
+                                    .map_err(|_| {
+                                        lbd_serializer::SerializerError::Io(
+                                            io::ErrorKind::BrokenPipe.into(),
+                                        )
+                                    })?;
                             }
                             Ok(())
                         })();
@@ -1617,23 +1674,7 @@ fn nquads_to_sink(
             let serialize_t0 = now_ms();
             for (kind, batch) in merged_receiver.iter() {
                 while let Ok(evt) = stage_rx.try_recv() {
-                    if evt.plugin_id == LBD_PRODUCER_ID {
-                        produce_ms = evt.duration_ms;
-                    }
-                    if evt.plugin_id == IFCOWL_PRODUCER_ID {
-                        ifcowl_produce_ms = evt.duration_ms;
-                    }
-                    if evt.plugin_id == IFC_TOPOLOGY_PRODUCER_ID {
-                        topology_produce_ms = evt.duration_ms;
-                    }
-                    // Emit success with triple count from event (0 from producer)
-                    // Topology count will be re-emitted with correct count below
-                    let tc = triple_count_for!(
-                        evt.plugin_id,
-                        lbd_triple_count,
-                        ifcowl_triple_count,
-                        topology_triple_count
-                    );
+                    produce_durations.insert(evt.plugin_id, evt.duration_ms);
                     // Don't emit topology yet — its count isn't final
                     if evt.plugin_id != IFC_TOPOLOGY_PRODUCER_ID {
                         emit_stage_event(
@@ -1643,36 +1684,26 @@ fn nquads_to_sink(
                             "success",
                             evt.duration_ms,
                             0,
-                            tc,
+                            triple_count_for!(evt.plugin_id),
                             None,
                         )?;
                     }
                 }
-                let graph_iri = match kind {
-                    BatchKind::Lbd => &lbd_graph,
-                    BatchKind::Ifcowl => &ifcowl_graph,
-                    BatchKind::Topology => &topology_graph,
-                };
-                match kind {
-                    BatchKind::Lbd => lbd_triple_count += batch.len() as u64,
-                    BatchKind::Ifcowl => ifcowl_triple_count += batch.len() as u64,
-                    BatchKind::Topology => topology_triple_count += batch.len() as u64,
+                let graph_iri = kind.iri().to_string();
+                if graph_iri == lbd_graph {
+                    lbd_triple_count += batch.len() as u64;
+                } else if graph_iri == ifcowl_graph {
+                    ifcowl_triple_count += batch.len() as u64;
+                } else if graph_iri == topology_graph {
+                    topology_triple_count += batch.len() as u64;
                 }
-                lbd_serializer::write_nquads_batch(&mut writer, &batch, graph_iri)?;
+                lbd_serializer::write_nquads_batch(&mut writer, &batch, &graph_iri)?;
             }
             let serialize_ms = now_ms() - serialize_t0;
 
             // Drain remaining stage events
             while let Ok(evt) = stage_rx.try_recv() {
-                if evt.plugin_id == LBD_PRODUCER_ID {
-                    produce_ms = evt.duration_ms;
-                }
-                if evt.plugin_id == IFCOWL_PRODUCER_ID {
-                    ifcowl_produce_ms = evt.duration_ms;
-                }
-                if evt.plugin_id == IFC_TOPOLOGY_PRODUCER_ID {
-                    topology_produce_ms = evt.duration_ms;
-                }
+                produce_durations.insert(evt.plugin_id, evt.duration_ms);
                 if evt.plugin_id != IFC_TOPOLOGY_PRODUCER_ID {
                     emit_stage_event(
                         sink,
@@ -1681,25 +1712,24 @@ fn nquads_to_sink(
                         "success",
                         evt.duration_ms,
                         0,
-                        triple_count_for!(
-                            evt.plugin_id,
-                            lbd_triple_count,
-                            ifcowl_triple_count,
-                            topology_triple_count
-                        ),
+                        triple_count_for!(evt.plugin_id),
                         None,
                     )?;
                 }
             }
 
             // Emit topology success with CORRECT triple count (now final)
-            if topology_produce_ms > 0 {
+            let topo_ms = produce_durations
+                .get(IFC_TOPOLOGY_PRODUCER_ID)
+                .copied()
+                .unwrap_or(0);
+            if topo_ms > 0 {
                 emit_stage_event(
                     sink,
                     IFC_TOPOLOGY_PRODUCER_ID,
                     "Produce",
                     "success",
-                    topology_produce_ms,
+                    topo_ms,
                     0,
                     topology_triple_count,
                     None,
@@ -1717,22 +1747,14 @@ fn nquads_to_sink(
             let (summary, peak, chunk_size) = writer.finish()?;
             let export_ms = now_ms() - export_t0;
 
-            return Ok((
-                vec![summary],
-                peak,
-                chunk_size,
-                StageDurations {
-                    produce_ms,
-                    ifcowl_produce_ms,
-                    topology_produce_ms,
-                    bbox_produce_ms: 0,
-                    serialize_ms,
-                    export_ms,
-                    lbd_triples: lbd_triple_count,
-                    ifcowl_triples: ifcowl_triple_count,
-                    topology_triples: topology_triple_count,
-                },
-            ));
+            let mut sd = StageDurations::new();
+            sd.serialize_ms = serialize_ms;
+            sd.export_ms = export_ms;
+            for (plugin_id, ms) in &produce_durations {
+                let triples = triple_count_for!(plugin_id);
+                sd.by_producer.insert(plugin_id.to_string(), (*ms, triples));
+            }
+            return Ok((vec![summary], peak, chunk_size, sd));
         }
     } else {
         // LBD-only N-Quads (optionally with topology)
@@ -1773,12 +1795,7 @@ fn nquads_to_sink(
                 let mut topology_done = false;
                 while !lbd_done || !topology_done {
                     while let Ok(evt) = stage_rx.try_recv() {
-                        if evt.plugin_id == LBD_PRODUCER_ID {
-                            produce_ms = evt.duration_ms;
-                        }
-                        if evt.plugin_id == IFC_TOPOLOGY_PRODUCER_ID {
-                            topology_produce_ms = evt.duration_ms;
-                        }
+                        produce_durations.insert(evt.plugin_id, evt.duration_ms);
                         emit_stage_event(
                             sink,
                             evt.plugin_id,
@@ -1833,9 +1850,7 @@ fn nquads_to_sink(
             } else {
                 for batch in lbd_receiver.iter() {
                     while let Ok(evt) = stage_rx.try_recv() {
-                        if evt.plugin_id == LBD_PRODUCER_ID {
-                            produce_ms = evt.duration_ms;
-                        }
+                        produce_durations.insert(evt.plugin_id, evt.duration_ms);
                         emit_stage_event(
                             sink,
                             evt.plugin_id,
@@ -1843,12 +1858,7 @@ fn nquads_to_sink(
                             "success",
                             evt.duration_ms,
                             0,
-                            triple_count_for!(
-                                evt.plugin_id,
-                                lbd_triple_count,
-                                ifcowl_triple_count,
-                                topology_triple_count
-                            ),
+                            triple_count_for!(evt.plugin_id),
                             None,
                         )?;
                     }
@@ -1858,12 +1868,7 @@ fn nquads_to_sink(
             }
             let serialize_ms = now_ms() - serialize_t0;
             while let Ok(evt) = stage_rx.try_recv() {
-                if evt.plugin_id == LBD_PRODUCER_ID {
-                    produce_ms = evt.duration_ms;
-                }
-                if evt.plugin_id == IFC_TOPOLOGY_PRODUCER_ID {
-                    topology_produce_ms = evt.duration_ms;
-                }
+                produce_durations.insert(evt.plugin_id, evt.duration_ms);
                 emit_stage_event(
                     sink,
                     evt.plugin_id,
@@ -1871,12 +1876,7 @@ fn nquads_to_sink(
                     "success",
                     evt.duration_ms,
                     0,
-                    triple_count_for!(
-                        evt.plugin_id,
-                        lbd_triple_count,
-                        ifcowl_triple_count,
-                        topology_triple_count
-                    ),
+                    triple_count_for!(evt.plugin_id),
                     None,
                 )?;
             }
@@ -1888,22 +1888,15 @@ fn nquads_to_sink(
                 summaries.extend(topo_writer.finish()?);
             }
             let export_ms = now_ms() - export_t0;
-            return Ok((
-                summaries,
-                0,
-                sink_config.chunk_size,
-                StageDurations {
-                    produce_ms,
-                    ifcowl_produce_ms: 0,
-                    topology_produce_ms,
-                    bbox_produce_ms: 0,
-                    serialize_ms,
-                    export_ms,
-                    lbd_triples: lbd_triple_count,
-                    ifcowl_triples: 0,
-                    topology_triples: topology_triple_count,
-                },
-            ));
+
+            let mut sd = StageDurations::new();
+            sd.serialize_ms = serialize_ms;
+            sd.export_ms = export_ms;
+            for (plugin_id, ms) in &produce_durations {
+                let triples = triple_count_for!(plugin_id);
+                sd.by_producer.insert(plugin_id.to_string(), (*ms, triples));
+            }
+            return Ok((summaries, 0, sink_config.chunk_size, sd));
         } else {
             // LBD-only merged N-Quads
             if settings.emit_topology {
@@ -1915,14 +1908,17 @@ fn nquads_to_sink(
 
                 let lbd_fwd = merged_sender.clone();
                 let lbd_res = fwd_result_sender.clone();
+                let lbd_graph_fwd2 = lbd_graph.clone();
                 rayon::spawn(move || {
                     let result = (|| -> Result<(), lbd_serializer::SerializerError> {
                         for batch in lbd_receiver {
-                            lbd_fwd.send((BatchKind::Lbd, batch)).map_err(|_| {
-                                lbd_serializer::SerializerError::Io(
-                                    io::ErrorKind::BrokenPipe.into(),
-                                )
-                            })?;
+                            lbd_fwd
+                                .send((BatchKind::new(lbd_graph_fwd2.clone()), batch))
+                                .map_err(|_| {
+                                    lbd_serializer::SerializerError::Io(
+                                        io::ErrorKind::BrokenPipe.into(),
+                                    )
+                                })?;
                         }
                         Ok(())
                     })();
@@ -1932,14 +1928,17 @@ fn nquads_to_sink(
                 if let Some(topo_rx) = topology_receiver {
                     let topo_fwd = merged_sender.clone();
                     let topo_res = fwd_result_sender.clone();
+                    let topology_graph_fwd2 = topology_graph.clone();
                     rayon::spawn(move || {
                         let result = (|| -> Result<(), lbd_serializer::SerializerError> {
                             for batch in topo_rx {
-                                topo_fwd.send((BatchKind::Topology, batch)).map_err(|_| {
-                                    lbd_serializer::SerializerError::Io(
-                                        io::ErrorKind::BrokenPipe.into(),
-                                    )
-                                })?;
+                                topo_fwd
+                                    .send((BatchKind::new(topology_graph_fwd2.clone()), batch))
+                                    .map_err(|_| {
+                                        lbd_serializer::SerializerError::Io(
+                                            io::ErrorKind::BrokenPipe.into(),
+                                        )
+                                    })?;
                             }
                             Ok(())
                         })();
@@ -1972,12 +1971,7 @@ fn nquads_to_sink(
                 let serialize_t0 = now_ms();
                 for (kind, batch) in merged_receiver.iter() {
                     while let Ok(evt) = stage_rx.try_recv() {
-                        if evt.plugin_id == LBD_PRODUCER_ID {
-                            produce_ms = evt.duration_ms;
-                        }
-                        if evt.plugin_id == IFC_TOPOLOGY_PRODUCER_ID {
-                            topology_produce_ms = evt.duration_ms;
-                        }
+                        produce_durations.insert(evt.plugin_id, evt.duration_ms);
                         emit_stage_event(
                             sink,
                             evt.plugin_id,
@@ -1989,26 +1983,17 @@ fn nquads_to_sink(
                             None,
                         )?;
                     }
-                    let graph_iri = match kind {
-                        BatchKind::Lbd => &lbd_graph,
-                        BatchKind::Topology => &topology_graph,
-                        BatchKind::Ifcowl => &ifcowl_graph,
-                    };
-                    match kind {
-                        BatchKind::Lbd => lbd_triple_count += batch.len() as u64,
-                        BatchKind::Topology => topology_triple_count += batch.len() as u64,
-                        BatchKind::Ifcowl => ifcowl_triple_count += batch.len() as u64,
+                    let graph_iri = kind.iri().to_string();
+                    if graph_iri == lbd_graph {
+                        lbd_triple_count += batch.len() as u64;
+                    } else if graph_iri == topology_graph {
+                        topology_triple_count += batch.len() as u64;
                     }
-                    lbd_serializer::write_nquads_batch(&mut writer, &batch, graph_iri)?;
+                    lbd_serializer::write_nquads_batch(&mut writer, &batch, &graph_iri)?;
                 }
                 let serialize_ms = now_ms() - serialize_t0;
                 while let Ok(evt) = stage_rx.try_recv() {
-                    if evt.plugin_id == LBD_PRODUCER_ID {
-                        produce_ms = evt.duration_ms;
-                    }
-                    if evt.plugin_id == IFC_TOPOLOGY_PRODUCER_ID {
-                        topology_produce_ms = evt.duration_ms;
-                    }
+                    produce_durations.insert(evt.plugin_id, evt.duration_ms);
                     emit_stage_event(
                         sink,
                         evt.plugin_id,
@@ -2016,12 +2001,7 @@ fn nquads_to_sink(
                         "success",
                         evt.duration_ms,
                         0,
-                        triple_count_for!(
-                            evt.plugin_id,
-                            lbd_triple_count,
-                            ifcowl_triple_count,
-                            topology_triple_count
-                        ),
+                        triple_count_for!(evt.plugin_id),
                         None,
                     )?;
                 }
@@ -2035,22 +2015,15 @@ fn nquads_to_sink(
                 let export_t0 = now_ms();
                 let (summary, peak, chunk_size) = writer.finish()?;
                 let export_ms = now_ms() - export_t0;
-                return Ok((
-                    vec![summary],
-                    peak,
-                    chunk_size,
-                    StageDurations {
-                        produce_ms,
-                        ifcowl_produce_ms: 0,
-                        topology_produce_ms,
-                        bbox_produce_ms: 0,
-                        serialize_ms,
-                        export_ms,
-                        lbd_triples: lbd_triple_count,
-                        ifcowl_triples: 0,
-                        topology_triples: topology_triple_count,
-                    },
-                ));
+
+                let mut sd = StageDurations::new();
+                sd.serialize_ms = serialize_ms;
+                sd.export_ms = export_ms;
+                for (plugin_id, ms) in &produce_durations {
+                    let triples = triple_count_for!(plugin_id);
+                    sd.by_producer.insert(plugin_id.to_string(), (*ms, triples));
+                }
+                return Ok((vec![summary], peak, chunk_size, sd));
             } else {
                 // LBD-only, no topology — simplest path
                 let mut writer = SinkChunkWriter::new(
@@ -2080,9 +2053,7 @@ fn nquads_to_sink(
                 let serialize_ms = now_ms() - serialize_t0;
 
                 while let Ok(evt) = stage_rx.try_recv() {
-                    if evt.plugin_id == LBD_PRODUCER_ID {
-                        produce_ms = evt.duration_ms;
-                    }
+                    produce_durations.insert(evt.plugin_id, evt.duration_ms);
                     emit_stage_event(
                         sink,
                         evt.plugin_id,
@@ -2090,12 +2061,7 @@ fn nquads_to_sink(
                         "success",
                         evt.duration_ms,
                         0,
-                        triple_count_for!(
-                            evt.plugin_id,
-                            lbd_triple_count,
-                            ifcowl_triple_count,
-                            topology_triple_count
-                        ),
+                        triple_count_for!(evt.plugin_id),
                         None,
                     )?;
                 }
@@ -2104,22 +2070,15 @@ fn nquads_to_sink(
                 let export_t0 = now_ms();
                 let (summary, peak, chunk_size) = writer.finish()?;
                 let export_ms = now_ms() - export_t0;
-                return Ok((
-                    vec![summary],
-                    peak,
-                    chunk_size,
-                    StageDurations {
-                        produce_ms,
-                        ifcowl_produce_ms: 0,
-                        topology_produce_ms: 0,
-                        bbox_produce_ms: 0,
-                        serialize_ms,
-                        export_ms,
-                        lbd_triples: lbd_triple_count,
-                        ifcowl_triples: 0,
-                        topology_triples: 0,
-                    },
-                ));
+
+                let mut sd = StageDurations::new();
+                sd.serialize_ms = serialize_ms;
+                sd.export_ms = export_ms;
+                for (plugin_id, ms) in &produce_durations {
+                    let triples = triple_count_for!(plugin_id);
+                    sd.by_producer.insert(plugin_id.to_string(), (*ms, triples));
+                }
+                return Ok((vec![summary], peak, chunk_size, sd));
             }
         }
     }
