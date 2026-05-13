@@ -10,6 +10,7 @@ const state = {
     "neo-bot-producer",
     "neo-beo-producer",
     "neo-props-opm",
+    "neo-omg-fog",
     "neo-ifcowl-producer",
     "neo-turtle-serializer",
     "neo-file-export",

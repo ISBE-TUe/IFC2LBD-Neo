@@ -172,7 +172,9 @@ impl ProducerPlugin for BotProducerPlugin {
         ));
         forward_as_tagged(raw_receiver, graph_iri, sender.clone());
 
-        stream_bot(&model, &options, &raw_sender).map_err(|_| ProducerError::ChannelClosed)
+        stream_bot(&model, &options, &raw_sender)
+            .map(|_| ())
+            .map_err(|_| ProducerError::ChannelClosed)
     }
 }
 
@@ -224,7 +226,9 @@ impl ProducerPlugin for BeoProducerPlugin {
         ));
         forward_as_tagged(raw_receiver, graph_iri, sender.clone());
 
-        stream_beo(&model, &options, &raw_sender).map_err(|_| ProducerError::ChannelClosed)
+        stream_beo(&model, &options, &raw_sender)
+            .map(|_| ())
+            .map_err(|_| ProducerError::ChannelClosed)
     }
 }
 
@@ -278,7 +282,9 @@ impl ProducerPlugin for PropsOpmProducerPlugin {
         ));
         forward_as_tagged(raw_receiver, graph_iri, sender.clone());
 
-        stream_props_opm(&model, &options, &raw_sender).map_err(|_| ProducerError::ChannelClosed)
+        stream_props_opm(&model, &options, &raw_sender)
+            .map(|_| ())
+            .map_err(|_| ProducerError::ChannelClosed)
     }
 }
 
@@ -332,7 +338,9 @@ impl ProducerPlugin for OmgFogProducerPlugin {
         ));
         forward_as_tagged(raw_receiver, graph_iri, sender.clone());
 
-        stream_omg_fog(&model, &options, &raw_sender).map_err(|_| ProducerError::ChannelClosed)
+        stream_omg_fog(&model, &options, &raw_sender)
+            .map(|_| ())
+            .map_err(|_| ProducerError::ChannelClosed)
     }
 }
 
