@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::types::{
     ConversionRequest, ExecutionSettings, NquadsChunkingMode, NquadsModuleOptions, OutputFormats,
-    TurtleGrouping, WasmApiError,
+    TurtleGrouping, TurtleLayout, WasmApiError,
 };
 use lbd_pipeline::ActivationPlan;
 use lbd_pipeline::{
@@ -146,6 +146,20 @@ pub(crate) fn resolve_execution_settings(
             )));
         }
     };
+    let turtle_layout = match turtle_entries
+        .and_then(|m| m.get("layout"))
+        .map(String::as_str)
+        .unwrap_or("joined")
+    {
+        "joined" => TurtleLayout::Joined,
+        "separate" => TurtleLayout::Separate,
+        other => {
+            return Err(WasmApiError::Message(format!(
+                "invalid `neo-turtle-serializer.layout={}` (expected joined|separate)",
+                other
+            )));
+        }
+    };
 
     Ok(ExecutionSettings {
         output_formats,
@@ -172,6 +186,7 @@ pub(crate) fn resolve_execution_settings(
         },
         output_stem,
         turtle_grouping,
+        turtle_layout,
     })
 }
 
@@ -266,9 +281,17 @@ pub(crate) fn validate_turtle_serializer_options(
                     )));
                 }
             }
+            "layout" => {
+                if !matches!(value.as_str(), "joined" | "separate") {
+                    return Err(WasmApiError::Message(format!(
+                        "`neo-turtle-serializer.layout` must be one of joined|separate, got `{}`",
+                        value
+                    )));
+                }
+            }
             other => {
                 return Err(WasmApiError::Message(format!(
-                    "unknown option `neo-turtle-serializer.{}` (supported: grouping)",
+                    "unknown option `neo-turtle-serializer.{}` (supported: grouping, layout)",
                     other
                 )));
             }

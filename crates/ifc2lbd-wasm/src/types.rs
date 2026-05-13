@@ -215,10 +215,17 @@ pub struct ExecutionSettings {
     pub nquads: NquadsModuleOptions,
     pub output_stem: String,
     pub turtle_grouping: TurtleGrouping,
+    pub turtle_layout: TurtleLayout,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TurtleGrouping {
     Sorted,
     Streaming,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TurtleLayout {
+    Joined,
+    Separate,
 }

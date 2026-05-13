@@ -129,6 +129,17 @@ function optionControl(pluginId, key) {
         </select>
       </div>`;
   }
+  if (key === "layout") {
+    const layoutVal = current || "joined";
+    return `
+      <div class="detail-row">
+        <span class="detail-label">${key}</span>
+        <select data-option-key="${key}" class="detail-select">
+          <option value="joined" ${layoutVal === "joined" ? "selected" : ""}>Joined Turtle file</option>
+          <option value="separate" ${layoutVal === "separate" ? "selected" : ""}>Separate files per producer</option>
+        </select>
+      </div>`;
+  }
   if (key === "chunking") {
     // Default to "lines" for chunked serializer (matches Rust default)
     const chunkingVal = current || "lines";

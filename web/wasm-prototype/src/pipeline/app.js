@@ -10,7 +10,7 @@ import { initSidebar } from "./sidebar.js";
 import { initLogPanel, log } from "./log-panel.js";
 import { saveConfig, loadConfig } from "./config.js";
 
-const RUNTIME_BUILD = "pipeline-v9-2026-05-13T10:45Z";
+const RUNTIME_BUILD = "pipeline-v9-2026-05-13T14:00Z";
 
 // ---------------------------------------------------------------------------
 // Pipeline Templates
@@ -383,6 +383,7 @@ async function runConversion() {
     const hasNq = activeModules.has("neo-nquads-serializer") || activeModules.has("neo-nquads-chunked-serializer");
     const hasChunkedNq = activeModules.has("neo-nquads-chunked-serializer");
     const hasIfcowl = activeModules.has("neo-ifcowl-producer");
+    const turtleLayout = moduleOptions["neo-turtle-serializer"]?.layout || "joined";
     // For chunked output, filenames are dynamic (out-lbd.part-000.nq, etc.)
     // so expectedFiles only lists the single-file outputs.
     // The done handler will pick up chunked files from memoryFiles automatically.
@@ -390,26 +391,44 @@ async function runConversion() {
       ? []  // chunked files are discovered from sink events
       : hasNq
         ? [{ filename: `${outputStem}.nq`, mimeType: "application/n-quads", role: "merged" }]
-        : hasIfcowl
-          ? [{ filename: `${outputStem}.ttl`, mimeType: "text/turtle", role: "lbd" }, { filename: `${outputStem}_ifcowl.ttl`, mimeType: "text/turtle", role: "ifcowl" }]
-          : [{ filename: `${outputStem}.ttl`, mimeType: "text/turtle", role: "lbd" }];
+        : turtleLayout === "separate"
+          ? [
+              ...(activeModules.has("neo-bot-producer") ? [{ filename: `${outputStem}_bot.ttl`, mimeType: "text/turtle", role: "bot" }] : []),
+              ...(activeModules.has("neo-beo-producer") ? [{ filename: `${outputStem}_beo.ttl`, mimeType: "text/turtle", role: "beo" }] : []),
+              ...(activeModules.has("neo-props-opm") ? [{ filename: `${outputStem}_props.ttl`, mimeType: "text/turtle", role: "props" }] : []),
+              ...(activeModules.has("neo-omg-fog") ? [{ filename: `${outputStem}_omg.ttl`, mimeType: "text/turtle", role: "omg" }] : []),
+              ...(activeModules.has("neo-ifcowl-producer") ? [{ filename: `${outputStem}_ifcowl.ttl`, mimeType: "text/turtle", role: "ifcowl" }] : []),
+              ...(activeModules.has("neo-ifc-topology-producer") ? [{ filename: `${outputStem}_topology.ttl`, mimeType: "text/turtle", role: "topology" }] : []),
+            ]
+          : [{ filename: `${outputStem}.ttl`, mimeType: "text/turtle", role: "joined" }];
 
     const t0 = performance.now();
     resetStageStatuses();
     const result = await runSinkConversionInWorker(input, requestPayload, expectedFiles, requestedThreads);
     const elapsedMs = performance.now() - t0;
 
+    const filesWithPayload = result.renderedFiles.filter(
+      (f) => Array.isArray(f?.payloadParts) && f.payloadParts.length > 0
+    );
+    if (!filesWithPayload.length) {
+      throw new Error("Conversion finished but produced no output payloads.");
+    }
+
     if (outputDirectoryHandle) {
       try {
-        await writeRenderedFilesToDirectory(result.renderedFiles, outputDirectoryHandle);
-        renderDownloadsMessage(`Saved ${result.renderedFiles.length} file(s) to ${outputDirectoryName}.`);
-        log(`Saved ${result.renderedFiles.length} file(s) to output directory.`);
+        const writable = await ensureOutputDirectoryWritable(outputDirectoryHandle);
+        if (!writable) {
+          throw new Error("Output directory permission denied.");
+        }
+        const { fileCount, totalBytes } = await writeRenderedFilesToDirectory(filesWithPayload, outputDirectoryHandle);
+        renderDownloadsMessage(`Saved ${fileCount} file(s), ${bytesToHuman(totalBytes)}, to ${outputDirectoryName}.`);
+        log(`Saved ${fileCount} file(s), ${bytesToHuman(totalBytes)}, to output directory.`);
       } catch (error) {
         log(`Output write failed, falling back to downloads: ${error instanceof Error ? error.message : String(error)}`);
-        renderDownloads(result.renderedFiles);
+        renderDownloads(filesWithPayload);
       }
     } else {
-      renderDownloads(result.renderedFiles);
+      renderDownloads(filesWithPayload);
     }
     const timeStr = `${(elapsedMs / 1000).toFixed(1)}s`;
     log(`Finished in ${timeStr}.`);
@@ -461,6 +480,8 @@ function renderDownloadsMessage(message) {
 }
 
 async function writeRenderedFilesToDirectory(files, dirHandle) {
+  let fileCount = 0;
+  let totalBytes = 0;
   for (const file of files) {
     if (!file?.filename || !Array.isArray(file.payloadParts)) continue;
     const blob = new Blob(file.payloadParts, { type: file.mimeType || "application/octet-stream" });
@@ -468,7 +489,10 @@ async function writeRenderedFilesToDirectory(files, dirHandle) {
     const writable = await fileHandle.createWritable();
     await writable.write(blob);
     await writable.close();
+    fileCount += 1;
+    totalBytes += blob.size;
   }
+  return { fileCount, totalBytes };
 }
 
 function escapeHtml(value) {
@@ -478,6 +502,17 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+async function ensureOutputDirectoryWritable(dirHandle) {
+  if (!dirHandle) return false;
+  if (typeof dirHandle.queryPermission !== "function" || typeof dirHandle.requestPermission !== "function") {
+    return true;
+  }
+  let permission = await dirHandle.queryPermission({ mode: "readwrite" });
+  if (permission === "granted") return true;
+  permission = await dirHandle.requestPermission({ mode: "readwrite" });
+  return permission === "granted";
 }
 
 function bytesToHuman(bytes) {
