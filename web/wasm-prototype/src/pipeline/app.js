@@ -2,7 +2,7 @@
 // app.js — Pipeline dashboard (Ableton Session View style)
 // ---------------------------------------------------------------------------
 
-import initWasm, { listModules, resolvePlan, planExecution } from "../wasm/ifc2lbd_wasm.js";
+import initWasm, { listModules, resolvePlan, planExecution, convertIfcToSink, initNeoThreadPool } from "../wasm/ifc2lbd_wasm.js";
 import "./pipeline.css";
 import { getState, update, updateStageStatus, resetStageStatuses } from "./state.js";
 import { initSession } from "./session.js";
@@ -10,7 +10,7 @@ import { initSidebar } from "./sidebar.js";
 import { initLogPanel, log } from "./log-panel.js";
 import { saveConfig, loadConfig } from "./config.js";
 
-const RUNTIME_BUILD = "pipeline-v8-2026-04-17Z";
+const RUNTIME_BUILD = "pipeline-v9-2026-05-13T10:45Z";
 
 // ---------------------------------------------------------------------------
 // Pipeline Templates
@@ -87,6 +87,8 @@ function applyTemplate(templateId) {
 let conversionWorker = null;
 let conversionRequestId = 0;
 const pendingConversionRequests = new Map();
+let threadPoolInitialized = false;
+let threadPoolSize = 0;
 
 const detectFeasibilityBudgetMb = () => {
   const gb = Number(navigator.deviceMemory || 0);
@@ -108,6 +110,11 @@ function getConversionWorker() {
         pending.threadPoolLogged = true;
         log(`ThreadPool: ${pending.threadPoolSize} threads`);
       }
+      return;
+    }
+
+    if (data.type === "status") {
+      log(`Worker ${data.phase}: ${data.status}`);
       return;
     }
 
@@ -185,6 +192,55 @@ function runSinkConversionInWorker(input, requestPayload, expectedFiles, request
   });
 }
 
+async function runSinkConversionInMain(input, requestPayload, expectedFiles, requestedThreads) {
+  if (!threadPoolInitialized) {
+    await initNeoThreadPool(requestedThreads);
+    threadPoolInitialized = true;
+    threadPoolSize = requestedThreads;
+    log(`ThreadPool: ${threadPoolSize} threads`);
+  }
+  const memoryFiles = new Map();
+  const sink = (event) => {
+    if (!event || !event.type) return;
+    if (event.type === "stageEvent") {
+      updateStageStatus(event);
+      const icon = event.status === "success" ? "✓" : event.status === "failed" ? "✗" : "→";
+      log(`${icon} ${event.pluginId}: ${event.status}${event.durationMs ? ` ${(event.durationMs / 1000).toFixed(2)}s` : ""}${event.triplesOut ? ` (${event.triplesOut.toLocaleString()} triples)` : ""}`);
+      return;
+    }
+    if (event.type === "fileChunk" && event.filename && event.chunk != null) {
+      const chunk = event.chunk instanceof Uint8Array ? event.chunk : new Uint8Array(event.chunk);
+      const chunks = memoryFiles.get(event.filename) || [];
+      chunks.push(chunk);
+      memoryFiles.set(event.filename, chunks);
+    }
+  };
+  const streamResult = convertIfcToSink(input, requestPayload, sink);
+  const renderedFiles = [];
+  const knownFilenames = new Set(expectedFiles.map((m) => m.filename));
+  for (const meta of expectedFiles) {
+    renderedFiles.push({
+      filename: meta.filename,
+      mimeType: meta.mimeType,
+      role: meta.role,
+      payloadParts: memoryFiles.get(meta.filename) || [],
+    });
+  }
+  for (const [filename, chunks] of memoryFiles.entries()) {
+    if (!knownFilenames.has(filename)) {
+      const isManifest = filename.endsWith(".manifest.json");
+      const isNq = filename.endsWith(".nq");
+      renderedFiles.push({
+        filename,
+        mimeType: isManifest ? "application/json" : isNq ? "application/n-quads" : "application/octet-stream",
+        role: isManifest ? "manifest" : isNq ? "chunk" : "other",
+        payloadParts: chunks,
+      });
+    }
+  }
+  return { streamResult: streamResult || {}, renderedFiles, threadPoolSize };
+}
+
 // ---------------------------------------------------------------------------
 // Module toggle wiring — now handled by grid circles in session.js
 // ---------------------------------------------------------------------------
@@ -249,7 +305,7 @@ async function init() {
   document.querySelector("#btn-save")?.addEventListener("click", saveConfig);
   document.querySelector("#btn-run")?.addEventListener("click", runConversion);
 
-  log("WASM ready. Pipeline dashboard v8.");
+  log("WASM ready. Pipeline dashboard v9.");
   log(`Build: ${RUNTIME_BUILD}`);
 }
 

@@ -20,6 +20,7 @@ FROM rust:latest
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     libssl-dev \
+    wabt \
     && rm -rf /var/lib/apt/lists/*
 
 # Install nightly toolchain, the wasm32 target, and rust-src (for build-std)
@@ -32,8 +33,5 @@ RUN cargo +nightly install wasm-bindgen-cli --version 0.2.118 --locked
 
 # Make nightly the active toolchain inside the container so callers don't need +nightly
 ENV RUSTUP_TOOLCHAIN=nightly
-
-# wasm-bindgen-rayon requires atomics + bulk-memory SIMD extensions
-ENV RUSTFLAGS="-C target-feature=+atomics,+bulk-memory"
 
 WORKDIR /workspace
