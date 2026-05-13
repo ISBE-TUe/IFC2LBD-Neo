@@ -911,6 +911,31 @@ fn turtle_to_sink(
     stage_rx: &crossbeam::channel::Receiver<StageDoneEvent>,
 ) -> Result<(Vec<OutputFileSummary>, usize, usize, StageDurations), lbd_serializer::SerializerError>
 {
+    if settings.turtle_layout == TurtleLayout::Joined {
+        return turtle_to_sink_joined(
+            step,
+            model,
+            options,
+            settings,
+            sink,
+            sink_config,
+            stage_tx,
+            stage_rx,
+        );
+    }
+    if settings.turtle_layout == TurtleLayout::Separate {
+        return turtle_to_sink_separate(
+            step,
+            model,
+            options,
+            settings,
+            sink,
+            sink_config,
+            stage_tx,
+            stage_rx,
+        );
+    }
+
     let mut summaries = Vec::new();
     let chan_cap = if options.low_memory_mode { 4 } else { 16 };
     let instance_base = options.base_uri.clone();
@@ -1235,6 +1260,473 @@ fn turtle_to_sink(
             .by_producer
             .insert(plugin_id.to_string(), (ms, triples));
     }
+    Ok((summaries, peak, chunk_size, stage_durations))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn serialize_turtle_receiver_to_file(
+    rx: crossbeam::channel::Receiver<Vec<lbd_ontology::Triple>>,
+    filename: String,
+    role: &'static str,
+    sink: &Function,
+    sink_config: &SinkConfig,
+    options: &ConvertOptions,
+    instance_base: &str,
+) -> Result<(OutputFileSummary, u64), lbd_serializer::SerializerError> {
+    let mut writer = SinkChunkWriter::new(
+        sink,
+        filename,
+        "text/turtle;charset=utf-8",
+        role,
+        sink_config.chunk_size,
+        sink_config.max_pending_bytes,
+    )?;
+    if !options.low_memory_mode {
+        write_turtle_prefixes_for_stream(&mut writer, Some(instance_base))?;
+    }
+    let mut triple_count: u64 = 0;
+    for batch in rx {
+        triple_count += batch.len() as u64;
+        if options.low_memory_mode {
+            serialize_turtle_batch_raw_to_writer(&batch, &mut writer)?;
+        } else {
+            serialize_turtle_batch_to_writer(&batch, &mut writer, Some(instance_base))?;
+        }
+    }
+    let (summary, _, _) = writer.finish()?;
+    Ok((summary, triple_count))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn serialize_turtle_receiver_to_writer(
+    rx: crossbeam::channel::Receiver<Vec<lbd_ontology::Triple>>,
+    writer: &mut SinkChunkWriter,
+    options: &ConvertOptions,
+    instance_base: &str,
+) -> Result<u64, lbd_serializer::SerializerError> {
+    let mut triple_count: u64 = 0;
+    for batch in rx {
+        triple_count += batch.len() as u64;
+        if options.low_memory_mode {
+            serialize_turtle_batch_raw_to_writer(&batch, &mut *writer)?;
+        } else {
+            serialize_turtle_batch_to_writer(&batch, &mut *writer, Some(instance_base))?;
+        }
+    }
+    Ok(triple_count)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn turtle_to_sink_joined(
+    step: StepFile,
+    model: ifc_model::IfcModel,
+    options: ConvertOptions,
+    settings: &ExecutionSettings,
+    sink: &Function,
+    sink_config: &SinkConfig,
+    stage_tx: &crossbeam::channel::Sender<StageDoneEvent>,
+    stage_rx: &crossbeam::channel::Receiver<StageDoneEvent>,
+) -> Result<(Vec<OutputFileSummary>, usize, usize, StageDurations), lbd_serializer::SerializerError>
+{
+    let chan_cap = if options.low_memory_mode { 4 } else { 16 };
+    let instance_base = options.base_uri.clone();
+    let model = std::sync::Arc::new(model);
+    let mut produce_durations: HashMap<&'static str, u64> = HashMap::new();
+    let mut produce_triples: HashMap<&'static str, u64> = HashMap::new();
+
+    let (bot_sender, bot_receiver) = if settings.emit_bot { let (tx, rx) = crossbeam::channel::bounded(chan_cap); (Some(tx), Some(rx)) } else { (None, None) };
+    let (beo_sender, beo_receiver) = if settings.emit_beo { let (tx, rx) = crossbeam::channel::bounded(chan_cap); (Some(tx), Some(rx)) } else { (None, None) };
+    let (props_sender, props_receiver) = if settings.emit_props_opm { let (tx, rx) = crossbeam::channel::bounded(chan_cap); (Some(tx), Some(rx)) } else { (None, None) };
+    let (omg_sender, omg_receiver) = if settings.emit_omg_fog { let (tx, rx) = crossbeam::channel::bounded(chan_cap); (Some(tx), Some(rx)) } else { (None, None) };
+    let (ifcowl_sender, ifcowl_receiver) = if settings.emit_ifcowl { let (tx, rx) = crossbeam::channel::bounded(chan_cap); (Some(tx), Some(rx)) } else { (None, None) };
+    let (topology_sender, topology_receiver) = if settings.emit_topology { let (tx, rx) = crossbeam::channel::bounded(chan_cap); (Some(tx), Some(rx)) } else { (None, None) };
+
+    let mut options_lbd = options.clone();
+    if settings.emit_topology {
+        options_lbd.enable_topology = false;
+        options_lbd.enable_topology_extension = false;
+    }
+
+    let stage_tx_bot = stage_tx.clone();
+    let stage_tx_beo = stage_tx.clone();
+    let stage_tx_props = stage_tx.clone();
+    let stage_tx_omg = stage_tx.clone();
+    let stage_tx_ifcowl = stage_tx.clone();
+    let stage_tx_topology = stage_tx.clone();
+    let model_prod = model.clone();
+    let options_topo = options.clone();
+    rayon::spawn(move || {
+        if let Some(bot_tx) = bot_sender {
+            let t0 = now_ms();
+            let triples = lbd_converter::stream_bot(&model_prod, &options_lbd, &bot_tx).unwrap_or(0);
+            let ms = now_ms() - t0;
+            drop(bot_tx);
+            let _ = stage_tx_bot.send(StageDoneEvent { plugin_id: BOT_PRODUCER_ID, stage: "Produce", duration_ms: ms, triple_count: triples });
+        }
+        if let Some(beo_tx) = beo_sender {
+            let t0 = now_ms();
+            let triples = lbd_converter::stream_beo(&model_prod, &options_lbd, &beo_tx).unwrap_or(0);
+            let ms = now_ms() - t0;
+            drop(beo_tx);
+            let _ = stage_tx_beo.send(StageDoneEvent { plugin_id: BEO_PRODUCER_ID, stage: "Produce", duration_ms: ms, triple_count: triples });
+        }
+        if let Some(props_tx) = props_sender {
+            let t0 = now_ms();
+            let triples = lbd_converter::stream_props_opm(&model_prod, &options_lbd, &props_tx).unwrap_or(0);
+            let ms = now_ms() - t0;
+            drop(props_tx);
+            let _ = stage_tx_props.send(StageDoneEvent { plugin_id: PROPS_OPM_PRODUCER_ID, stage: "Produce", duration_ms: ms, triple_count: triples });
+        }
+        if let Some(omg_tx) = omg_sender {
+            let t0 = now_ms();
+            let triples = lbd_converter::stream_omg_fog(&model_prod, &options_lbd, &omg_tx).unwrap_or(0);
+            let ms = now_ms() - t0;
+            drop(omg_tx);
+            let _ = stage_tx_omg.send(StageDoneEvent { plugin_id: lbd_pipeline::OMG_FOG_PRODUCER_ID, stage: "Produce", duration_ms: ms, triple_count: triples });
+        }
+        if let Some(ifcowl_tx) = ifcowl_sender {
+            let base = lbd_converter::normalize_base_uri(&options_lbd.base_uri);
+            let t0 = now_ms();
+            let result = lbd_converter::modules::ifcowl::stream_ifcowl(&step, &base, step.header.schema, &ifcowl_tx, options_lbd.stream_batch_size, options_lbd.ifcowl_max_workers);
+            let ms = now_ms() - t0;
+            drop(ifcowl_tx);
+            let _ = stage_tx_ifcowl.send(StageDoneEvent { plugin_id: IFCOWL_PRODUCER_ID, stage: "Produce", duration_ms: ms, triple_count: 0 });
+            let _ = result;
+        }
+        if let Some(topo_tx) = topology_sender {
+            let t0 = now_ms();
+            let result = lbd_converter::stream_topology_model(&model_prod, &options_topo, &topo_tx);
+            let ms = now_ms() - t0;
+            drop(topo_tx);
+            let _ = stage_tx_topology.send(StageDoneEvent { plugin_id: IFC_TOPOLOGY_PRODUCER_ID, stage: "Produce", duration_ms: ms, triple_count: 0 });
+            let _ = result;
+        }
+    });
+
+    let mut writer = SinkChunkWriter::new(
+        sink,
+        format!("{}.ttl", settings.output_stem),
+        "text/turtle;charset=utf-8",
+        "joined",
+        sink_config.chunk_size,
+        sink_config.max_pending_bytes,
+    )?;
+    if !options.low_memory_mode {
+        write_turtle_prefixes_for_stream(&mut writer, Some(&instance_base))?;
+    }
+    emit_stage_event(sink, TURTLE_SERIALIZER_ID, "Serialize", "running", 0, 0, 0, None)?;
+    let serialize_t0 = now_ms();
+
+    if let Some(rx) = bot_receiver { produce_triples.insert(BOT_PRODUCER_ID, serialize_turtle_receiver_to_writer(rx, &mut writer, &options, &instance_base)?); }
+    if let Some(rx) = beo_receiver { produce_triples.insert(BEO_PRODUCER_ID, serialize_turtle_receiver_to_writer(rx, &mut writer, &options, &instance_base)?); }
+    if let Some(rx) = props_receiver { produce_triples.insert(PROPS_OPM_PRODUCER_ID, serialize_turtle_receiver_to_writer(rx, &mut writer, &options, &instance_base)?); }
+    if let Some(rx) = omg_receiver { produce_triples.insert(lbd_pipeline::OMG_FOG_PRODUCER_ID, serialize_turtle_receiver_to_writer(rx, &mut writer, &options, &instance_base)?); }
+    if let Some(rx) = ifcowl_receiver { produce_triples.insert(IFCOWL_PRODUCER_ID, serialize_turtle_receiver_to_writer(rx, &mut writer, &options, &instance_base)?); }
+    if let Some(rx) = topology_receiver { produce_triples.insert(IFC_TOPOLOGY_PRODUCER_ID, serialize_turtle_receiver_to_writer(rx, &mut writer, &options, &instance_base)?); }
+    let serialize_ms = now_ms() - serialize_t0;
+
+    while let Ok(evt) = stage_rx.try_recv() {
+        produce_durations.insert(evt.plugin_id, evt.duration_ms);
+        let triples = produce_triples.get(evt.plugin_id).copied().unwrap_or(evt.triple_count);
+        emit_stage_event(sink, evt.plugin_id, evt.stage, "success", evt.duration_ms, 0, triples, None)?;
+    }
+
+    emit_stage_event(sink, FILE_EXPORT_ID, "Export", "running", 0, 0, 0, None)?;
+    let export_t0 = now_ms();
+    let (summary, peak, chunk_size) = writer.finish()?;
+    let export_ms = now_ms() - export_t0;
+
+    let mut stage_durations = StageDurations::new();
+    stage_durations.serialize_ms = serialize_ms;
+    stage_durations.export_ms = export_ms;
+    for (plugin_id, ms) in produce_durations {
+        let triples = produce_triples.get(plugin_id).copied().unwrap_or(0);
+        stage_durations.by_producer.insert(plugin_id.to_string(), (ms, triples));
+    }
+    Ok((vec![summary], peak, chunk_size, stage_durations))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn turtle_to_sink_separate(
+    step: StepFile,
+    model: ifc_model::IfcModel,
+    options: ConvertOptions,
+    settings: &ExecutionSettings,
+    sink: &Function,
+    sink_config: &SinkConfig,
+    stage_tx: &crossbeam::channel::Sender<StageDoneEvent>,
+    stage_rx: &crossbeam::channel::Receiver<StageDoneEvent>,
+) -> Result<(Vec<OutputFileSummary>, usize, usize, StageDurations), lbd_serializer::SerializerError>
+{
+    let chan_cap = if options.low_memory_mode { 4 } else { 16 };
+    let instance_base = options.base_uri.clone();
+    let model = std::sync::Arc::new(model);
+    let mut produce_durations: HashMap<&'static str, u64> = HashMap::new();
+    let mut produce_triples: HashMap<&'static str, u64> = HashMap::new();
+    let mut summaries = Vec::new();
+
+    let (bot_sender, bot_receiver) = if settings.emit_bot {
+        let (tx, rx) = crossbeam::channel::bounded(chan_cap);
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
+    let (beo_sender, beo_receiver) = if settings.emit_beo {
+        let (tx, rx) = crossbeam::channel::bounded(chan_cap);
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
+    let (props_sender, props_receiver) = if settings.emit_props_opm {
+        let (tx, rx) = crossbeam::channel::bounded(chan_cap);
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
+    let (omg_sender, omg_receiver) = if settings.emit_omg_fog {
+        let (tx, rx) = crossbeam::channel::bounded(chan_cap);
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
+    let (ifcowl_sender, ifcowl_receiver) = if settings.emit_ifcowl {
+        let (tx, rx) = crossbeam::channel::bounded(chan_cap);
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
+    let (topology_sender, topology_receiver) = if settings.emit_topology {
+        let (tx, rx) = crossbeam::channel::bounded(chan_cap);
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
+
+    let mut options_lbd = options.clone();
+    if settings.emit_topology {
+        options_lbd.enable_topology = false;
+        options_lbd.enable_topology_extension = false;
+    }
+
+    let stage_tx_bot = stage_tx.clone();
+    let stage_tx_beo = stage_tx.clone();
+    let stage_tx_props = stage_tx.clone();
+    let stage_tx_omg = stage_tx.clone();
+    let stage_tx_ifcowl = stage_tx.clone();
+    let stage_tx_topology = stage_tx.clone();
+    let model_prod = model.clone();
+    let options_topo = options.clone();
+    rayon::spawn(move || {
+        if let Some(bot_tx) = bot_sender {
+            let t0 = now_ms();
+            let triples = lbd_converter::stream_bot(&model_prod, &options_lbd, &bot_tx).unwrap_or(0);
+            let ms = now_ms() - t0;
+            drop(bot_tx);
+            let _ = stage_tx_bot.send(StageDoneEvent {
+                plugin_id: BOT_PRODUCER_ID,
+                stage: "Produce",
+                duration_ms: ms,
+                triple_count: triples,
+            });
+        }
+        if let Some(beo_tx) = beo_sender {
+            let t0 = now_ms();
+            let triples = lbd_converter::stream_beo(&model_prod, &options_lbd, &beo_tx).unwrap_or(0);
+            let ms = now_ms() - t0;
+            drop(beo_tx);
+            let _ = stage_tx_beo.send(StageDoneEvent {
+                plugin_id: BEO_PRODUCER_ID,
+                stage: "Produce",
+                duration_ms: ms,
+                triple_count: triples,
+            });
+        }
+        if let Some(props_tx) = props_sender {
+            let t0 = now_ms();
+            let triples = lbd_converter::stream_props_opm(&model_prod, &options_lbd, &props_tx).unwrap_or(0);
+            let ms = now_ms() - t0;
+            drop(props_tx);
+            let _ = stage_tx_props.send(StageDoneEvent {
+                plugin_id: PROPS_OPM_PRODUCER_ID,
+                stage: "Produce",
+                duration_ms: ms,
+                triple_count: triples,
+            });
+        }
+        if let Some(omg_tx) = omg_sender {
+            let t0 = now_ms();
+            let triples = lbd_converter::stream_omg_fog(&model_prod, &options_lbd, &omg_tx).unwrap_or(0);
+            let ms = now_ms() - t0;
+            drop(omg_tx);
+            let _ = stage_tx_omg.send(StageDoneEvent {
+                plugin_id: lbd_pipeline::OMG_FOG_PRODUCER_ID,
+                stage: "Produce",
+                duration_ms: ms,
+                triple_count: triples,
+            });
+        }
+        if let Some(ifcowl_tx) = ifcowl_sender {
+            let base = lbd_converter::normalize_base_uri(&options_lbd.base_uri);
+            let t0 = now_ms();
+            let result = lbd_converter::modules::ifcowl::stream_ifcowl(
+                &step,
+                &base,
+                step.header.schema,
+                &ifcowl_tx,
+                options_lbd.stream_batch_size,
+                options_lbd.ifcowl_max_workers,
+            );
+            let ms = now_ms() - t0;
+            drop(ifcowl_tx);
+            let _ = stage_tx_ifcowl.send(StageDoneEvent {
+                plugin_id: IFCOWL_PRODUCER_ID,
+                stage: "Produce",
+                duration_ms: ms,
+                triple_count: 0,
+            });
+            let _ = result;
+        }
+        if let Some(topo_tx) = topology_sender {
+            let t0 = now_ms();
+            let result = lbd_converter::stream_topology_model(&model_prod, &options_topo, &topo_tx);
+            let ms = now_ms() - t0;
+            drop(topo_tx);
+            let _ = stage_tx_topology.send(StageDoneEvent {
+                plugin_id: IFC_TOPOLOGY_PRODUCER_ID,
+                stage: "Produce",
+                duration_ms: ms,
+                triple_count: 0,
+            });
+            let _ = result;
+        }
+    });
+
+    emit_stage_event(
+        sink,
+        TURTLE_SERIALIZER_ID,
+        "Serialize",
+        "running",
+        0,
+        0,
+        0,
+        None,
+    )?;
+    let serialize_t0 = now_ms();
+
+    if let Some(rx) = bot_receiver {
+        let (summary, triples) = serialize_turtle_receiver_to_file(
+            rx,
+            format!("{}_bot.ttl", settings.output_stem),
+            "bot",
+            sink,
+            sink_config,
+            &options,
+            &instance_base,
+        )?;
+        produce_triples.insert(BOT_PRODUCER_ID, triples);
+        summaries.push(summary);
+    }
+    if let Some(rx) = beo_receiver {
+        let (summary, triples) = serialize_turtle_receiver_to_file(
+            rx,
+            format!("{}_beo.ttl", settings.output_stem),
+            "beo",
+            sink,
+            sink_config,
+            &options,
+            &instance_base,
+        )?;
+        produce_triples.insert(BEO_PRODUCER_ID, triples);
+        summaries.push(summary);
+    }
+    if let Some(rx) = props_receiver {
+        let (summary, triples) = serialize_turtle_receiver_to_file(
+            rx,
+            format!("{}_props.ttl", settings.output_stem),
+            "props",
+            sink,
+            sink_config,
+            &options,
+            &instance_base,
+        )?;
+        produce_triples.insert(PROPS_OPM_PRODUCER_ID, triples);
+        summaries.push(summary);
+    }
+    if let Some(rx) = omg_receiver {
+        let (summary, triples) = serialize_turtle_receiver_to_file(
+            rx,
+            format!("{}_omg.ttl", settings.output_stem),
+            "omg",
+            sink,
+            sink_config,
+            &options,
+            &instance_base,
+        )?;
+        produce_triples.insert(lbd_pipeline::OMG_FOG_PRODUCER_ID, triples);
+        summaries.push(summary);
+    }
+    if let Some(rx) = ifcowl_receiver {
+        let (summary, triples) = serialize_turtle_receiver_to_file(
+            rx,
+            format!("{}_ifcowl.ttl", settings.output_stem),
+            "ifcowl",
+            sink,
+            sink_config,
+            &options,
+            &instance_base,
+        )?;
+        produce_triples.insert(IFCOWL_PRODUCER_ID, triples);
+        summaries.push(summary);
+    }
+    if let Some(rx) = topology_receiver {
+        let (summary, triples) = serialize_turtle_receiver_to_file(
+            rx,
+            format!("{}_topology.ttl", settings.output_stem),
+            "topology",
+            sink,
+            sink_config,
+            &options,
+            &instance_base,
+        )?;
+        produce_triples.insert(IFC_TOPOLOGY_PRODUCER_ID, triples);
+        summaries.push(summary);
+    }
+    let serialize_ms = now_ms() - serialize_t0;
+
+    while let Ok(evt) = stage_rx.try_recv() {
+        let triples = if evt.triple_count > 0 { evt.triple_count } else { 0 };
+        produce_durations.insert(evt.plugin_id, evt.duration_ms);
+        if triples > 0 || !produce_triples.contains_key(evt.plugin_id) {
+            produce_triples.insert(evt.plugin_id, triples);
+        }
+        emit_stage_event(
+            sink,
+            evt.plugin_id,
+            evt.stage,
+            "success",
+            evt.duration_ms,
+            0,
+            triples,
+            None,
+        )?;
+    }
+
+    emit_stage_event(sink, FILE_EXPORT_ID, "Export", "running", 0, 0, 0, None)?;
+    let export_t0 = now_ms();
+    let peak = sink_config.max_pending_bytes;
+    let chunk_size = sink_config.chunk_size;
+    let export_ms = now_ms() - export_t0;
+
+    let mut stage_durations = StageDurations::new();
+    stage_durations.serialize_ms = serialize_ms;
+    stage_durations.export_ms = export_ms;
+    for (plugin_id, ms) in produce_durations {
+        let triples = produce_triples.get(plugin_id).copied().unwrap_or(0);
+        stage_durations
+            .by_producer
+            .insert(plugin_id.to_string(), (ms, triples));
+    }
+
     Ok((summaries, peak, chunk_size, stage_durations))
 }
 
