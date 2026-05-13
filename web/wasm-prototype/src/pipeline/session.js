@@ -109,7 +109,6 @@ function render() {
   for (let ci = 0; ci < columns.length; ci++) {
     const col = columns[ci];
     html += `<div class="session-column" data-stage="${col.key}">`;
-
     for (const mod of col.modules) {
       const isActive = mod.id === "parse" || activeModules.has(mod.id);
       const isRequired = mod.id === "parse" || mod.id === "neo-file-export";
@@ -138,10 +137,12 @@ function render() {
       html += `<span class="cell-name">${shortName(mod.displayName)}</span>`;
 
       // Timing — show for completed stages
-      if (durationMs > 0 && (statusStr === "success" || statusStr === "failed")) {
+      if (statusStr === "success" || statusStr === "failed") {
         html += `<span class="cell-timing">${formatDuration(durationMs)}</span>`;
       }
-      if (status?.triplesOut) {
+      const triplesOut = status?.triplesOut || 0;
+      const showTriples = triplesOut > 0;
+      if (showTriples) {
         html += `<span class="cell-triples">${formatTriples(status.triplesOut)}</span>`;
       }
       if (status?.bytesOut) {

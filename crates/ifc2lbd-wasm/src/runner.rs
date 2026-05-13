@@ -975,46 +975,51 @@ fn turtle_to_sink(
         // 2. Modular LBD producers (BOT / BEO / PROPS_OPM)
         if emit_bot_turtle {
             let t0 = now_ms();
-            let _ = lbd_converter::stream_bot(&model_prod, &options_lbd, &lbd_sender);
+            let triples = lbd_converter::stream_bot(&model_prod, &options_lbd, &lbd_sender)
+                .unwrap_or(0);
             let ms = now_ms() - t0;
             let _ = lbd_stage_tx.send(StageDoneEvent {
                 plugin_id: BOT_PRODUCER_ID,
                 stage: "Produce",
                 duration_ms: ms,
-                triple_count: 0,
+                triple_count: triples,
             });
         }
         if emit_beo_turtle {
             let t0 = now_ms();
-            let _ = lbd_converter::stream_beo(&model_prod, &options_lbd, &lbd_sender);
+            let triples = lbd_converter::stream_beo(&model_prod, &options_lbd, &lbd_sender)
+                .unwrap_or(0);
             let ms = now_ms() - t0;
             let _ = lbd_stage_tx.send(StageDoneEvent {
                 plugin_id: BEO_PRODUCER_ID,
                 stage: "Produce",
                 duration_ms: ms,
-                triple_count: 0,
+                triple_count: triples,
             });
         }
         if emit_props_opm_turtle {
             let t0 = now_ms();
-            let _ = lbd_converter::stream_props_opm(&model_prod, &options_lbd, &lbd_sender);
+            let triples =
+                lbd_converter::stream_props_opm(&model_prod, &options_lbd, &lbd_sender)
+                    .unwrap_or(0);
             let ms = now_ms() - t0;
             let _ = lbd_stage_tx.send(StageDoneEvent {
                 plugin_id: PROPS_OPM_PRODUCER_ID,
                 stage: "Produce",
                 duration_ms: ms,
-                triple_count: 0,
+                triple_count: triples,
             });
         }
         if emit_omg_fog_turtle {
             let t0 = now_ms();
-            let _ = lbd_converter::stream_omg_fog(&model_prod, &options_lbd, &lbd_sender);
+            let triples = lbd_converter::stream_omg_fog(&model_prod, &options_lbd, &lbd_sender)
+                .unwrap_or(0);
             let ms = now_ms() - t0;
             let _ = lbd_stage_tx.send(StageDoneEvent {
                 plugin_id: lbd_pipeline::OMG_FOG_PRODUCER_ID,
                 stage: "Produce",
                 duration_ms: ms,
-                triple_count: 0,
+                triple_count: triples,
             });
         }
         drop(lbd_sender);
@@ -1176,15 +1181,10 @@ fn turtle_to_sink(
     }
     let serialize_ms = now_ms() - serialize_t0;
 
-    let total_triple_count = lbd_triple_count + ifcowl_triple_count + topology_triple_count;
-
     // Drain stage events — emit "success" with real triple counts
     while let Ok(evt) = stage_rx.try_recv() {
-        let triples = if evt.plugin_id == BOT_PRODUCER_ID
-            || evt.plugin_id == BEO_PRODUCER_ID
-            || evt.plugin_id == PROPS_OPM_PRODUCER_ID
-        {
-            lbd_triple_count
+        let triples = if evt.triple_count > 0 {
+            evt.triple_count
         } else if evt.plugin_id == IFCOWL_PRODUCER_ID {
             ifcowl_triple_count
         } else if evt.plugin_id == IFC_TOPOLOGY_PRODUCER_ID {
@@ -1224,12 +1224,7 @@ fn turtle_to_sink(
     stage_durations.serialize_ms = serialize_ms;
     stage_durations.export_ms = export_ms;
     for (plugin_id, ms) in produce_durations {
-        let triples = if plugin_id == BOT_PRODUCER_ID
-            || plugin_id == BEO_PRODUCER_ID
-            || plugin_id == PROPS_OPM_PRODUCER_ID
-        {
-            lbd_triple_count
-        } else if plugin_id == IFCOWL_PRODUCER_ID {
+        let triples = if plugin_id == IFCOWL_PRODUCER_ID {
             ifcowl_triple_count
         } else if plugin_id == IFC_TOPOLOGY_PRODUCER_ID {
             topology_triple_count
@@ -1291,9 +1286,6 @@ fn nquads_to_sink(
     macro_rules! triple_count_for {
         ($plugin_id:expr) => {
             match $plugin_id as &str {
-                BOT_PRODUCER_ID | BEO_PRODUCER_ID | PROPS_OPM_PRODUCER_ID => {
-                    lbd_triple_count
-                }
                 IFCOWL_PRODUCER_ID => ifcowl_triple_count,
                 IFC_TOPOLOGY_PRODUCER_ID => topology_triple_count,
                 _ => 0,
@@ -1362,46 +1354,51 @@ fn nquads_to_sink(
         // 2. Modular LBD producers (BOT / BEO / PROPS_OPM)
         if emit_bot_nq {
             let t0 = now_ms();
-            let _ = lbd_converter::stream_bot(&model_prod, &options_lbd, &lbd_sender);
+            let triples = lbd_converter::stream_bot(&model_prod, &options_lbd, &lbd_sender)
+                .unwrap_or(0);
             let ms = now_ms() - t0;
             let _ = lbd_stage_tx.send(StageDoneEvent {
                 plugin_id: BOT_PRODUCER_ID,
                 stage: "Produce",
                 duration_ms: ms,
-                triple_count: 0,
+                triple_count: triples,
             });
         }
         if emit_beo_nq {
             let t0 = now_ms();
-            let _ = lbd_converter::stream_beo(&model_prod, &options_lbd, &lbd_sender);
+            let triples = lbd_converter::stream_beo(&model_prod, &options_lbd, &lbd_sender)
+                .unwrap_or(0);
             let ms = now_ms() - t0;
             let _ = lbd_stage_tx.send(StageDoneEvent {
                 plugin_id: BEO_PRODUCER_ID,
                 stage: "Produce",
                 duration_ms: ms,
-                triple_count: 0,
+                triple_count: triples,
             });
         }
         if emit_props_opm_nq {
             let t0 = now_ms();
-            let _ = lbd_converter::stream_props_opm(&model_prod, &options_lbd, &lbd_sender);
+            let triples =
+                lbd_converter::stream_props_opm(&model_prod, &options_lbd, &lbd_sender)
+                    .unwrap_or(0);
             let ms = now_ms() - t0;
             let _ = lbd_stage_tx.send(StageDoneEvent {
                 plugin_id: PROPS_OPM_PRODUCER_ID,
                 stage: "Produce",
                 duration_ms: ms,
-                triple_count: 0,
+                triple_count: triples,
             });
         }
         if emit_omg_fog_nq {
             let t0 = now_ms();
-            let _ = lbd_converter::stream_omg_fog(&model_prod, &options_lbd, &lbd_sender);
+            let triples = lbd_converter::stream_omg_fog(&model_prod, &options_lbd, &lbd_sender)
+                .unwrap_or(0);
             let ms = now_ms() - t0;
             let _ = lbd_stage_tx.send(StageDoneEvent {
                 plugin_id: lbd_pipeline::OMG_FOG_PRODUCER_ID,
                 stage: "Produce",
                 duration_ms: ms,
-                triple_count: 0,
+                triple_count: triples,
             });
         }
         drop(lbd_sender);
@@ -1485,7 +1482,7 @@ fn nquads_to_sink(
                         "success",
                         evt.duration_ms,
                         0,
-                        triple_count_for!(evt.plugin_id),
+                        if evt.triple_count > 0 { evt.triple_count } else { triple_count_for!(evt.plugin_id) },
                         None,
                     )?;
                 }
@@ -1556,7 +1553,7 @@ fn nquads_to_sink(
                     "success",
                     evt.duration_ms,
                     0,
-                    triple_count_for!(evt.plugin_id),
+                    if evt.triple_count > 0 { evt.triple_count } else { triple_count_for!(evt.plugin_id) },
                     None,
                 )?;
             }
@@ -1684,7 +1681,7 @@ fn nquads_to_sink(
                             "success",
                             evt.duration_ms,
                             0,
-                            triple_count_for!(evt.plugin_id),
+                            if evt.triple_count > 0 { evt.triple_count } else { triple_count_for!(evt.plugin_id) },
                             None,
                         )?;
                     }
@@ -1712,7 +1709,7 @@ fn nquads_to_sink(
                         "success",
                         evt.duration_ms,
                         0,
-                        triple_count_for!(evt.plugin_id),
+                        if evt.triple_count > 0 { evt.triple_count } else { triple_count_for!(evt.plugin_id) },
                         None,
                     )?;
                 }
@@ -1803,7 +1800,7 @@ fn nquads_to_sink(
                             "success",
                             evt.duration_ms,
                             0,
-                            0,
+                            if evt.triple_count > 0 { evt.triple_count } else { triple_count_for!(evt.plugin_id) },
                             None,
                         )?;
                     }
@@ -1858,7 +1855,7 @@ fn nquads_to_sink(
                             "success",
                             evt.duration_ms,
                             0,
-                            triple_count_for!(evt.plugin_id),
+                            if evt.triple_count > 0 { evt.triple_count } else { triple_count_for!(evt.plugin_id) },
                             None,
                         )?;
                     }
@@ -1876,7 +1873,7 @@ fn nquads_to_sink(
                     "success",
                     evt.duration_ms,
                     0,
-                    triple_count_for!(evt.plugin_id),
+                    if evt.triple_count > 0 { evt.triple_count } else { triple_count_for!(evt.plugin_id) },
                     None,
                 )?;
             }
@@ -1979,7 +1976,7 @@ fn nquads_to_sink(
                             "success",
                             evt.duration_ms,
                             0,
-                            0,
+                            if evt.triple_count > 0 { evt.triple_count } else { triple_count_for!(evt.plugin_id) },
                             None,
                         )?;
                     }
@@ -2001,7 +1998,7 @@ fn nquads_to_sink(
                         "success",
                         evt.duration_ms,
                         0,
-                        triple_count_for!(evt.plugin_id),
+                        if evt.triple_count > 0 { evt.triple_count } else { triple_count_for!(evt.plugin_id) },
                         None,
                     )?;
                 }
@@ -2061,7 +2058,7 @@ fn nquads_to_sink(
                         "success",
                         evt.duration_ms,
                         0,
-                        triple_count_for!(evt.plugin_id),
+                        if evt.triple_count > 0 { evt.triple_count } else { triple_count_for!(evt.plugin_id) },
                         None,
                     )?;
                 }

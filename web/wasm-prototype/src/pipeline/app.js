@@ -16,7 +16,7 @@ const RUNTIME_BUILD = "pipeline-v9-2026-05-13T10:45Z";
 // Pipeline Templates
 // ---------------------------------------------------------------------------
 
-const LBD_MODULES = ["neo-bot-producer", "neo-beo-producer", "neo-props-opm"];
+const LBD_MODULES = ["neo-bot-producer", "neo-beo-producer", "neo-props-opm", "neo-omg-fog"];
 
 const TEMPLATES = [
   {

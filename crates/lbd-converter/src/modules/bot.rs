@@ -82,13 +82,15 @@ pub fn stream_bot(
     model: &IfcModel,
     options: &ConvertOptions,
     sender: &Sender<Vec<Triple>>,
-) -> Result<(), StreamError> {
+) -> Result<u64, StreamError> {
     let base = normalize_base_uri(&options.base_uri);
     let batch_size = options
         .stream_batch_size
         .clamp(MIN_STREAM_BATCH_SIZE, MAX_STREAM_BATCH_SIZE);
     let mut batch = Vec::with_capacity(batch_size);
+    let mut triple_count: u64 = 0;
     emit_bot(model, options, &base, &mut |triple| {
+        triple_count += 1;
         batch.push(triple);
         if batch.len() >= batch_size {
             sender
@@ -100,5 +102,5 @@ pub fn stream_bot(
     if !batch.is_empty() {
         sender.send(batch).map_err(|_| StreamError::ChannelClosed)?;
     }
-    Ok(())
+    Ok(triple_count)
 }
