@@ -19,6 +19,31 @@ wasm-bindgen \
   --out-dir "$OUT_DIR" \
   "$ROOT_DIR/target/wasm32-unknown-unknown/release/ifc2lbd_wasm.wasm"
 
+# Ensure wasm-bindgen output preserves shared memory for threaded rayon runtime.
+# In some toolchain combinations the generated *_bg.wasm memory loses `shared`.
+BG_WASM="$OUT_DIR/ifc2lbd_wasm_bg.wasm"
+if command -v wasm2wat >/dev/null 2>&1 && command -v wat2wasm >/dev/null 2>&1; then
+  TMP_WAT="$(mktemp)"
+  wasm2wat "$BG_WASM" -o "$TMP_WAT" --enable-all
+  python3 - "$TMP_WAT" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+p = Path(sys.argv[1])
+s = p.read_text()
+m = re.search(r"\(memory \(;0;\) [0-9]+(?: [0-9]+)?(?: shared)?\)", s)
+if not m:
+    raise SystemExit("memory declaration not found in wasm2wat output")
+old = m.group(0)
+new = "(memory (;0;) 189 65535 shared)"
+p.write_text(s.replace(old, new, 1))
+print(f"patched memory: {old} -> {new}")
+PY
+  wat2wasm "$TMP_WAT" -o "$BG_WASM" --enable-all
+  rm -f "$TMP_WAT"
+fi
+
 WORKER_HELPERS="$OUT_DIR/snippets/wasm-bindgen-rayon-38edf6e439f6d70d/src/workerHelpers.js"
 if [[ -f "$WORKER_HELPERS" ]]; then
   # macOS sed requires an explicit backup extension with -i; use '' for in-place without backup

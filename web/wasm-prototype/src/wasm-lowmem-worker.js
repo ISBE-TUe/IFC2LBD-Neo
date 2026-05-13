@@ -13,10 +13,20 @@ const ensureWasm = async () => {
 const ensureThreadPool = async (requestedThreads) => {
   const threads = Math.max(2, Number(requestedThreads || 4));
   if (threadPoolInitialized) return { threads: threadPoolSize, reused: true };
-  await initNeoThreadPool(threads);
+  await withTimeout(initNeoThreadPool(threads), 8000, "initNeoThreadPool timeout");
   threadPoolInitialized = true;
   threadPoolSize = threads;
   return { threads: threadPoolSize, reused: false };
+};
+
+const withTimeout = (promise, ms, label) => {
+  let timer = null;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(label)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
 };
 
 self.addEventListener("message", async (event) => {
@@ -24,8 +34,12 @@ self.addEventListener("message", async (event) => {
   if (!id || type !== "convert") return;
 
   try {
+    self.postMessage({ id, type: "status", phase: "init-wasm", status: "start" });
     await ensureWasm();
+    self.postMessage({ id, type: "status", phase: "init-wasm", status: "done" });
+    self.postMessage({ id, type: "status", phase: "init-threadpool", status: "start" });
     const threadInfo = await ensureThreadPool(payload?.requestedThreads);
+    self.postMessage({ id, type: "status", phase: "init-threadpool", status: "done" });
     self.postMessage({ id, type: "threadpool", threads: threadInfo.threads, reused: threadInfo.reused });
 
     const input = new Uint8Array(payload.inputBuffer);
@@ -70,7 +84,13 @@ self.addEventListener("message", async (event) => {
       }
     };
 
-    const streamResult = convertIfcToSink(input, request, sink);
+    self.postMessage({ id, type: "status", phase: "convert", status: "start" });
+    const streamResult = await withTimeout(
+      Promise.resolve().then(() => convertIfcToSink(input, request, sink)),
+      20000,
+      "convertIfcToSink timeout"
+    );
+    self.postMessage({ id, type: "status", phase: "convert", status: "done" });
     self.postMessage({ id, type: "done", streamResult });
   } catch (error) {
     self.postMessage({
