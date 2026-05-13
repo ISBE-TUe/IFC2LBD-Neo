@@ -89,6 +89,9 @@ let conversionRequestId = 0;
 const pendingConversionRequests = new Map();
 let threadPoolInitialized = false;
 let threadPoolSize = 0;
+let outputDirectoryHandle = null;
+let outputDirectoryName = "";
+const supportsOutputDirectoryPicker = typeof window.showDirectoryPicker === "function";
 
 const detectFeasibilityBudgetMb = () => {
   const gb = Number(navigator.deviceMemory || 0);
@@ -297,6 +300,39 @@ async function init() {
     if (meta) meta.textContent = bytesToHuman(file.size);
     log(`File: ${file.name} (${bytesToHuman(file.size)})`);
   });
+  document.querySelector("#btn-output-dir")?.addEventListener("click", async () => {
+    if (!supportsOutputDirectoryPicker) {
+      log("Output directory picker is not supported in this browser.");
+      return;
+    }
+    try {
+      const dirHandle = await window.showDirectoryPicker({ mode: "readwrite" });
+      outputDirectoryHandle = dirHandle;
+      outputDirectoryName = dirHandle?.name || "(selected folder)";
+      const text = document.querySelector("#output-dir-text");
+      if (text) text.textContent = outputDirectoryName;
+      const meta = document.querySelector("#output-dir-meta");
+      if (meta) meta.textContent = "Outputs will be written to this folder.";
+      const btn = document.querySelector("#btn-output-dir");
+      if (btn) btn.classList.add("has-file");
+      log(`Output directory: ${outputDirectoryName}`);
+    } catch (error) {
+      if (error?.name !== "AbortError") {
+        log(`Output directory error: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  });
+  document.querySelector("#btn-output-dir-clear")?.addEventListener("click", () => {
+    outputDirectoryHandle = null;
+    outputDirectoryName = "";
+    const text = document.querySelector("#output-dir-text");
+    if (text) text.textContent = "Choose output folder…";
+    const meta = document.querySelector("#output-dir-meta");
+    if (meta) meta.textContent = "";
+    const btn = document.querySelector("#btn-output-dir");
+    if (btn) btn.classList.remove("has-file");
+    log("Output directory cleared.");
+  });
   document.querySelector("#base-uri-input")?.addEventListener("change", (e) => update({ baseUri: e.target.value.trim() }));
   document.querySelector("#output-stem-input")?.addEventListener("change", (e) => update({ outputStem: e.target.value.trim() || "converted-model" }));
   document.querySelector("#toggle-preprocess")?.addEventListener("change", (e) => update({ showPreprocess: e.target.checked }));
@@ -304,6 +340,7 @@ async function init() {
   document.querySelector("#btn-load")?.addEventListener("click", loadConfig);
   document.querySelector("#btn-save")?.addEventListener("click", saveConfig);
   document.querySelector("#btn-run")?.addEventListener("click", runConversion);
+  setupOutputDirectoryUiSupport();
 
   log("WASM ready. Pipeline dashboard v9.");
   log(`Build: ${RUNTIME_BUILD}`);
@@ -362,7 +399,18 @@ async function runConversion() {
     const result = await runSinkConversionInWorker(input, requestPayload, expectedFiles, requestedThreads);
     const elapsedMs = performance.now() - t0;
 
-    renderDownloads(result.renderedFiles);
+    if (outputDirectoryHandle) {
+      try {
+        await writeRenderedFilesToDirectory(result.renderedFiles, outputDirectoryHandle);
+        renderDownloadsMessage(`Saved ${result.renderedFiles.length} file(s) to ${outputDirectoryName}.`);
+        log(`Saved ${result.renderedFiles.length} file(s) to output directory.`);
+      } catch (error) {
+        log(`Output write failed, falling back to downloads: ${error instanceof Error ? error.message : String(error)}`);
+        renderDownloads(result.renderedFiles);
+      }
+    } else {
+      renderDownloads(result.renderedFiles);
+    }
     const timeStr = `${(elapsedMs / 1000).toFixed(1)}s`;
     log(`Finished in ${timeStr}.`);
 
@@ -406,10 +454,48 @@ function renderDownloads(files) {
   }
 }
 
+function renderDownloadsMessage(message) {
+  const container = document.querySelector("#downloads");
+  if (!container) return;
+  container.innerHTML = `<span class="downloads-empty">${escapeHtml(message)}</span>`;
+}
+
+async function writeRenderedFilesToDirectory(files, dirHandle) {
+  for (const file of files) {
+    if (!file?.filename || !Array.isArray(file.payloadParts)) continue;
+    const blob = new Blob(file.payloadParts, { type: file.mimeType || "application/octet-stream" });
+    const fileHandle = await dirHandle.getFileHandle(file.filename, { create: true });
+    const writable = await fileHandle.createWritable();
+    await writable.write(blob);
+    await writable.close();
+  }
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
 function bytesToHuman(bytes) {
   if (bytes < 1024) return `${bytes}B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)}KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+}
+
+function setupOutputDirectoryUiSupport() {
+  if (supportsOutputDirectoryPicker) return;
+  const pickBtn = document.querySelector("#btn-output-dir");
+  if (pickBtn) pickBtn.disabled = true;
+  const clearBtn = document.querySelector("#btn-output-dir-clear");
+  if (clearBtn) clearBtn.disabled = true;
+  const unsupported = document.querySelector("#output-dir-unsupported");
+  if (unsupported) unsupported.style.display = "block";
+  const meta = document.querySelector("#output-dir-meta");
+  if (meta) meta.textContent = "";
 }
 
 init().catch((error) => log(`Startup: ${error instanceof Error ? error.message : String(error)}`));

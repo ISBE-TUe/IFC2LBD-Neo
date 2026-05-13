@@ -22,11 +22,21 @@
         <!-- Left sidebar: everything that isn't the pipeline graph -->
         <div class="left-rail" id="left-rail">
           <div class="rail-section">
+            <div class="rail-field-label">Import Directory</div>
             <label class="rail-file-btn" id="rail-file-btn">
               <span class="rail-file-text" id="rail-file-text">Choose IFC file…</span>
               <input type="file" id="file-input" accept=".ifc,.ifczip,.step,.stp" />
             </label>
             <div class="rail-file-meta" id="rail-file-meta"></div>
+          </div>
+          <div class="rail-section">
+            <div class="rail-field-label">Output Directory (optional)</div>
+            <button class="rail-file-btn" id="btn-output-dir" type="button">
+              <span class="rail-file-text" id="output-dir-text">Choose output folder…</span>
+            </button>
+            <div class="rail-file-meta" id="output-dir-meta"></div>
+            <button class="rail-btn" id="btn-output-dir-clear" type="button">Clear output folder</button>
+            <div class="rail-file-meta" id="output-dir-unsupported" style="display:none">Output folder selection is not supported in this browser.</div>
           </div>
           <div class="rail-section">
             <div class="rail-field">
