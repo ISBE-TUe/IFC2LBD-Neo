@@ -959,10 +959,16 @@ fn validate_activation_plan_with_args(
             anyhow::bail!("grafeo export module cannot be combined with N-Quads chunking");
         }
     }
-    if !active.contains(lbd_pipeline::LBD_PRODUCER_ID) {
+    let has_any_producer = active.contains(lbd_pipeline::BOT_PRODUCER_ID)
+        || active.contains(lbd_pipeline::BEO_PRODUCER_ID)
+        || active.contains(lbd_pipeline::PROPS_OPM_PRODUCER_ID)
+        || active.contains(lbd_pipeline::OMG_FOG_PRODUCER_ID);
+    if !has_any_producer {
         anyhow::bail!(
-            "module plan must include `{}`",
-            lbd_pipeline::LBD_PRODUCER_ID
+            "module plan must include at least one LBD producer (`{}`, `{}`, or `{}`)",
+            lbd_pipeline::BOT_PRODUCER_ID,
+            lbd_pipeline::BEO_PRODUCER_ID,
+            lbd_pipeline::PROPS_OPM_PRODUCER_ID,
         );
     }
     let has_file_export = active.contains(lbd_pipeline::FILE_EXPORT_ID);

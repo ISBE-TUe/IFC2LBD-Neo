@@ -147,7 +147,7 @@ if (Symbol.dispose) wbg_rayon_PoolBuilder.prototype[Symbol.dispose] = wbg_rayon_
 export function wbg_rayon_start_worker(receiver) {
     wasm.wbg_rayon_start_worker(receiver);
 }
-function __wbg_get_imports(memory) {
+function __wbg_get_imports() {
     const import0 = {
         __proto__: null,
         __wbg_Error_960c155d3d49e4c2: function(arg0, arg1) {
@@ -404,7 +404,6 @@ function __wbg_get_imports(memory) {
             table.set(offset + 2, true);
             table.set(offset + 3, false);
         },
-        memory: memory || new WebAssembly.Memory({initial:190,maximum:65535,shared:true}),
     };
     return {
         __proto__: null,
@@ -494,7 +493,7 @@ function getArrayU8FromWasm0(ptr, len) {
 
 let cachedDataViewMemory0 = null;
 function getDataViewMemory0() {
-    if (cachedDataViewMemory0 === null || cachedDataViewMemory0.buffer !== wasm.memory.buffer) {
+    if (cachedDataViewMemory0 === null || cachedDataViewMemory0.buffer.detached === true || (cachedDataViewMemory0.buffer.detached === undefined && cachedDataViewMemory0.buffer !== wasm.memory.buffer)) {
         cachedDataViewMemory0 = new DataView(wasm.memory.buffer);
     }
     return cachedDataViewMemory0;
@@ -507,7 +506,7 @@ function getStringFromWasm0(ptr, len) {
 
 let cachedUint8ArrayMemory0 = null;
 function getUint8ArrayMemory0() {
-    if (cachedUint8ArrayMemory0 === null || cachedUint8ArrayMemory0.buffer !== wasm.memory.buffer) {
+    if (cachedUint8ArrayMemory0 === null || cachedUint8ArrayMemory0.byteLength === 0) {
         cachedUint8ArrayMemory0 = new Uint8Array(wasm.memory.buffer);
     }
     return cachedUint8ArrayMemory0;
@@ -576,9 +575,8 @@ function takeFromExternrefTable0(idx) {
     return value;
 }
 
-let cachedTextDecoder = (typeof TextDecoder !== 'undefined' ? new TextDecoder('utf-8', { ignoreBOM: true, fatal: true }) : undefined);
-if (cachedTextDecoder) cachedTextDecoder.decode();
-
+let cachedTextDecoder = new TextDecoder('utf-8', { ignoreBOM: true, fatal: true });
+cachedTextDecoder.decode();
 const MAX_SAFARI_DECODE_BYTES = 2146435072;
 let numBytesDecoded = 0;
 function decodeText(ptr, len) {
@@ -588,12 +586,12 @@ function decodeText(ptr, len) {
         cachedTextDecoder.decode();
         numBytesDecoded = len;
     }
-    return cachedTextDecoder.decode(getUint8ArrayMemory0().slice(ptr, ptr + len));
+    return cachedTextDecoder.decode(getUint8ArrayMemory0().subarray(ptr, ptr + len));
 }
 
-const cachedTextEncoder = (typeof TextEncoder !== 'undefined' ? new TextEncoder() : undefined);
+const cachedTextEncoder = new TextEncoder();
 
-if (cachedTextEncoder) {
+if (!('encodeInto' in cachedTextEncoder)) {
     cachedTextEncoder.encodeInto = function (arg, view) {
         const buf = cachedTextEncoder.encode(arg);
         view.set(buf);
@@ -607,16 +605,12 @@ if (cachedTextEncoder) {
 let WASM_VECTOR_LEN = 0;
 
 let wasmModule, wasm;
-function __wbg_finalize_init(instance, module, thread_stack_size) {
+function __wbg_finalize_init(instance, module) {
     wasm = instance.exports;
     wasmModule = module;
     cachedDataViewMemory0 = null;
     cachedUint8ArrayMemory0 = null;
-    if (typeof thread_stack_size !== 'undefined' && (typeof thread_stack_size !== 'number' || thread_stack_size === 0 || thread_stack_size % 65536 !== 0)) {
-        throw new Error('invalid stack size');
-    }
-
-    wasm.__wbindgen_start(thread_stack_size);
+    wasm.__wbindgen_start();
     return wasm;
 }
 
@@ -655,33 +649,33 @@ async function __wbg_load(module, imports) {
     }
 }
 
-function initSync(module, memory) {
+function initSync(module) {
     if (wasm !== undefined) return wasm;
 
-    let thread_stack_size
+
     if (module !== undefined) {
         if (Object.getPrototypeOf(module) === Object.prototype) {
-            ({module, memory, thread_stack_size} = module)
+            ({module} = module)
         } else {
             console.warn('using deprecated parameters for `initSync()`; pass a single object instead')
         }
     }
 
-    const imports = __wbg_get_imports(memory);
+    const imports = __wbg_get_imports();
     if (!(module instanceof WebAssembly.Module)) {
         module = new WebAssembly.Module(module);
     }
     const instance = new WebAssembly.Instance(module, imports);
-    return __wbg_finalize_init(instance, module, thread_stack_size);
+    return __wbg_finalize_init(instance, module);
 }
 
-async function __wbg_init(module_or_path, memory) {
+async function __wbg_init(module_or_path) {
     if (wasm !== undefined) return wasm;
 
-    let thread_stack_size
+
     if (module_or_path !== undefined) {
         if (Object.getPrototypeOf(module_or_path) === Object.prototype) {
-            ({module_or_path, memory, thread_stack_size} = module_or_path)
+            ({module_or_path} = module_or_path)
         } else {
             console.warn('using deprecated parameters for the initialization function; pass a single object instead')
         }
@@ -690,7 +684,7 @@ async function __wbg_init(module_or_path, memory) {
     if (module_or_path === undefined) {
         module_or_path = new URL('ifc2lbd_wasm_bg.wasm', import.meta.url);
     }
-    const imports = __wbg_get_imports(memory);
+    const imports = __wbg_get_imports();
 
     if (typeof module_or_path === 'string' || (typeof Request === 'function' && module_or_path instanceof Request) || (typeof URL === 'function' && module_or_path instanceof URL)) {
         module_or_path = fetch(module_or_path);
@@ -698,7 +692,7 @@ async function __wbg_init(module_or_path, memory) {
 
     const { instance, module } = await __wbg_load(await module_or_path, imports);
 
-    return __wbg_finalize_init(instance, module, thread_stack_size);
+    return __wbg_finalize_init(instance, module);
 }
 
 export { initSync, __wbg_init as default };

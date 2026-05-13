@@ -202,7 +202,7 @@ formEl.addEventListener("submit", async (event) => {
     const baseUri = document.querySelector("#base-uri").value.trim();
     const outputStem = document.querySelector("#output-stem").value.trim() || "converted-model";
 
-    const moduleIds = ["neo-lbd-producer", "neo-file-export"];
+    const moduleIds = ["neo-bot-producer", "neo-beo-producer", "neo-props-opm", "neo-file-export"];
     if (emitIfcowl) moduleIds.push("neo-ifcowl-producer");
     moduleIds.push(serializer === "nq" ? "neo-nquads-serializer" : "neo-turtle-serializer");
 

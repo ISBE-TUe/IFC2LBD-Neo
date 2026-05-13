@@ -7,7 +7,9 @@ const listeners = new Map();
 const state = {
   // Pipeline configuration
   activeModules: new Set([
-    "neo-lbd-producer",
+    "neo-bot-producer",
+    "neo-beo-producer",
+    "neo-props-opm",
     "neo-ifcowl-producer",
     "neo-turtle-serializer",
     "neo-file-export",
@@ -28,6 +30,8 @@ const state = {
   // UI state
   selectedPluginId: null,
   detailOpen: false,
+  showPreprocess: false,
+  showPostprocess: false,
 };
 
 export function getState() { return state; }
