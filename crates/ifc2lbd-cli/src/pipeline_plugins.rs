@@ -5,15 +5,20 @@ use anyhow::Context;
 use crossbeam::channel::Receiver;
 use lbd_pipeline::{
     ExportPlugin, FailurePolicy, ParallelismMode, PipelinePlugin, PipelineStage, PluginManifest,
-    PluginRegistry, ProducerPlugin, SerializerPlugin, BBOX_ENRICHER_ID, FILE_EXPORT_ID,
-    GRAFEO_EXPORT_ID, IFCOWL_PRODUCER_ID, IFC_TOPOLOGY_PRODUCER_ID, LBD_PRODUCER_ID,
-    NQUADS_SERIALIZER_ID, STDOUT_EXPORT_ID, TOPOLOGY_FULL_PRODUCER_ID, TURTLE_SERIALIZER_ID,
+    PluginRegistry, ProducerPlugin, SerializerPlugin, BBOX_ENRICHER_ID, BEO_PRODUCER_ID,
+    BOT_PRODUCER_ID, FILE_EXPORT_ID, GRAFEO_EXPORT_ID, IFCOWL_PRODUCER_ID,
+    IFC_TOPOLOGY_PRODUCER_ID, NQUADS_SERIALIZER_ID,
+    OMG_FOG_PRODUCER_ID, PROPS_OPM_PRODUCER_ID, STDOUT_EXPORT_ID, TOPOLOGY_FULL_PRODUCER_ID,
+    TURTLE_SERIALIZER_ID,
 };
 use serde::{Deserialize, Serialize};
 
 pub fn built_in_registry() -> PluginRegistry {
     let mut registry = PluginRegistry::new();
-    registry.register_producer(LbdProducerPlugin).unwrap();
+    registry.register_producer(BotProducerPlugin).unwrap();
+    registry.register_producer(BeoProducerPlugin).unwrap();
+    registry.register_producer(PropsOpmProducerPlugin).unwrap();
+    registry.register_producer(OmgFogProducerPlugin).unwrap();
     registry.register_producer(IfcowlProducerPlugin).unwrap();
     registry
         .register_producer(IfcTopologyProducerPlugin)
@@ -34,7 +39,10 @@ pub fn built_in_registry() -> PluginRegistry {
     registry
 }
 
-struct LbdProducerPlugin;
+struct BotProducerPlugin;
+struct BeoProducerPlugin;
+struct PropsOpmProducerPlugin;
+struct OmgFogProducerPlugin;
 struct IfcowlProducerPlugin;
 struct IfcTopologyProducerPlugin;
 struct TopologyFullProducerPlugin;
@@ -44,36 +52,6 @@ struct NquadsSerializerPlugin;
 struct FileExportPlugin;
 struct StdoutExportPlugin;
 struct GrafeoExportPlugin;
-
-impl PipelinePlugin for LbdProducerPlugin {
-    fn manifest(&self) -> PluginManifest {
-        PluginManifest {
-            id: LBD_PRODUCER_ID,
-            display_name: "Built-in LBD producer",
-            stage: PipelineStage::Produce,
-            description: "Generates LBD triples from the typed IFC model.",
-            inputs: vec!["ifc-model"],
-            outputs: vec!["lbd-triples"],
-            requires: vec![],
-            conflicts_with: vec![],
-            failure_policy: FailurePolicy::Required,
-            parallelism: ParallelismMode::ParallelByBatch,
-            wasm_compatible: true,
-        }
-    }
-}
-
-impl ProducerPlugin for LbdProducerPlugin {
-    fn produce(
-        &self,
-        _ctx: &lbd_pipeline::PipelineContext,
-        _sender: &crossbeam::channel::Sender<lbd_pipeline::TaggedBatch>,
-    ) -> Result<(), lbd_pipeline::ProducerError> {
-        Err(lbd_pipeline::ProducerError::Conversion(format!(
-            "produce not yet via PipelineRunner"
-        )))
-    }
-}
 
 impl PipelinePlugin for IfcowlProducerPlugin {
     fn manifest(&self) -> PluginManifest {
@@ -89,6 +67,7 @@ impl PipelinePlugin for IfcowlProducerPlugin {
             failure_policy: FailurePolicy::Required,
             parallelism: ParallelismMode::ParallelByPartition,
             wasm_compatible: true,
+            named_graph_slug: None,
         }
     }
 }
@@ -119,6 +98,7 @@ impl PipelinePlugin for IfcTopologyProducerPlugin {
             failure_policy: FailurePolicy::Optional,
             parallelism: ParallelismMode::ParallelByPartition,
             wasm_compatible: true,
+            named_graph_slug: None,
         }
     }
 }
@@ -149,6 +129,7 @@ impl PipelinePlugin for TopologyFullProducerPlugin {
             failure_policy: FailurePolicy::Optional,
             parallelism: ParallelismMode::ParallelByPartition,
             wasm_compatible: false,
+            named_graph_slug: None,
         }
     }
 }
@@ -174,11 +155,12 @@ impl PipelinePlugin for BboxEnricherPlugin {
             description: "Adds bbox geometry enrichment data for LBD output.",
             inputs: vec!["ifc-model", "step-file"],
             outputs: vec!["bbox-geometry"],
-            requires: vec![LBD_PRODUCER_ID],
+            requires: vec![BOT_PRODUCER_ID],
             conflicts_with: vec![],
             failure_policy: FailurePolicy::Optional,
             parallelism: ParallelismMode::ParallelByPartition,
             wasm_compatible: true,
+            named_graph_slug: None,
         }
     }
 }
@@ -204,11 +186,12 @@ impl PipelinePlugin for TurtleSerializerPlugin {
             description: "Serializes triple streams into Turtle output.",
             inputs: vec!["triples"],
             outputs: vec!["turtle-bytes"],
-            requires: vec![LBD_PRODUCER_ID],
+            requires: vec![],
             conflicts_with: vec![NQUADS_SERIALIZER_ID],
             failure_policy: FailurePolicy::Required,
             parallelism: ParallelismMode::Serial,
             wasm_compatible: true,
+            named_graph_slug: None,
         }
     }
 }
@@ -235,11 +218,12 @@ impl PipelinePlugin for NquadsSerializerPlugin {
             description: "Serializes graph streams into merged or chunked N-Quads output.",
             inputs: vec!["quads"],
             outputs: vec!["nquads-bytes", "nquads-chunks"],
-            requires: vec![LBD_PRODUCER_ID],
+            requires: vec![],
             conflicts_with: vec![TURTLE_SERIALIZER_ID],
             failure_policy: FailurePolicy::Required,
             parallelism: ParallelismMode::ParallelByPartition,
             wasm_compatible: true,
+            named_graph_slug: None,
         }
     }
 }
@@ -271,6 +255,7 @@ impl PipelinePlugin for FileExportPlugin {
             failure_policy: FailurePolicy::Required,
             parallelism: ParallelismMode::Serial,
             wasm_compatible: false,
+            named_graph_slug: None,
         }
     }
 }
@@ -301,6 +286,7 @@ impl PipelinePlugin for StdoutExportPlugin {
             failure_policy: FailurePolicy::Required,
             parallelism: ParallelismMode::Serial,
             wasm_compatible: true,
+            named_graph_slug: None,
         }
     }
 }
@@ -331,6 +317,7 @@ impl PipelinePlugin for GrafeoExportPlugin {
             failure_policy: FailurePolicy::Required,
             parallelism: ParallelismMode::ParallelByPartition,
             wasm_compatible: false,
+            named_graph_slug: None,
         }
     }
 }
@@ -343,6 +330,130 @@ impl ExportPlugin for GrafeoExportPlugin {
     ) -> Result<Vec<lbd_pipeline::ExportFileSummary>, lbd_pipeline::ExportError> {
         Err(lbd_pipeline::ExportError::Export(
             "export_in_memory not yet via PipelineRunner".to_string(),
+        ))
+    }
+}
+
+impl PipelinePlugin for BotProducerPlugin {
+    fn manifest(&self) -> PluginManifest {
+        PluginManifest {
+            id: BOT_PRODUCER_ID,
+            display_name: "BOT producer",
+            stage: PipelineStage::Produce,
+            description: "Generates BOT spatial-structure and element triples.",
+            inputs: vec!["ifc-model"],
+            outputs: vec!["bot-triples"],
+            requires: vec![],
+            conflicts_with: vec![],
+            failure_policy: FailurePolicy::Required,
+            parallelism: ParallelismMode::ParallelByBatch,
+            wasm_compatible: true,
+            named_graph_slug: Some("bot"),
+        }
+    }
+}
+
+impl ProducerPlugin for BotProducerPlugin {
+    fn produce(
+        &self,
+        _ctx: &lbd_pipeline::PipelineContext,
+        _sender: &crossbeam::channel::Sender<lbd_pipeline::TaggedBatch>,
+    ) -> Result<(), lbd_pipeline::ProducerError> {
+        Err(lbd_pipeline::ProducerError::Conversion(
+            "produce not yet via PipelineRunner".to_string(),
+        ))
+    }
+}
+
+impl PipelinePlugin for BeoProducerPlugin {
+    fn manifest(&self) -> PluginManifest {
+        PluginManifest {
+            id: BEO_PRODUCER_ID,
+            display_name: "BEO producer",
+            stage: PipelineStage::Produce,
+            description: "Generates BEO/FURN product-class type triples for building elements.",
+            inputs: vec!["ifc-model"],
+            outputs: vec!["beo-triples"],
+            requires: vec![],
+            conflicts_with: vec![],
+            failure_policy: FailurePolicy::Optional,
+            parallelism: ParallelismMode::ParallelByBatch,
+            wasm_compatible: true,
+            named_graph_slug: Some("beo"),
+        }
+    }
+}
+
+impl ProducerPlugin for BeoProducerPlugin {
+    fn produce(
+        &self,
+        _ctx: &lbd_pipeline::PipelineContext,
+        _sender: &crossbeam::channel::Sender<lbd_pipeline::TaggedBatch>,
+    ) -> Result<(), lbd_pipeline::ProducerError> {
+        Err(lbd_pipeline::ProducerError::Conversion(
+            "produce not yet via PipelineRunner".to_string(),
+        ))
+    }
+}
+
+impl PipelinePlugin for PropsOpmProducerPlugin {
+    fn manifest(&self) -> PluginManifest {
+        PluginManifest {
+            id: PROPS_OPM_PRODUCER_ID,
+            display_name: "PROPS-OPM producer",
+            stage: PipelineStage::Produce,
+            description: "Generates OPM-style property and quantity triples.",
+            inputs: vec!["ifc-model"],
+            outputs: vec!["props-triples"],
+            requires: vec![],
+            conflicts_with: vec![],
+            failure_policy: FailurePolicy::Optional,
+            parallelism: ParallelismMode::ParallelByBatch,
+            wasm_compatible: true,
+            named_graph_slug: Some("props"),
+        }
+    }
+}
+
+impl ProducerPlugin for PropsOpmProducerPlugin {
+    fn produce(
+        &self,
+        _ctx: &lbd_pipeline::PipelineContext,
+        _sender: &crossbeam::channel::Sender<lbd_pipeline::TaggedBatch>,
+    ) -> Result<(), lbd_pipeline::ProducerError> {
+        Err(lbd_pipeline::ProducerError::Conversion(
+            "produce not yet via PipelineRunner".to_string(),
+        ))
+    }
+}
+
+impl PipelinePlugin for OmgFogProducerPlugin {
+    fn manifest(&self) -> PluginManifest {
+        PluginManifest {
+            id: OMG_FOG_PRODUCER_ID,
+            display_name: "OMG-FOG producer",
+            stage: PipelineStage::Produce,
+            description: "Generates OMG/FOG geometry property triples.",
+            inputs: vec!["ifc-model"],
+            outputs: vec!["omg-triples"],
+            requires: vec![],
+            conflicts_with: vec![],
+            failure_policy: FailurePolicy::Optional,
+            parallelism: ParallelismMode::ParallelByBatch,
+            wasm_compatible: true,
+            named_graph_slug: Some("omg"),
+        }
+    }
+}
+
+impl ProducerPlugin for OmgFogProducerPlugin {
+    fn produce(
+        &self,
+        _ctx: &lbd_pipeline::PipelineContext,
+        _sender: &crossbeam::channel::Sender<lbd_pipeline::TaggedBatch>,
+    ) -> Result<(), lbd_pipeline::ProducerError> {
+        Err(lbd_pipeline::ProducerError::Conversion(
+            "produce not yet via PipelineRunner".to_string(),
         ))
     }
 }
@@ -489,7 +600,7 @@ mod tests {
         let registry = built_in_registry();
         assert_eq!(
             registry.manifests_for_stage(PipelineStage::Produce).len(),
-            5
+            8
         );
         assert_eq!(
             registry.manifests_for_stage(PipelineStage::Serialize).len(),

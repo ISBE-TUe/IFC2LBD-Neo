@@ -10,6 +10,13 @@ pub mod modules;
 /// Used by the WASM bbox enricher for topology enrichment.
 pub use modules::bbox::compute_approximate_bboxes;
 
+// LBD sub-module public streaming API — each produces its own named graph.
+// To add a new module: create modules/<name>.rs, pub mod it in modules/mod.rs, add pub use here.
+pub use modules::bot::stream_bot;
+pub use modules::beo::stream_beo;
+pub use modules::omg_fog::stream_omg_fog;
+pub use modules::props_opm::stream_props_opm;
+
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -101,9 +108,9 @@ pub enum StreamError {
 }
 
 // Larger batches reduce channel traffic and formatter call overhead on large exports.
-const STREAM_BATCH_SIZE: usize = 8 * 1024;
-const MIN_STREAM_BATCH_SIZE: usize = 64;
-const MAX_STREAM_BATCH_SIZE: usize = 32 * 1024;
+pub(crate) const STREAM_BATCH_SIZE: usize = 8 * 1024;
+pub(crate) const MIN_STREAM_BATCH_SIZE: usize = 64;
+pub(crate) const MAX_STREAM_BATCH_SIZE: usize = 32 * 1024;
 
 pub fn convert_step_and_model(
     step: &StepFile,
@@ -197,7 +204,7 @@ fn convert_lbd(model: &IfcModel, options: &ConvertOptions, base: &str) -> Vec<Tr
     triples
 }
 
-pub fn stream_lbd(
+fn stream_lbd(
     model: &IfcModel,
     options: &ConvertOptions,
     base: &str,
@@ -232,22 +239,6 @@ fn emit_lbd<E, F>(
 where
     F: FnMut(Triple) -> Result<(), E>,
 {
-    let unit_by_type = build_unit_type_map(model);
-    #[cfg(not(target_arch = "wasm32"))]
-    let generated_at = OffsetDateTime::now_utc()
-        .format(&Rfc3339)
-        .expect("RFC3339 formatting should always succeed");
-    #[cfg(target_arch = "wasm32")]
-    let generated_at = "1970-01-01T00:00:00Z".to_string();
-    let mut declared_object_properties = HashSet::new();
-    let mut declared_property_comments = HashSet::new();
-    let mut property_state_counter = 0_u64;
-    let mut attribute_state_counter = 0_u64;
-    let mut declared_standard_attributes = HashSet::new();
-    let mut declared_standard_attribute_comments = HashSet::new();
-    let mut emitted_lbd_property_sets = HashSet::new();
-    let mut emitted_lbd_quantity_sets = HashSet::new();
-
     if !options.topology_only {
         emit_geometry_declarations(&mut emit)?;
         modules::core_entities::emit_core_entities(model, options, base, &mut emit)?;
@@ -516,6 +507,40 @@ where
     if options.topology_only {
         return Ok(());
     }
+
+    emit_props_opm_inner(model, options, base, &mut emit)?;
+
+    Ok(())
+}
+
+/// Emit OPM property sets, quantity sets and standard-attribute triples.
+///
+/// Called both by the monolithic `emit_lbd` and directly by `modules::props_opm`
+/// when only the PROPS-OPM named graph is being produced.
+pub(crate) fn emit_props_opm_inner<E, F>(
+    model: &IfcModel,
+    options: &ConvertOptions,
+    base: &str,
+    mut emit: &mut F,
+) -> Result<(), E>
+where
+    F: FnMut(Triple) -> Result<(), E>,
+{
+    let unit_by_type = build_unit_type_map(model);
+    #[cfg(not(target_arch = "wasm32"))]
+    let generated_at = OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .expect("RFC3339 formatting should always succeed");
+    #[cfg(target_arch = "wasm32")]
+    let generated_at = "1970-01-01T00:00:00Z".to_string();
+    let mut declared_object_properties = HashSet::new();
+    let mut declared_property_comments = HashSet::new();
+    let mut property_state_counter = 0_u64;
+    let mut attribute_state_counter = 0_u64;
+    let mut declared_standard_attributes = HashSet::new();
+    let mut declared_standard_attribute_comments = HashSet::new();
+    let mut emitted_lbd_property_sets = HashSet::new();
+    let mut emitted_lbd_quantity_sets = HashSet::new();
 
     let mut property_object_ids: Vec<_> = model.property_sets_for_object.keys().copied().collect();
     property_object_ids.sort_unstable();
@@ -2298,7 +2323,7 @@ fn quantity_set_resource_iri(base: &str, guid: &str) -> String {
     format!("{base}/quantityset_{suffix}")
 }
 
-fn geometry_resource_iri(base: &str, guid: &str) -> String {
+pub(crate) fn geometry_resource_iri(base: &str, guid: &str) -> String {
     let suffix = canonical_guid_token(guid);
     format!("{base}/geometry_{suffix}")
 }

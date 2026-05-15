@@ -11,7 +11,7 @@ const convertBtn = document.querySelector("#convert-btn");
 let conversionWorker = null;
 let conversionRequestId = 0;
 const pendingConversionRequests = new Map();
-const RUNTIME_BUILD = "worker-v6-2026-04-17Z";
+const RUNTIME_BUILD = "worker-v9-2026-05-13T10:45Z";
 
 const log = (line) => {
   logEl.textContent += `${new Date().toISOString()} ${line}\n`;
@@ -202,7 +202,7 @@ formEl.addEventListener("submit", async (event) => {
     const baseUri = document.querySelector("#base-uri").value.trim();
     const outputStem = document.querySelector("#output-stem").value.trim() || "converted-model";
 
-    const moduleIds = ["neo-lbd-producer", "neo-file-export"];
+    const moduleIds = ["neo-bot-producer", "neo-beo-producer", "neo-props-opm", "neo-file-export"];
     if (emitIfcowl) moduleIds.push("neo-ifcowl-producer");
     moduleIds.push(serializer === "nq" ? "neo-nquads-serializer" : "neo-turtle-serializer");
 

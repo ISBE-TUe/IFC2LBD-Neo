@@ -7,10 +7,11 @@
     "dev": "vite --host 0.0.0.0 --port 3031",
     "build": "vite build",
     "preview": "vite preview --host 0.0.0.0 --port 3031",
-    "build:wasm": "../../scripts/build_wasm_web.sh"
+    "build:wasm": "../../scripts/build_wasm_web.sh",
+    "test:e2e": "playwright test"
   },
   "devDependencies": {
-    "playwright": "^1.59.1",
+    "@playwright/test": "^1.49.0",
     "vite": "^5.4.0"
   }
 }

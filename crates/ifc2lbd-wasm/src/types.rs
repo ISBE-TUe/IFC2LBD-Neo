@@ -182,16 +182,8 @@ pub enum ExecutionMode {
     Lowmem,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub enum TurtleBatchKind {
-    Lbd,
-    Ifcowl,
-}
-
 #[derive(Debug, Clone)]
 pub struct NquadsModuleOptions {
-    pub lbd_graph_iri: Option<String>,
-    pub ifcowl_graph_iri: Option<String>,
     pub chunking: NquadsChunkingMode,
     pub chunk_size_lines: usize,
     pub chunk_size_bytes: usize,
@@ -208,6 +200,12 @@ pub enum NquadsChunkingMode {
 #[derive(Debug, Clone)]
 pub struct ExecutionSettings {
     pub output_formats: OutputFormats,
+    // LBD sub-module activation flags
+    pub emit_bot: bool,
+    pub emit_beo: bool,
+    pub emit_props_opm: bool,
+    pub emit_omg_fog: bool,
+    // Other producer flags
     pub emit_ifcowl: bool,
     pub emit_topology: bool,
     pub emit_full_topology: bool,
@@ -215,10 +213,17 @@ pub struct ExecutionSettings {
     pub nquads: NquadsModuleOptions,
     pub output_stem: String,
     pub turtle_grouping: TurtleGrouping,
+    pub turtle_layout: TurtleLayout,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TurtleGrouping {
     Sorted,
     Streaming,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TurtleLayout {
+    Joined,
+    Separate,
 }

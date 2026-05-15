@@ -104,19 +104,32 @@ impl PipelineContext {
 // Streaming batch type
 // ---------------------------------------------------------------------------
 
-/// Tag for a triple batch when multiple producers feed into the same channel.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
-pub enum BatchKind {
-    Lbd,
-    Ifcowl,
-    Topology,
+/// Tag for a triple batch carrying the named-graph IRI the triples belong to.
+///
+/// Each producer sets this to `"{base_uri}/{slug}"` so serializers can route
+/// batches to the correct named graph without a central enum.
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub struct BatchKind(pub String);
+
+impl BatchKind {
+    pub fn new(iri: impl Into<String>) -> Self {
+        Self(iri.into())
+    }
+
+    pub fn iri(&self) -> &str {
+        &self.0
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Shared plugin ID constants
 // ---------------------------------------------------------------------------
 
-pub const LBD_PRODUCER_ID: &str = "neo-lbd-producer";
+// LBD sub-module producers (replace the old monolithic neo-lbd-producer)
+pub const BOT_PRODUCER_ID: &str = "neo-bot-producer";
+pub const BEO_PRODUCER_ID: &str = "neo-beo-producer";
+pub const PROPS_OPM_PRODUCER_ID: &str = "neo-props-opm";
+pub const OMG_FOG_PRODUCER_ID: &str = "neo-omg-fog";
 pub const IFCOWL_PRODUCER_ID: &str = "neo-ifcowl-producer";
 pub const IFC_TOPOLOGY_PRODUCER_ID: &str = "neo-ifc-topology-producer";
 pub const TOPOLOGY_FULL_PRODUCER_ID: &str = "neo-topology-full-producer";
@@ -172,9 +185,11 @@ pub struct SerializeStats {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum PipelineStage {
+    Import,
     Preprocess,
     Produce,
     Serialize,
+    Postprocess,
     Export,
 }
 
@@ -205,6 +220,10 @@ pub struct PluginManifest {
     pub failure_policy: FailurePolicy,
     pub parallelism: ParallelismMode,
     pub wasm_compatible: bool,
+    /// URL slug appended to `base_uri` to form this module's named-graph IRI.
+    /// `None` for non-producer modules (serializers, exporters).
+    #[serde(default)]
+    pub named_graph_slug: Option<&'static str>,
 }
 
 pub trait PipelinePlugin: Send + Sync {
@@ -478,6 +497,7 @@ mod tests {
                 failure_policy: FailurePolicy::Required,
                 parallelism: ParallelismMode::ParallelByBatch,
                 wasm_compatible: true,
+                named_graph_slug: Some("test"),
             }
         }
     }
@@ -527,6 +547,7 @@ mod tests {
                 failure_policy: FailurePolicy::Required,
                 parallelism: ParallelismMode::Serial,
                 wasm_compatible: true,
+                named_graph_slug: None,
             }
         }
     }
@@ -555,6 +576,7 @@ mod tests {
                 failure_policy: FailurePolicy::Required,
                 parallelism: ParallelismMode::Serial,
                 wasm_compatible: true,
+                named_graph_slug: None,
             }
         }
     }
