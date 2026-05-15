@@ -184,8 +184,6 @@ pub enum ExecutionMode {
 
 #[derive(Debug, Clone)]
 pub struct NquadsModuleOptions {
-    pub lbd_graph_iri: Option<String>,
-    pub ifcowl_graph_iri: Option<String>,
     pub chunking: NquadsChunkingMode,
     pub chunk_size_lines: usize,
     pub chunk_size_bytes: usize,

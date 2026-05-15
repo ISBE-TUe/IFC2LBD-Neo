@@ -173,12 +173,6 @@ pub(crate) fn resolve_execution_settings(
         emit_bbox: active.contains(lbd_pipeline::BBOX_ENRICHER_ID),
         emit_full_topology: active.contains(lbd_pipeline::TOPOLOGY_FULL_PRODUCER_ID),
         nquads: NquadsModuleOptions {
-            lbd_graph_iri: effective_nquads_entries
-                .and_then(|m| m.get("lbd_graph_iri"))
-                .cloned(),
-            ifcowl_graph_iri: effective_nquads_entries
-                .and_then(|m| m.get("ifcowl_graph_iri"))
-                .cloned(),
             chunking: nquads_chunking,
             chunk_size_lines,
             chunk_size_bytes,
@@ -303,14 +297,10 @@ pub(crate) fn validate_turtle_serializer_options(
 pub(crate) fn validate_nquads_serializer_options(
     entries: &HashMap<String, String>,
 ) -> Result<(), WasmApiError> {
-    let allowed = ["lbd_graph_iri", "ifcowl_graph_iri"];
-    for (key, _value) in entries {
-        if !allowed.contains(&key.as_str()) {
-            return Err(WasmApiError::Message(format!(
-                "unsupported option `neo-nquads-serializer.{}` (chunking options are on neo-nquads-chunked-serializer)",
-                key
-            )));
-        }
+    if !entries.is_empty() {
+        return Err(WasmApiError::Message(
+            "neo-nquads-serializer has no configurable options (chunking options belong on neo-nquads-chunked-serializer)".to_string(),
+        ));
     }
     Ok(())
 }
@@ -323,8 +313,6 @@ pub(crate) fn validate_nquads_chunked_serializer_options(
         "chunk_size_lines",
         "chunk_size_bytes",
         "chunk_prefix",
-        "lbd_graph_iri",
-        "ifcowl_graph_iri",
     ];
     for (key, value) in entries {
         if !allowed.contains(&key.as_str()) {

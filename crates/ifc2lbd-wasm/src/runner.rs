@@ -139,7 +139,7 @@ impl PipelineRunner {
         let model = build_model(&step)?;
         let options = self.make_convert_options(&base_uri, mode, &settings, request);
         let conversion = convert_step_and_model(&step, &model, &options);
-        let exported_files = export_browser_files(&conversion, &base_uri, &settings)
+        let exported_files = export_browser_files(&conversion, &step, &model, &options, &base_uri, &settings)
             .map_err(|err| WasmApiError::Serialization(err.to_string()))?;
 
         let primary_serializer = self.primary_serializer_id(&settings);
@@ -748,16 +748,8 @@ fn nquads_file_summaries(
     settings: &ExecutionSettings,
 ) -> Result<Vec<OutputFileSummary>, lbd_serializer::SerializerError> {
     let normalized_base = normalize_base_for_graph_iri(base_uri);
-    let lbd_graph = settings
-        .nquads
-        .lbd_graph_iri
-        .clone()
-        .unwrap_or_else(|| format!("{normalized_base}/lbd"));
-    let ifcowl_graph = settings
-        .nquads
-        .ifcowl_graph_iri
-        .clone()
-        .unwrap_or_else(|| format!("{normalized_base}/ifcowl"));
+    let lbd_graph = format!("{normalized_base}/lbd");
+    let ifcowl_graph = format!("{normalized_base}/ifcowl");
 
     let (lbd_sender, lbd_receiver) = crossbeam::channel::bounded(8);
     let (ifcowl_sender, ifcowl_receiver) = crossbeam::channel::bounded(8);
@@ -1807,7 +1799,58 @@ fn turtle_to_sink_separate(
 }
 
 // ---------------------------------------------------------------------------
-// N-Quads streaming to sink (merged single-file or chunked multi-file)
+// N-Quads streaming helpers
+// ---------------------------------------------------------------------------
+
+/// Drain a triple receiver into an existing SinkChunkWriter, tagging every
+/// triple with `graph_iri`. Returns the number of triples written.
+#[cfg(target_arch = "wasm32")]
+fn serialize_nquads_receiver_to_writer(
+    rx: crossbeam::channel::Receiver<Vec<lbd_ontology::Triple>>,
+    writer: &mut SinkChunkWriter,
+    graph_iri: &str,
+) -> Result<u64, lbd_serializer::SerializerError> {
+    let mut triple_count: u64 = 0;
+    for batch in rx {
+        triple_count += batch.len() as u64;
+        lbd_serializer::write_nquads_batch(writer, &batch, graph_iri)?;
+    }
+    Ok(triple_count)
+}
+
+/// Drain a triple receiver into a SinkQuadChunkWriter, tagging every triple
+/// with `graph_iri`. Returns chunk file summaries and the triple count.
+#[cfg(target_arch = "wasm32")]
+fn serialize_nquads_receiver_to_chunks(
+    rx: crossbeam::channel::Receiver<Vec<lbd_ontology::Triple>>,
+    sink: &Function,
+    chunk_prefix: String,
+    graph_iri: &str,
+    chunk_mode: SinkChunkingMode,
+    chunk_size_lines: usize,
+    chunk_size_bytes: usize,
+    sink_config: &SinkConfig,
+) -> Result<(Vec<OutputFileSummary>, u64), lbd_serializer::SerializerError> {
+    let mut chunk_writer = SinkQuadChunkWriter::new(
+        sink,
+        chunk_prefix,
+        chunk_mode,
+        chunk_size_lines,
+        chunk_size_bytes,
+        sink_config.chunk_size,
+        sink_config.max_pending_bytes,
+    )?;
+    let mut triple_count: u64 = 0;
+    for batch in rx {
+        triple_count += batch.len() as u64;
+        lbd_serializer::write_nquads_batch(&mut chunk_writer, &batch, graph_iri)?;
+    }
+    let summaries = chunk_writer.finish()?;
+    Ok((summaries, triple_count))
+}
+
+// ---------------------------------------------------------------------------
+// N-Quads streaming to sink (per-producer named graphs, mirroring turtle_to_sink_separate)
 // ---------------------------------------------------------------------------
 #[cfg(target_arch = "wasm32")]
 fn nquads_to_sink(
@@ -1825,45 +1868,41 @@ fn nquads_to_sink(
 ) -> Result<(Vec<OutputFileSummary>, usize, usize, StageDurations), lbd_serializer::SerializerError>
 {
     let normalized_base = normalize_base_for_graph_iri(base_uri);
-    let lbd_graph = settings
-        .nquads
-        .lbd_graph_iri
-        .clone()
-        .unwrap_or_else(|| format!("{normalized_base}/lbd"));
-    let ifcowl_graph = settings
-        .nquads
-        .ifcowl_graph_iri
-        .clone()
-        .unwrap_or_else(|| format!("{normalized_base}/ifcowl"));
-
-    let chunk_prefix = &settings.nquads.chunk_prefix;
-    let chunk_size_lines = settings.nquads.chunk_size_lines;
-    let chunk_size_bytes = settings.nquads.chunk_size_bytes;
-    let topology_graph = format!("{normalized_base}/topology");
-
+    let chan_cap = if options.low_memory_mode { 4 } else { 16 };
     let model = std::sync::Arc::new(model);
     let mut produce_durations: HashMap<&'static str, u64> = HashMap::new();
+    let mut produce_triples: HashMap<&'static str, u64> = HashMap::new();
+    let mut summaries = Vec::new();
 
-    // Triple count tracking (counted during serialization)
-    let mut lbd_triple_count: u64 = 0;
-    let mut ifcowl_triple_count: u64 = 0;
-    let mut topology_triple_count: u64 = 0;
+    let chunk_prefix = settings.nquads.chunk_prefix.clone();
+    let chunk_size_lines = settings.nquads.chunk_size_lines;
+    let chunk_size_bytes = settings.nquads.chunk_size_bytes;
 
-    // Helper: resolve triple count for a plugin — used in emit_stage_event calls.
-    // Cannot be a closure because triple count variables are mutated in the loop.
-    macro_rules! triple_count_for {
-        ($plugin_id:expr) => {
-            match $plugin_id as &str {
-                IFCOWL_PRODUCER_ID => ifcowl_triple_count,
-                IFC_TOPOLOGY_PRODUCER_ID => topology_triple_count,
-                _ => 0,
-            }
-        };
-    }
-
-    // Create channels for each producer
-    let chan_cap: usize = 8;
-    let (lbd_sender, lbd_receiver) = crossbeam::channel::bounded(chan_cap);
+    // Per-producer channels — same pattern as turtle_to_sink_separate
+    let (bot_sender, bot_receiver) = if settings.emit_bot {
+        let (tx, rx) = crossbeam::channel::bounded(chan_cap);
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
+    let (beo_sender, beo_receiver) = if settings.emit_beo {
+        let (tx, rx) = crossbeam::channel::bounded(chan_cap);
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
+    let (props_sender, props_receiver) = if settings.emit_props_opm {
+        let (tx, rx) = crossbeam::channel::bounded(chan_cap);
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
+    let (omg_sender, omg_receiver) = if settings.emit_omg_fog {
+        let (tx, rx) = crossbeam::channel::bounded(chan_cap);
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
     let (ifcowl_sender, ifcowl_receiver) = if settings.emit_ifcowl {
         let (tx, rx) = crossbeam::channel::bounded(chan_cap);
         (Some(tx), Some(rx))
@@ -1877,40 +1916,83 @@ fn nquads_to_sink(
         (None, None)
     };
 
-    // Disable topology in LBD options to avoid duplicate triples
     let mut options_lbd = options.clone();
     if settings.emit_topology {
         options_lbd.enable_topology = false;
         options_lbd.enable_topology_extension = false;
     }
-    let options_topo = options.clone();
 
-    // ALL producers inside ONE rayon::spawn — sequential on wasm32 avoids contention.
-    // Order: IfcOWL → LBD → Topology (each gets full rayon pool, independent timing).
-    let lbd_stage_tx = stage_tx.clone();
-    let ifcowl_stage_tx = stage_tx.clone();
-    let topo_stage_tx = stage_tx.clone();
+    let stage_tx_bot = stage_tx.clone();
+    let stage_tx_beo = stage_tx.clone();
+    let stage_tx_props = stage_tx.clone();
+    let stage_tx_omg = stage_tx.clone();
+    let stage_tx_ifcowl = stage_tx.clone();
+    let stage_tx_topology = stage_tx.clone();
     let model_prod = model.clone();
-    let emit_bot_nq = settings.emit_bot;
-    let emit_beo_nq = settings.emit_beo;
-    let emit_props_opm_nq = settings.emit_props_opm;
-    let emit_omg_fog_nq = settings.emit_omg_fog;
+    let options_topo = options.clone();
     rayon::spawn(move || {
-        // 1. IfcOWL
-        if let Some(ifcowl_sender) = ifcowl_sender {
+        if let Some(bot_tx) = bot_sender {
+            let t0 = now_ms();
+            let triples = lbd_converter::stream_bot(&model_prod, &options_lbd, &bot_tx).unwrap_or(0);
+            let ms = now_ms() - t0;
+            drop(bot_tx);
+            let _ = stage_tx_bot.send(StageDoneEvent {
+                plugin_id: BOT_PRODUCER_ID,
+                stage: "Produce",
+                duration_ms: ms,
+                triple_count: triples,
+            });
+        }
+        if let Some(beo_tx) = beo_sender {
+            let t0 = now_ms();
+            let triples = lbd_converter::stream_beo(&model_prod, &options_lbd, &beo_tx).unwrap_or(0);
+            let ms = now_ms() - t0;
+            drop(beo_tx);
+            let _ = stage_tx_beo.send(StageDoneEvent {
+                plugin_id: BEO_PRODUCER_ID,
+                stage: "Produce",
+                duration_ms: ms,
+                triple_count: triples,
+            });
+        }
+        if let Some(props_tx) = props_sender {
+            let t0 = now_ms();
+            let triples = lbd_converter::stream_props_opm(&model_prod, &options_lbd, &props_tx).unwrap_or(0);
+            let ms = now_ms() - t0;
+            drop(props_tx);
+            let _ = stage_tx_props.send(StageDoneEvent {
+                plugin_id: PROPS_OPM_PRODUCER_ID,
+                stage: "Produce",
+                duration_ms: ms,
+                triple_count: triples,
+            });
+        }
+        if let Some(omg_tx) = omg_sender {
+            let t0 = now_ms();
+            let triples = lbd_converter::stream_omg_fog(&model_prod, &options_lbd, &omg_tx).unwrap_or(0);
+            let ms = now_ms() - t0;
+            drop(omg_tx);
+            let _ = stage_tx_omg.send(StageDoneEvent {
+                plugin_id: lbd_pipeline::OMG_FOG_PRODUCER_ID,
+                stage: "Produce",
+                duration_ms: ms,
+                triple_count: triples,
+            });
+        }
+        if let Some(ifcowl_tx) = ifcowl_sender {
             let base = lbd_converter::normalize_base_uri(&options_lbd.base_uri);
             let t0 = now_ms();
             let result = lbd_converter::modules::ifcowl::stream_ifcowl(
                 &step,
                 &base,
                 step.header.schema,
-                &ifcowl_sender,
+                &ifcowl_tx,
                 options_lbd.stream_batch_size,
                 options_lbd.ifcowl_max_workers,
             );
             let ms = now_ms() - t0;
-            drop(ifcowl_sender);
-            let _ = ifcowl_stage_tx.send(StageDoneEvent {
+            drop(ifcowl_tx);
+            let _ = stage_tx_ifcowl.send(StageDoneEvent {
                 plugin_id: IFCOWL_PRODUCER_ID,
                 stage: "Produce",
                 duration_ms: ms,
@@ -1918,67 +2000,12 @@ fn nquads_to_sink(
             });
             let _ = result;
         }
-
-        // 2. Modular LBD producers (BOT / BEO / PROPS_OPM)
-        if emit_bot_nq {
+        if let Some(topo_tx) = topology_sender {
             let t0 = now_ms();
-            let triples = lbd_converter::stream_bot(&model_prod, &options_lbd, &lbd_sender)
-                .unwrap_or(0);
+            let result = lbd_converter::stream_topology_model(&model_prod, &options_topo, &topo_tx);
             let ms = now_ms() - t0;
-            let _ = lbd_stage_tx.send(StageDoneEvent {
-                plugin_id: BOT_PRODUCER_ID,
-                stage: "Produce",
-                duration_ms: ms,
-                triple_count: triples,
-            });
-        }
-        if emit_beo_nq {
-            let t0 = now_ms();
-            let triples = lbd_converter::stream_beo(&model_prod, &options_lbd, &lbd_sender)
-                .unwrap_or(0);
-            let ms = now_ms() - t0;
-            let _ = lbd_stage_tx.send(StageDoneEvent {
-                plugin_id: BEO_PRODUCER_ID,
-                stage: "Produce",
-                duration_ms: ms,
-                triple_count: triples,
-            });
-        }
-        if emit_props_opm_nq {
-            let t0 = now_ms();
-            let triples =
-                lbd_converter::stream_props_opm(&model_prod, &options_lbd, &lbd_sender)
-                    .unwrap_or(0);
-            let ms = now_ms() - t0;
-            let _ = lbd_stage_tx.send(StageDoneEvent {
-                plugin_id: PROPS_OPM_PRODUCER_ID,
-                stage: "Produce",
-                duration_ms: ms,
-                triple_count: triples,
-            });
-        }
-        if emit_omg_fog_nq {
-            let t0 = now_ms();
-            let triples = lbd_converter::stream_omg_fog(&model_prod, &options_lbd, &lbd_sender)
-                .unwrap_or(0);
-            let ms = now_ms() - t0;
-            let _ = lbd_stage_tx.send(StageDoneEvent {
-                plugin_id: lbd_pipeline::OMG_FOG_PRODUCER_ID,
-                stage: "Produce",
-                duration_ms: ms,
-                triple_count: triples,
-            });
-        }
-        drop(lbd_sender);
-
-        // 3. Topology (sequential after LBD — lightweight)
-        if let Some(topology_sender) = topology_sender {
-            let t0 = now_ms();
-            let result =
-                lbd_converter::stream_topology_model(&model_prod, &options_topo, &topology_sender);
-            let ms = now_ms() - t0;
-            drop(topology_sender);
-            let _ = topo_stage_tx.send(StageDoneEvent {
+            drop(topo_tx);
+            let _ = stage_tx_topology.send(StageDoneEvent {
                 plugin_id: IFC_TOPOLOGY_PRODUCER_ID,
                 stage: "Produce",
                 duration_ms: ms,
@@ -1988,664 +2015,124 @@ fn nquads_to_sink(
         }
     });
 
-    // ── Serialization paths ──
-    // After producers are spawned, the main thread drains channels and writes output.
-
-    if settings.emit_ifcowl {
-        // IfcOWL is active — we have ifcowl_receiver
-        let ifcowl_rx = ifcowl_receiver.unwrap();
-
-        if is_chunked {
-            // ── CHUNKED: Each producer writes to its own SinkQuadChunkWriter ──
-            let mut lbd_chunk_writer = SinkQuadChunkWriter::new(
-                sink,
-                format!("{}-lbd", chunk_prefix),
-                chunk_mode,
-                chunk_size_lines,
-                chunk_size_bytes,
-                sink_config.chunk_size,
-                sink_config.max_pending_bytes,
-            )?;
-            let mut ifcowl_chunk_writer = SinkQuadChunkWriter::new(
-                sink,
-                format!("{}-ifcowl", chunk_prefix),
-                chunk_mode,
-                chunk_size_lines,
-                chunk_size_bytes,
-                sink_config.chunk_size,
-                sink_config.max_pending_bytes,
-            )?;
-            let mut topology_chunk_writer = if settings.emit_topology {
-                Some(SinkQuadChunkWriter::new(
-                    sink,
-                    format!("{}-topology", chunk_prefix),
-                    chunk_mode,
-                    chunk_size_lines,
-                    chunk_size_bytes,
-                    sink_config.chunk_size,
-                    sink_config.max_pending_bytes,
-                )?)
-            } else {
-                None
-            };
-
-            let serializer_id = if settings.output_formats.nquads_chunked {
-                NQUADS_CHUNKED_SERIALIZER_ID
-            } else {
-                NQUADS_SERIALIZER_ID
-            };
-            emit_stage_event(sink, serializer_id, "Serialize", "running", 0, 0, 0, None)?;
-            let serialize_t0 = now_ms();
-
-            let mut lbd_done = false;
-            let mut ifcowl_done = false;
-            let mut topology_done = !settings.emit_topology;
-            while !lbd_done || !ifcowl_done || !topology_done {
-                while let Ok(evt) = stage_rx.try_recv() {
-                    produce_durations.insert(evt.plugin_id, evt.duration_ms);
-                    emit_stage_event(
-                        sink,
-                        evt.plugin_id,
-                        evt.stage,
-                        "success",
-                        evt.duration_ms,
-                        0,
-                        if evt.triple_count > 0 { evt.triple_count } else { triple_count_for!(evt.plugin_id) },
-                        None,
-                    )?;
-                }
-                if !lbd_done {
-                    match lbd_receiver.try_recv() {
-                        Ok(batch) => {
-                            lbd_triple_count += batch.len() as u64;
-                            lbd_serializer::write_nquads_batch(
-                                &mut lbd_chunk_writer,
-                                &batch,
-                                &lbd_graph,
-                            )?;
-                        }
-                        Err(crossbeam::channel::TryRecvError::Empty) => {}
-                        Err(crossbeam::channel::TryRecvError::Disconnected) => {
-                            lbd_done = true;
-                        }
-                    }
-                }
-                if !ifcowl_done {
-                    match ifcowl_rx.try_recv() {
-                        Ok(batch) => {
-                            ifcowl_triple_count += batch.len() as u64;
-                            lbd_serializer::write_nquads_batch(
-                                &mut ifcowl_chunk_writer,
-                                &batch,
-                                &ifcowl_graph,
-                            )?;
-                        }
-                        Err(crossbeam::channel::TryRecvError::Empty) => {}
-                        Err(crossbeam::channel::TryRecvError::Disconnected) => {
-                            ifcowl_done = true;
-                        }
-                    }
-                }
-                if !topology_done {
-                    if let Some(ref mut topo_writer) = topology_chunk_writer {
-                        if let Some(ref topo_rx) = topology_receiver {
-                            match topo_rx.try_recv() {
-                                Ok(batch) => {
-                                    topology_triple_count += batch.len() as u64;
-                                    lbd_serializer::write_nquads_batch(
-                                        topo_writer,
-                                        &batch,
-                                        &topology_graph,
-                                    )?;
-                                }
-                                Err(crossbeam::channel::TryRecvError::Empty) => {}
-                                Err(crossbeam::channel::TryRecvError::Disconnected) => {
-                                    topology_done = true;
-                                }
-                            }
-                        }
-                    }
-                }
-                if !lbd_done || !ifcowl_done || !topology_done {
-                    std::thread::yield_now();
-                }
-            }
-            let serialize_ms = now_ms() - serialize_t0;
-
-            while let Ok(evt) = stage_rx.try_recv() {
-                produce_durations.insert(evt.plugin_id, evt.duration_ms);
-                emit_stage_event(
-                    sink,
-                    evt.plugin_id,
-                    evt.stage,
-                    "success",
-                    evt.duration_ms,
-                    0,
-                    if evt.triple_count > 0 { evt.triple_count } else { triple_count_for!(evt.plugin_id) },
-                    None,
-                )?;
-            }
-
-            emit_stage_event(sink, FILE_EXPORT_ID, "Export", "running", 0, 0, 0, None)?;
-            let export_t0 = now_ms();
-            let mut summaries = lbd_chunk_writer.finish()?;
-            summaries.extend(ifcowl_chunk_writer.finish()?);
-            if let Some(topo_writer) = topology_chunk_writer {
-                summaries.extend(topo_writer.finish()?);
-            }
-            let export_ms = now_ms() - export_t0;
-
-            let mut sd = StageDurations::new();
-            sd.serialize_ms = serialize_ms;
-            sd.export_ms = export_ms;
-            for (plugin_id, ms) in &produce_durations {
-                let triples = triple_count_for!(plugin_id);
-                sd.by_producer.insert(plugin_id.to_string(), (*ms, triples));
-            }
-            return Ok((summaries, 0, sink_config.chunk_size, sd));
-        } else {
-            // ── MERGED: LBD + IfcOWL + Topology into one .nq file ──
-            let (merged_sender, merged_receiver) = crossbeam::channel::bounded(chan_cap * 2);
-            let n_fwd: usize = 2 + if settings.emit_topology { 1 } else { 0 };
-            let (fwd_result_sender, fwd_result_receiver) =
-                crossbeam::channel::bounded::<Result<(), lbd_serializer::SerializerError>>(n_fwd);
-
-            // LBD forwarder
-            let lbd_fwd = merged_sender.clone();
-            let lbd_res = fwd_result_sender.clone();
-            let lbd_graph_fwd = lbd_graph.clone();
-            rayon::spawn(move || {
-                let result = (|| -> Result<(), lbd_serializer::SerializerError> {
-                    for batch in lbd_receiver {
-                        lbd_fwd
-                            .send((BatchKind::new(lbd_graph_fwd.clone()), batch))
-                            .map_err(|_| {
-                                lbd_serializer::SerializerError::Io(
-                                    io::ErrorKind::BrokenPipe.into(),
-                                )
-                            })?;
-                    }
-                    Ok(())
-                })();
-                let _ = lbd_res.send(result);
-            });
-
-            // IfcOWL forwarder
-            let ifcowl_fwd = merged_sender.clone();
-            let ifcowl_res = fwd_result_sender.clone();
-            let ifcowl_graph_fwd2 = ifcowl_graph.clone();
-            rayon::spawn(move || {
-                let result = (|| -> Result<(), lbd_serializer::SerializerError> {
-                    for batch in ifcowl_rx {
-                        ifcowl_fwd
-                            .send((BatchKind::new(ifcowl_graph_fwd2.clone()), batch))
-                            .map_err(|_| {
-                                lbd_serializer::SerializerError::Io(
-                                    io::ErrorKind::BrokenPipe.into(),
-                                )
-                            })?;
-                    }
-                    Ok(())
-                })();
-                let _ = ifcowl_res.send(result);
-            });
-
-            // Topology forwarder
-            if settings.emit_topology {
-                if let Some(topo_rx) = topology_receiver {
-                    let topo_fwd = merged_sender.clone();
-                    let topo_res = fwd_result_sender.clone();
-                    let topology_graph_fwd = topology_graph.clone();
-                    rayon::spawn(move || {
-                        let result = (|| -> Result<(), lbd_serializer::SerializerError> {
-                            for batch in topo_rx {
-                                topo_fwd
-                                    .send((BatchKind::new(topology_graph_fwd.clone()), batch))
-                                    .map_err(|_| {
-                                        lbd_serializer::SerializerError::Io(
-                                            io::ErrorKind::BrokenPipe.into(),
-                                        )
-                                    })?;
-                            }
-                            Ok(())
-                        })();
-                        let _ = topo_res.send(result);
-                    });
-                }
-            }
-
-            drop(merged_sender);
-            drop(fwd_result_sender);
-
-            let mut writer = SinkChunkWriter::new(
-                sink,
-                format!("{}.nq", settings.output_stem),
-                "application/n-quads",
-                "merged",
-                sink_config.chunk_size,
-                sink_config.max_pending_bytes,
-            )?;
-
-            emit_stage_event(
-                sink,
-                NQUADS_SERIALIZER_ID,
-                "Serialize",
-                "running",
-                0,
-                0,
-                0,
-                None,
-            )?;
-            let serialize_t0 = now_ms();
-            for (kind, batch) in merged_receiver.iter() {
-                while let Ok(evt) = stage_rx.try_recv() {
-                    produce_durations.insert(evt.plugin_id, evt.duration_ms);
-                    // Don't emit topology yet — its count isn't final
-                    if evt.plugin_id != IFC_TOPOLOGY_PRODUCER_ID {
-                        emit_stage_event(
-                            sink,
-                            evt.plugin_id,
-                            evt.stage,
-                            "success",
-                            evt.duration_ms,
-                            0,
-                            if evt.triple_count > 0 { evt.triple_count } else { triple_count_for!(evt.plugin_id) },
-                            None,
-                        )?;
-                    }
-                }
-                let graph_iri = kind.iri().to_string();
-                if graph_iri == lbd_graph {
-                    lbd_triple_count += batch.len() as u64;
-                } else if graph_iri == ifcowl_graph {
-                    ifcowl_triple_count += batch.len() as u64;
-                } else if graph_iri == topology_graph {
-                    topology_triple_count += batch.len() as u64;
-                }
-                lbd_serializer::write_nquads_batch(&mut writer, &batch, &graph_iri)?;
-            }
-            let serialize_ms = now_ms() - serialize_t0;
-
-            // Drain remaining stage events
-            while let Ok(evt) = stage_rx.try_recv() {
-                produce_durations.insert(evt.plugin_id, evt.duration_ms);
-                if evt.plugin_id != IFC_TOPOLOGY_PRODUCER_ID {
-                    emit_stage_event(
-                        sink,
-                        evt.plugin_id,
-                        evt.stage,
-                        "success",
-                        evt.duration_ms,
-                        0,
-                        if evt.triple_count > 0 { evt.triple_count } else { triple_count_for!(evt.plugin_id) },
-                        None,
-                    )?;
-                }
-            }
-
-            // Emit topology success with CORRECT triple count (now final)
-            let topo_ms = produce_durations
-                .get(IFC_TOPOLOGY_PRODUCER_ID)
-                .copied()
-                .unwrap_or(0);
-            if topo_ms > 0 {
-                emit_stage_event(
-                    sink,
-                    IFC_TOPOLOGY_PRODUCER_ID,
-                    "Produce",
-                    "success",
-                    topo_ms,
-                    0,
-                    topology_triple_count,
-                    None,
-                )?;
-            }
-
-            for _ in 0..n_fwd {
-                fwd_result_receiver.recv().map_err(|_| {
-                    lbd_serializer::SerializerError::Io(io::ErrorKind::BrokenPipe.into())
-                })??;
-            }
-
-            emit_stage_event(sink, FILE_EXPORT_ID, "Export", "running", 0, 0, 0, None)?;
-            let export_t0 = now_ms();
-            let (summary, peak, chunk_size) = writer.finish()?;
-            let export_ms = now_ms() - export_t0;
-
-            let mut sd = StageDurations::new();
-            sd.serialize_ms = serialize_ms;
-            sd.export_ms = export_ms;
-            for (plugin_id, ms) in &produce_durations {
-                let triples = triple_count_for!(plugin_id);
-                sd.by_producer.insert(plugin_id.to_string(), (*ms, triples));
-            }
-            return Ok((vec![summary], peak, chunk_size, sd));
-        }
+    let serializer_id = if settings.output_formats.nquads_chunked {
+        NQUADS_CHUNKED_SERIALIZER_ID
     } else {
-        // LBD-only N-Quads (optionally with topology)
-        if is_chunked {
-            let mut lbd_chunk_writer = SinkQuadChunkWriter::new(
-                sink,
-                format!("{}-lbd", chunk_prefix),
-                chunk_mode,
-                chunk_size_lines,
-                chunk_size_bytes,
-                sink_config.chunk_size,
-                sink_config.max_pending_bytes,
-            )?;
-            let mut topology_chunk_writer = if settings.emit_topology {
-                Some(SinkQuadChunkWriter::new(
-                    sink,
-                    format!("{}-topology", chunk_prefix),
-                    chunk_mode,
-                    chunk_size_lines,
-                    chunk_size_bytes,
-                    sink_config.chunk_size,
-                    sink_config.max_pending_bytes,
-                )?)
-            } else {
-                None
-            };
+        NQUADS_SERIALIZER_ID
+    };
+    emit_stage_event(sink, serializer_id, "Serialize", "running", 0, 0, 0, None)?;
+    let serialize_t0 = now_ms();
 
-            let serializer_id = if settings.output_formats.nquads_chunked {
-                NQUADS_CHUNKED_SERIALIZER_ID
-            } else {
-                NQUADS_SERIALIZER_ID
-            };
-            emit_stage_event(sink, serializer_id, "Serialize", "running", 0, 0, 0, None)?;
-            let serialize_t0 = now_ms();
-
-            if settings.emit_topology {
-                let mut lbd_done = false;
-                let mut topology_done = false;
-                while !lbd_done || !topology_done {
-                    while let Ok(evt) = stage_rx.try_recv() {
-                        produce_durations.insert(evt.plugin_id, evt.duration_ms);
-                        emit_stage_event(
-                            sink,
-                            evt.plugin_id,
-                            evt.stage,
-                            "success",
-                            evt.duration_ms,
-                            0,
-                            if evt.triple_count > 0 { evt.triple_count } else { triple_count_for!(evt.plugin_id) },
-                            None,
-                        )?;
-                    }
-                    if !lbd_done {
-                        match lbd_receiver.try_recv() {
-                            Ok(batch) => {
-                                lbd_triple_count += batch.len() as u64;
-                                lbd_serializer::write_nquads_batch(
-                                    &mut lbd_chunk_writer,
-                                    &batch,
-                                    &lbd_graph,
-                                )?;
-                            }
-                            Err(crossbeam::channel::TryRecvError::Empty) => {}
-                            Err(crossbeam::channel::TryRecvError::Disconnected) => {
-                                lbd_done = true;
-                            }
-                        }
-                    }
-                    if !topology_done {
-                        if let Some(ref mut topo_writer) = topology_chunk_writer {
-                            if let Some(ref topo_rx) = topology_receiver {
-                                match topo_rx.try_recv() {
-                                    Ok(batch) => {
-                                        topology_triple_count += batch.len() as u64;
-                                        lbd_serializer::write_nquads_batch(
-                                            topo_writer,
-                                            &batch,
-                                            &topology_graph,
-                                        )?;
-                                    }
-                                    Err(crossbeam::channel::TryRecvError::Empty) => {}
-                                    Err(crossbeam::channel::TryRecvError::Disconnected) => {
-                                        topology_done = true;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if !lbd_done || !topology_done {
-                        std::thread::yield_now();
-                    }
-                }
-            } else {
-                for batch in lbd_receiver.iter() {
-                    while let Ok(evt) = stage_rx.try_recv() {
-                        produce_durations.insert(evt.plugin_id, evt.duration_ms);
-                        emit_stage_event(
-                            sink,
-                            evt.plugin_id,
-                            evt.stage,
-                            "success",
-                            evt.duration_ms,
-                            0,
-                            if evt.triple_count > 0 { evt.triple_count } else { triple_count_for!(evt.plugin_id) },
-                            None,
-                        )?;
-                    }
-                    lbd_triple_count += batch.len() as u64;
-                    lbd_serializer::write_nquads_batch(&mut lbd_chunk_writer, &batch, &lbd_graph)?;
-                }
-            }
-            let serialize_ms = now_ms() - serialize_t0;
-            while let Ok(evt) = stage_rx.try_recv() {
-                produce_durations.insert(evt.plugin_id, evt.duration_ms);
-                emit_stage_event(
-                    sink,
-                    evt.plugin_id,
-                    evt.stage,
-                    "success",
-                    evt.duration_ms,
-                    0,
-                    if evt.triple_count > 0 { evt.triple_count } else { triple_count_for!(evt.plugin_id) },
-                    None,
-                )?;
-            }
-
-            emit_stage_event(sink, FILE_EXPORT_ID, "Export", "running", 0, 0, 0, None)?;
-            let export_t0 = now_ms();
-            let mut summaries = lbd_chunk_writer.finish()?;
-            if let Some(topo_writer) = topology_chunk_writer {
-                summaries.extend(topo_writer.finish()?);
-            }
-            let export_ms = now_ms() - export_t0;
-
-            let mut sd = StageDurations::new();
-            sd.serialize_ms = serialize_ms;
-            sd.export_ms = export_ms;
-            for (plugin_id, ms) in &produce_durations {
-                let triples = triple_count_for!(plugin_id);
-                sd.by_producer.insert(plugin_id.to_string(), (*ms, triples));
-            }
-            return Ok((summaries, 0, sink_config.chunk_size, sd));
-        } else {
-            // LBD-only merged N-Quads
-            if settings.emit_topology {
-                let (merged_sender, merged_receiver) = crossbeam::channel::bounded(chan_cap * 2);
-                let n_fwd: usize = 2;
-                let (fwd_result_sender, fwd_result_receiver) = crossbeam::channel::bounded::<
-                    Result<(), lbd_serializer::SerializerError>,
-                >(n_fwd);
-
-                let lbd_fwd = merged_sender.clone();
-                let lbd_res = fwd_result_sender.clone();
-                let lbd_graph_fwd2 = lbd_graph.clone();
-                rayon::spawn(move || {
-                    let result = (|| -> Result<(), lbd_serializer::SerializerError> {
-                        for batch in lbd_receiver {
-                            lbd_fwd
-                                .send((BatchKind::new(lbd_graph_fwd2.clone()), batch))
-                                .map_err(|_| {
-                                    lbd_serializer::SerializerError::Io(
-                                        io::ErrorKind::BrokenPipe.into(),
-                                    )
-                                })?;
-                        }
-                        Ok(())
-                    })();
-                    let _ = lbd_res.send(result);
-                });
-
-                if let Some(topo_rx) = topology_receiver {
-                    let topo_fwd = merged_sender.clone();
-                    let topo_res = fwd_result_sender.clone();
-                    let topology_graph_fwd2 = topology_graph.clone();
-                    rayon::spawn(move || {
-                        let result = (|| -> Result<(), lbd_serializer::SerializerError> {
-                            for batch in topo_rx {
-                                topo_fwd
-                                    .send((BatchKind::new(topology_graph_fwd2.clone()), batch))
-                                    .map_err(|_| {
-                                        lbd_serializer::SerializerError::Io(
-                                            io::ErrorKind::BrokenPipe.into(),
-                                        )
-                                    })?;
-                            }
-                            Ok(())
-                        })();
-                        let _ = topo_res.send(result);
-                    });
-                }
-
-                drop(merged_sender);
-                drop(fwd_result_sender);
-
-                let mut writer = SinkChunkWriter::new(
-                    sink,
-                    format!("{}.nq", settings.output_stem),
-                    "application/n-quads",
-                    "merged",
-                    sink_config.chunk_size,
-                    sink_config.max_pending_bytes,
-                )?;
-
-                emit_stage_event(
-                    sink,
-                    NQUADS_SERIALIZER_ID,
-                    "Serialize",
-                    "running",
-                    0,
-                    0,
-                    0,
-                    None,
-                )?;
-                let serialize_t0 = now_ms();
-                for (kind, batch) in merged_receiver.iter() {
-                    while let Ok(evt) = stage_rx.try_recv() {
-                        produce_durations.insert(evt.plugin_id, evt.duration_ms);
-                        emit_stage_event(
-                            sink,
-                            evt.plugin_id,
-                            evt.stage,
-                            "success",
-                            evt.duration_ms,
-                            0,
-                            if evt.triple_count > 0 { evt.triple_count } else { triple_count_for!(evt.plugin_id) },
-                            None,
-                        )?;
-                    }
-                    let graph_iri = kind.iri().to_string();
-                    if graph_iri == lbd_graph {
-                        lbd_triple_count += batch.len() as u64;
-                    } else if graph_iri == topology_graph {
-                        topology_triple_count += batch.len() as u64;
-                    }
-                    lbd_serializer::write_nquads_batch(&mut writer, &batch, &graph_iri)?;
-                }
-                let serialize_ms = now_ms() - serialize_t0;
-                while let Ok(evt) = stage_rx.try_recv() {
-                    produce_durations.insert(evt.plugin_id, evt.duration_ms);
-                    emit_stage_event(
+    if is_chunked {
+        // Chunked: each active producer → its own set of chunk files
+        macro_rules! drain_chunked {
+            ($rx_opt:expr, $slug:literal, $producer_id:expr) => {
+                if let Some(rx) = $rx_opt {
+                    let (file_summaries, triples) = serialize_nquads_receiver_to_chunks(
+                        rx,
                         sink,
-                        evt.plugin_id,
-                        evt.stage,
-                        "success",
-                        evt.duration_ms,
-                        0,
-                        if evt.triple_count > 0 { evt.triple_count } else { triple_count_for!(evt.plugin_id) },
-                        None,
+                        format!("{}-{}", chunk_prefix, $slug),
+                        &format!("{}/{}", normalized_base, $slug),
+                        chunk_mode,
+                        chunk_size_lines,
+                        chunk_size_bytes,
+                        sink_config,
                     )?;
+                    produce_triples.insert($producer_id, triples);
+                    summaries.extend(file_summaries);
                 }
-                for _ in 0..n_fwd {
-                    fwd_result_receiver.recv().map_err(|_| {
-                        lbd_serializer::SerializerError::Io(io::ErrorKind::BrokenPipe.into())
-                    })??;
-                }
-
-                emit_stage_event(sink, FILE_EXPORT_ID, "Export", "running", 0, 0, 0, None)?;
-                let export_t0 = now_ms();
-                let (summary, peak, chunk_size) = writer.finish()?;
-                let export_ms = now_ms() - export_t0;
-
-                let mut sd = StageDurations::new();
-                sd.serialize_ms = serialize_ms;
-                sd.export_ms = export_ms;
-                for (plugin_id, ms) in &produce_durations {
-                    let triples = triple_count_for!(plugin_id);
-                    sd.by_producer.insert(plugin_id.to_string(), (*ms, triples));
-                }
-                return Ok((vec![summary], peak, chunk_size, sd));
-            } else {
-                // LBD-only, no topology — simplest path
-                let mut writer = SinkChunkWriter::new(
-                    sink,
-                    format!("{}.nq", settings.output_stem),
-                    "application/n-quads",
-                    "merged",
-                    sink_config.chunk_size,
-                    sink_config.max_pending_bytes,
-                )?;
-
-                emit_stage_event(
-                    sink,
-                    NQUADS_SERIALIZER_ID,
-                    "Serialize",
-                    "running",
-                    0,
-                    0,
-                    0,
-                    None,
-                )?;
-                let serialize_t0 = now_ms();
-                for batch in lbd_receiver {
-                    lbd_triple_count += batch.len() as u64;
-                    lbd_serializer::write_nquads_batch(&mut writer, &batch, &lbd_graph)?;
-                }
-                let serialize_ms = now_ms() - serialize_t0;
-
-                while let Ok(evt) = stage_rx.try_recv() {
-                    produce_durations.insert(evt.plugin_id, evt.duration_ms);
-                    emit_stage_event(
-                        sink,
-                        evt.plugin_id,
-                        evt.stage,
-                        "success",
-                        evt.duration_ms,
-                        0,
-                        if evt.triple_count > 0 { evt.triple_count } else { triple_count_for!(evt.plugin_id) },
-                        None,
-                    )?;
-                }
-
-                emit_stage_event(sink, FILE_EXPORT_ID, "Export", "running", 0, 0, 0, None)?;
-                let export_t0 = now_ms();
-                let (summary, peak, chunk_size) = writer.finish()?;
-                let export_ms = now_ms() - export_t0;
-
-                let mut sd = StageDurations::new();
-                sd.serialize_ms = serialize_ms;
-                sd.export_ms = export_ms;
-                for (plugin_id, ms) in &produce_durations {
-                    let triples = triple_count_for!(plugin_id);
-                    sd.by_producer.insert(plugin_id.to_string(), (*ms, triples));
-                }
-                return Ok((vec![summary], peak, chunk_size, sd));
-            }
+            };
         }
+        drain_chunked!(bot_receiver, "bot", BOT_PRODUCER_ID);
+        drain_chunked!(beo_receiver, "beo", BEO_PRODUCER_ID);
+        drain_chunked!(props_receiver, "props", PROPS_OPM_PRODUCER_ID);
+        drain_chunked!(omg_receiver, "omg", lbd_pipeline::OMG_FOG_PRODUCER_ID);
+        drain_chunked!(ifcowl_receiver, "ifcowl", IFCOWL_PRODUCER_ID);
+        drain_chunked!(topology_receiver, "topology", IFC_TOPOLOGY_PRODUCER_ID);
+        let serialize_ms = now_ms() - serialize_t0;
+
+        while let Ok(evt) = stage_rx.try_recv() {
+            let triples = if evt.triple_count > 0 {
+                evt.triple_count
+            } else {
+                produce_triples.get(evt.plugin_id).copied().unwrap_or(0)
+            };
+            produce_durations.insert(evt.plugin_id, evt.duration_ms);
+            if triples > 0 || !produce_triples.contains_key(evt.plugin_id) {
+                produce_triples.insert(evt.plugin_id, triples);
+            }
+            emit_stage_event(sink, evt.plugin_id, evt.stage, "success", evt.duration_ms, 0, triples, None)?;
+        }
+
+        emit_stage_event(sink, FILE_EXPORT_ID, "Export", "running", 0, 0, 0, None)?;
+        let export_t0 = now_ms();
+        let export_ms = now_ms() - export_t0;
+
+        let mut sd = StageDurations::new();
+        sd.serialize_ms = serialize_ms;
+        sd.export_ms = export_ms;
+        for (plugin_id, ms) in produce_durations {
+            let triples = produce_triples.get(plugin_id).copied().unwrap_or(0);
+            sd.by_producer.insert(plugin_id.to_string(), (ms, triples));
+        }
+        Ok((summaries, 0, sink_config.chunk_size, sd))
+    } else {
+        // Merged: all active producers → one .nq file, each triple tagged with its producer's graph IRI
+        let mut writer = SinkChunkWriter::new(
+            sink,
+            format!("{}.nq", settings.output_stem),
+            "application/n-quads",
+            "merged",
+            sink_config.chunk_size,
+            sink_config.max_pending_bytes,
+        )?;
+        macro_rules! drain_merged {
+            ($rx_opt:expr, $slug:literal, $producer_id:expr) => {
+                if let Some(rx) = $rx_opt {
+                    let triples = serialize_nquads_receiver_to_writer(
+                        rx,
+                        &mut writer,
+                        &format!("{}/{}", normalized_base, $slug),
+                    )?;
+                    produce_triples.insert($producer_id, triples);
+                }
+            };
+        }
+        drain_merged!(bot_receiver, "bot", BOT_PRODUCER_ID);
+        drain_merged!(beo_receiver, "beo", BEO_PRODUCER_ID);
+        drain_merged!(props_receiver, "props", PROPS_OPM_PRODUCER_ID);
+        drain_merged!(omg_receiver, "omg", lbd_pipeline::OMG_FOG_PRODUCER_ID);
+        drain_merged!(ifcowl_receiver, "ifcowl", IFCOWL_PRODUCER_ID);
+        drain_merged!(topology_receiver, "topology", IFC_TOPOLOGY_PRODUCER_ID);
+        let serialize_ms = now_ms() - serialize_t0;
+
+        while let Ok(evt) = stage_rx.try_recv() {
+            let triples = if evt.triple_count > 0 {
+                evt.triple_count
+            } else {
+                produce_triples.get(evt.plugin_id).copied().unwrap_or(0)
+            };
+            produce_durations.insert(evt.plugin_id, evt.duration_ms);
+            if triples > 0 || !produce_triples.contains_key(evt.plugin_id) {
+                produce_triples.insert(evt.plugin_id, triples);
+            }
+            emit_stage_event(sink, evt.plugin_id, evt.stage, "success", evt.duration_ms, 0, triples, None)?;
+        }
+
+        emit_stage_event(sink, FILE_EXPORT_ID, "Export", "running", 0, 0, 0, None)?;
+        let export_t0 = now_ms();
+        let (summary, peak, chunk_size) = writer.finish()?;
+        let export_ms = now_ms() - export_t0;
+        summaries.push(summary);
+
+        let mut sd = StageDurations::new();
+        sd.serialize_ms = serialize_ms;
+        sd.export_ms = export_ms;
+        for (plugin_id, ms) in produce_durations {
+            let triples = produce_triples.get(plugin_id).copied().unwrap_or(0);
+            sd.by_producer.insert(plugin_id.to_string(), (ms, triples));
+        }
+        Ok((summaries, peak, chunk_size, sd))
     }
 }
 
@@ -2655,6 +2142,9 @@ fn nquads_to_sink(
 
 fn export_browser_files(
     conversion: &lbd_converter::ConversionResult,
+    step: &StepFile,
+    model: &ifc_model::IfcModel,
+    options: &ConvertOptions,
     base_uri: &str,
     settings: &ExecutionSettings,
 ) -> Result<Vec<ExportedFile>, lbd_serializer::SerializerError> {
@@ -2683,45 +2173,56 @@ fn export_browser_files(
 
     if settings.output_formats.has_any_nquads() {
         let normalized_base = normalize_base_for_graph_iri(base_uri);
-        let lbd_graph = settings
-            .nquads
-            .lbd_graph_iri
-            .clone()
-            .unwrap_or_else(|| format!("{normalized_base}/lbd"));
-        let ifcowl_graph = settings
-            .nquads
-            .ifcowl_graph_iri
-            .clone()
-            .unwrap_or_else(|| format!("{normalized_base}/ifcowl"));
+        let base = lbd_converter::normalize_base_uri(base_uri);
         let mut nq_bytes: Vec<u8> = Vec::new();
-        if settings.emit_ifcowl {
-            let (lbd_sender, lbd_receiver) = crossbeam::channel::unbounded();
-            let (ifcowl_sender, ifcowl_receiver) = crossbeam::channel::unbounded();
-            lbd_sender.send(conversion.triples.clone()).map_err(|_| {
-                lbd_serializer::SerializerError::Io(std::io::ErrorKind::BrokenPipe.into())
-            })?;
-            ifcowl_sender
-                .send(conversion.ifcowl_triples.clone())
-                .map_err(|_| {
-                    lbd_serializer::SerializerError::Io(std::io::ErrorKind::BrokenPipe.into())
-                })?;
-            drop(lbd_sender);
-            drop(ifcowl_sender);
-            serialize_nquads_merged_batches_to_writer(
-                lbd_receiver,
-                ifcowl_receiver,
-                &mut nq_bytes,
-                &lbd_graph,
-                &ifcowl_graph,
-            )?;
-        } else {
-            let (lbd_sender, lbd_receiver) = crossbeam::channel::unbounded();
-            lbd_sender.send(conversion.triples.clone()).map_err(|_| {
-                lbd_serializer::SerializerError::Io(std::io::ErrorKind::BrokenPipe.into())
-            })?;
-            drop(lbd_sender);
-            serialize_nquads_batches_to_writer(lbd_receiver, &mut nq_bytes, &lbd_graph)?;
+
+        // Collect triples per producer using unbounded channels (single-threaded, no blocking).
+        // Sort each producer's triples by subject then predicate for deterministic output.
+        macro_rules! collect_producer {
+            ($emit:expr, $stream_fn:expr) => {{
+                if $emit {
+                    let (tx, rx) = crossbeam::channel::unbounded::<Vec<lbd_ontology::Triple>>();
+                    let _ = $stream_fn(&tx);
+                    drop(tx);
+                    let mut triples: Vec<lbd_ontology::Triple> = rx.into_iter().flatten().collect();
+                    triples.sort_unstable_by(|a, b| {
+                        a.subject.cmp(&b.subject).then_with(|| a.predicate.cmp(&b.predicate))
+                    });
+                    triples
+                } else {
+                    Vec::new()
+                }
+            }};
         }
+
+        let bot_triples = collect_producer!(settings.emit_bot, |tx| lbd_converter::stream_bot(model, options, tx));
+        let beo_triples = collect_producer!(settings.emit_beo, |tx| lbd_converter::stream_beo(model, options, tx));
+        let props_triples = collect_producer!(settings.emit_props_opm, |tx| lbd_converter::stream_props_opm(model, options, tx));
+        let omg_triples = collect_producer!(settings.emit_omg_fog, |tx| lbd_converter::stream_omg_fog(model, options, tx));
+        let ifcowl_triples = collect_producer!(settings.emit_ifcowl, |tx| lbd_converter::modules::ifcowl::stream_ifcowl(
+            step, &base, step.header.schema, tx,
+            options.stream_batch_size, options.ifcowl_max_workers,
+        ));
+        let topology_triples = collect_producer!(settings.emit_topology, |tx| lbd_converter::stream_topology_model(model, options, tx));
+
+        macro_rules! write_producer_nq {
+            ($triples:expr, $slug:literal) => {
+                if !$triples.is_empty() {
+                    lbd_serializer::write_nquads_batch(
+                        &mut nq_bytes,
+                        &$triples,
+                        &format!("{}/{}", normalized_base, $slug),
+                    )?;
+                }
+            };
+        }
+        write_producer_nq!(bot_triples, "bot");
+        write_producer_nq!(beo_triples, "beo");
+        write_producer_nq!(props_triples, "props");
+        write_producer_nq!(omg_triples, "omg");
+        write_producer_nq!(ifcowl_triples, "ifcowl");
+        write_producer_nq!(topology_triples, "topology");
+
         files.push(ExportedFile {
             filename: format!("{}.nq", settings.output_stem),
             mime_type: "application/n-quads".to_string(),
