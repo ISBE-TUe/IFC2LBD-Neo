@@ -4,7 +4,9 @@ services:
     ports:
       - "3000:3000"
     volumes:
-      - ./src:/app/src
+      - ./src/pipeline:/app/src/pipeline
+      - ./src/main.js:/app/src/main.js
+      - ./src/entry.js:/app/src/entry.js
       - ./public:/app/public
       - ./index.html:/app/index.html
       - ./vite.config.js:/app/vite.config.js

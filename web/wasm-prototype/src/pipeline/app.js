@@ -285,6 +285,8 @@ async function runSinkConversionInMain(input, requestPayload, expectedFiles, req
 // ---------------------------------------------------------------------------
 
 async function init() {
+  document.body.style.visibility = "visible";
+  requestAnimationFrame(() => requestAnimationFrame(() => document.body.classList.remove("preload")));
   if (!window.isSecureContext || !window.crossOriginIsolated) {
     throw new Error("Requires secure+isolated context. Open http://localhost:3031 or use HTTPS with COOP/COEP.");
   }
