@@ -44,14 +44,12 @@ pub(crate) fn to_view(manifest: PluginManifest) -> ModuleManifestView {
 
 pub(crate) fn module_option_keys(module_id: &str) -> Vec<String> {
     match module_id {
-        NQUADS_SERIALIZER_ID => vec!["lbd_graph_iri".to_string(), "ifcowl_graph_iri".to_string()],
+        NQUADS_SERIALIZER_ID => vec![],
         NQUADS_CHUNKED_SERIALIZER_ID => vec![
             "chunking".to_string(),
             "chunk_size_lines".to_string(),
             "chunk_size_bytes".to_string(),
             "chunk_prefix".to_string(),
-            "lbd_graph_iri".to_string(),
-            "ifcowl_graph_iri".to_string(),
         ],
         TURTLE_SERIALIZER_ID => vec!["grouping".to_string(), "layout".to_string()],
         FILE_EXPORT_ID => vec!["output_stem".to_string()],

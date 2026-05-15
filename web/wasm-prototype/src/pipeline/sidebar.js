@@ -159,8 +159,6 @@ function optionControl(pluginId, key) {
     chunk_size_bytes: "268435456 (256MB)",
     chunk_prefix: "out",
     inflation_threshold: "0.1",
-    lbd_graph_iri: "https://example.com/lbd",
-    ifcowl_graph_iri: "https://example.com/ifcowl",
     output_stem: "converted-model",
   };
   const placeholder = placeholders[key] || key;
