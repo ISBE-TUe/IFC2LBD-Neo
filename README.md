@@ -3,8 +3,6 @@
 High-performance Rust converter from IFC STEP to LBD and IfcOWL, built around a
 module-first pipeline architecture.
 
-**Live demo:** [ifc2lbd-neo.pages.dev]([ifc2lbd-neo.pages.dev](https://ifc2lbd-neo.pages.dev))
-
 ---
 
 ## Overview
