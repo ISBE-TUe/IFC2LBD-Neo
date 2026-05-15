@@ -1,141 +1,261 @@
 # IFC2LBD-Neo
 
-High-performance Rust converter from IFC STEP to LBD/IfcOWL with a module-first pipeline.
+High-performance Rust converter from IFC STEP to LBD and IfcOWL, built around a
+module-first pipeline architecture.
 
-## CLI Model
+**Live demo:** [ifc2lbd-web.pages.dev]([ifc2lbd-web.pages.dev](https://ifc2lbd-web.pages.dev))
 
-The CLI is module-driven:
+---
 
-- `--module <id>` activates a module (repeatable).
-- `--module-opt <module-id>.<key>=<value>` configures module options (repeatable).
-- `--show-module-plan` prints the resolved module set and options.
+## Overview
 
-No profiles are required for normal usage.
+IFC2LBD-Neo reads IFC STEP files and produces RDF output in Turtle or N-Quads format.
+The conversion pipeline is driven entirely by explicit module selection — there are no
+implicit profiles or hidden defaults. Every active producer, serializer, and exporter
+must be named on the command line (or selected in the web UI).
+
+The project ships three artefacts:
+
+- `ifc2lbd-neo` — command-line binary (native, full feature set)
+- `ifc2lbd-wasm` — WebAssembly library for in-browser conversion
+- Web prototype — browser UI deployed at [ifc2lbd-web.pages.dev](https://ifc2lbd-web.pages.dev)
+
+---
 
 ## Quick Start
 
-LBD Turtle to file:
+Install from source:
+
+```bash
+cargo build --release -p ifc2lbd-cli --bin ifc2lbd-neo
+```
+
+The binary is at `target/release/ifc2lbd-neo`.
+
+Minimal LBD Turtle conversion (BOT + BEO + Props + OMG-FOG):
 
 ```bash
 ifc2lbd-neo model.ifc \
   --output out.ttl \
-  --base-uri https://example.test/base/ \
-  --module neo-lbd-producer \
+  --base-uri https://example.org/building/ \
+  --module neo-bot-producer \
+  --module neo-beo-producer \
+  --module neo-props-opm \
+  --module neo-omg-fog \
   --module neo-turtle-serializer \
   --module neo-file-export
 ```
 
-LBD + full topology N-Quads (no IfcOWL):
+LBD + IfcOWL as N-Quads with per-producer named graphs:
 
 ```bash
 ifc2lbd-neo model.ifc \
   --output out.nq \
-  --base-uri https://example.test/base/ \
-  --module neo-lbd-producer \
-  --module neo-topology-full-producer \
+  --base-uri https://example.org/building/ \
+  --module neo-bot-producer \
+  --module neo-beo-producer \
+  --module neo-props-opm \
+  --module neo-omg-fog \
+  --module neo-ifcowl-producer \
   --module neo-nquads-serializer \
   --module neo-file-export
 ```
 
-Full pipeline (LBD + IfcOWL + full topology + bbox) in N-Quads with core chunking:
+The web UI generates an equivalent CLI command from the current configuration
+via the "CLI command" button in the left rail.
 
-```bash
-ifc2lbd-neo model.ifc \
-  --output out.nq \
-  --base-uri https://example.test/base/ \
-  --module neo-lbd-producer \
-  --module neo-ifcowl-producer \
-  --module neo-topology-full-producer \
-  --module neo-bbox-enricher \
-  --module neo-nquads-serializer \
-  --module neo-file-export \
-  --module-opt neo-nquads-serializer.chunking=cores \
-  --module-opt neo-bbox-enricher.inflation_threshold=1.5
-```
+---
 
-## Built-In Neo Modules
+## Modules
 
-| Stage | Module ID | Purpose |
-|---|---|---|
-| Produce | `neo-lbd-producer` | Emit LBD triples |
-| Produce | `neo-ifcowl-producer` | Emit IfcOWL triples |
-| Produce | `neo-topology-lite-producer` | BOT topology from IFC relationships |
-| Produce | `neo-topology-full-producer` | BOT topology with OCC geometry refinement |
-| Produce | `neo-bbox-enricher` | Compute bbox geometry enrichment |
-| Serialize | `neo-turtle-serializer` | Serialize Turtle |
-| Serialize | `neo-nquads-serializer` | Serialize N-Quads (merged/chunked) |
-| Export | `neo-file-export` | Write files/manifests |
-| Export | `neo-stdout-export` | Write to stdout |
-| Export | `neo-grafeo-export` | Direct Grafeo framed stream |
+### Producers
+
+| Module ID              | Output                    | Named graph slug |
+| ---------------------- | ------------------------- | ---------------- |
+| `neo-bot-producer`     | BOT building topology     | `/bot`           |
+| `neo-beo-producer`     | BEO building elements     | `/beo`           |
+| `neo-props-opm`        | OPM property sets         | `/props`         |
+| `neo-omg-fog`          | OMG/FOG geometry links    | `/omg`           |
+| `neo-ifcowl-producer`  | Full IfcOWL ontology      | `/ifcowl`        |
+
+Named graph IRIs are derived automatically from the `--base-uri` value:
+`{base-uri}/{slug}`. For example, with `--base-uri https://example.org/b/`,
+the BOT graph IRI is `https://example.org/b/bot`.
+
+### Serializers
+
+| Module ID                       | Format  | Notes                         |
+| ------------------------------- | ------- | ----------------------------- |
+| `neo-turtle-serializer`         | Turtle  | Joined or per-producer files  |
+| `neo-nquads-serializer`         | N-Quads | Per-producer named graphs     |
+| `neo-nquads-chunked-serializer` | N-Quads | Chunked output with manifest  |
+
+### Exporters
+
+| Module ID            | Purpose                        |
+| -------------------- | ------------------------------ |
+| `neo-file-export`    | Write output files to disk     |
+| `neo-stdout-export`  | Write to stdout                |
+| `neo-grafeo-export`  | Stream directly into Grafeo    |
+
+---
 
 ## Module Options
 
-`neo-topology-full-producer`:
+### `neo-turtle-serializer`
 
-- `kernel_timeout_secs` (integer > 0)
-- `max_pairs_per_batch` (integer > 0)
+| Option     | Values                | Default  |
+| ---------- | --------------------- | -------- |
+| `grouping` | `sorted`, `streaming` | `sorted` |
+| `layout`   | `joined`, `separate`  | `joined` |
 
-`neo-nquads-serializer`:
+`sorted` groups triples by subject (compact, standard Turtle).
+`streaming` writes triples in arrival order (lower memory).
+`separate` writes one file per active producer instead of a single merged file.
 
-- `chunking` = `none|lines|bytes|cores`
-- `chunk_size_lines` (integer > 0)
-- `chunk_size_bytes` (integer > 0)
-- `chunk_prefix` (string)
-- `chunk_min_count` (integer > 0)
-- `chunk_core_count` (integer > 0, only with `chunking=cores`)
-- `lbd_graph_iri` (string IRI)
-- `ifcowl_graph_iri` (string IRI)
+### `neo-nquads-serializer`
 
-`neo-bbox-enricher`:
+No options. Named graph IRIs are derived from `--base-uri` automatically.
 
-- `inflation_threshold` (float > 0)
-- `report_path` (path)
+### `neo-nquads-chunked-serializer`
 
-## Discovery and Plan
+| Option              | Values                            | Default                         |
+| ------------------- | --------------------------------- | ------------------------------- |
+| `chunking`          | `none`, `lines`, `bytes`, `cores` | `lines`                         |
+| `chunk_size_lines`  | integer                           | `2000000`                       |
+| `chunk_size_bytes`  | integer                           | `268435456`                     |
+| `chunk_prefix`      | string                            | `out`                           |
+| `chunk_min_count`   | integer                           | `1`                             |
+| `chunk_core_count`  | integer                           | — (only with `chunking=cores`)  |
+
+### `neo-bbox-enricher`
+
+| Option                 | Values     | Default |
+| ---------------------- | ---------- | ------- |
+| `inflation_threshold`  | float > 0  | `1.5`   |
+
+---
+
+## Discovery and Diagnostics
+
+List all registered modules:
 
 ```bash
 ifc2lbd-neo --list-modules
-ifc2lbd-neo model.ifc ... --show-module-plan
 ```
+
+Print the resolved module activation plan and exit without converting:
+
+```bash
+ifc2lbd-neo model.ifc --module neo-bot-producer --module neo-turtle-serializer \
+  --module neo-file-export --show-module-plan
+```
+
+---
 
 ## Build
 
+CLI binary:
+
 ```bash
 cargo build --release -p ifc2lbd-cli --bin ifc2lbd-neo
-cargo build --release -p lbd-geometry-kernel --bin lbd-geometry-kernel
 ```
 
-## Wasm (Phase 1)
-
-Browser-targeted converter facade crate:
+WebAssembly library (requires Rust nightly and wasm-bindgen-cli):
 
 ```bash
-cargo build -p ifc2lbd-wasm --target wasm32-unknown-unknown
+bash scripts/build_wasm_web.sh
 ```
 
-Exported JS API (via `wasm-bindgen`):
+Web prototype (after building WASM):
 
-- `listModules()`
-- `resolvePlan(requestedModules, moduleOptions)`
-- `convertIfc(inputBytes, request)`
-- `initThreadPool(threads)` (wasm32 only)
+```bash
+cd web/wasm-prototype
+npm ci
+npm run dev        # local dev server on port 3031
+npm run build      # production build into dist/
+```
 
-Phase-1 browser module set:
+For local testing with correct COOP/COEP headers (required for SharedArrayBuffer):
 
-- `neo-lbd-producer`
-- `neo-ifcowl-producer`
-- `neo-turtle-serializer`
-- `neo-nquads-serializer`
-- `neo-file-export` (browser artifact exporter)
+```bash
+cd web/wasm-prototype
+docker compose up --build
+# served at http://localhost:3000
+```
 
-Threaded Wasm deployment requires cross-origin isolation headers:
+---
 
-- `Cross-Origin-Opener-Policy: same-origin`
-- `Cross-Origin-Embedder-Policy: require-corp`
+## Web Prototype
+
+The browser UI at [ifc2lbd-web.pages.dev](https://ifc2lbd-web.pages.dev) lets you load any IFC file, configure
+the module pipeline, and download the converted RDF output — all processing happens
+client-side in WebAssembly with no server upload.
+
+Automatic deployments are triggered on every push to `main` via the GitHub Actions
+workflow at `.github/workflows/deploy-web.yml`.
+
+The web prototype requires a cross-origin isolated context (COOP + COEP headers).
+Local dev via `docker compose` and the Cloudflare Pages deployment both set these
+headers correctly.
+
+---
+
+## Testing
+
+Run the full native test suite:
+
+```bash
+cargo test
+```
+
+Run end-to-end browser tests against the local Docker container (port 3000 must be running):
+
+```bash
+cd web/wasm-prototype
+npm run test:e2e
+```
+
+Run performance benchmarks:
+
+```bash
+cargo bench -p ifc2lbd-cli
+```
+
+---
 
 ## Documentation
 
-- Module authoring and activation: `docs/current/plugin-authoring-and-activation.md`
-- Agent module instructions: `docs/current/agent-plugin-instructions.md`
-- Oxigraph loading/chunking: `docs/current/oxigraph-loading.md`
-- Testing and benchmarking: `docs/current/testing-and-benchmarking.md`
+| Document                           | Location                                           |
+| ---------------------------------- | -------------------------------------------------- |
+| Module authoring and activation    | `docs/current/plugin-authoring-and-activation.md`  |
+| Converter pipeline architecture    | `docs/current/converter-pipeline.md`               |
+| Full topology workflow             | `docs/current/topology-full-workflow.md`           |
+| Testing and benchmarking           | `docs/current/testing-and-benchmarking.md`         |
+| ProduceContext / trait wiring plan | `docs/plan-produce-trait-wiring.md`                |
+| Oxigraph loading                   | `docs/current/oxigraph-loading.md`                 |
+
+If documents conflict, prefer files under `docs/current/`.
+
+---
+
+## Repository Structure
+
+```text
+crates/
+  ifc-step/           IFC STEP file parser
+  ifc-model/          IFC object model builder
+  lbd-converter/      LBD triple producers (BOT, BEO, Props, OMG, IfcOWL)
+  lbd-pipeline/       Module trait definitions and plugin registry
+  lbd-serializer/     Turtle and N-Quads serializers
+  lbd-ontology/       RDF triple types and ontology constants
+  lbd-topology/       IFC spatial relationship topology
+  lbd-geometry/       Bounding box and geometry computation
+  ifc2lbd-wasm/       WebAssembly facade and browser runner
+  ifc2lbd-cli/        CLI binary and pipeline orchestration
+  plugin-topology-full/  Full geometry-based topology plugin
+web/
+  wasm-prototype/     Browser UI (Vite + WASM)
+docs/                 Architecture and usage documentation
+scripts/              Build and tooling scripts
+```

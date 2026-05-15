@@ -51,8 +51,10 @@ function render() {
   }
 
   const displayName = isParse ? "Parse IFC" : mod.displayName;
-  const stage = isParse ? "Preprocess" : mod.stage;
-  const optionKeys = isParse ? [] : mod.optionKeys || [];
+  const stage = isParse ? "Import" : mod.stage;
+  const rawOptionKeys = isParse ? [] : mod.optionKeys || [];
+  // output_stem is controlled by the global "Stem" field in the left rail
+  const optionKeys = rawOptionKeys.filter((k) => !(mod?.id === "neo-file-export" && k === "output_stem"));
 
   content.innerHTML = `
     <div class="detail-header-row">
@@ -127,6 +129,17 @@ function optionControl(pluginId, key) {
         </select>
       </div>`;
   }
+  if (key === "layout") {
+    const layoutVal = current || "joined";
+    return `
+      <div class="detail-row">
+        <span class="detail-label">${key}</span>
+        <select data-option-key="${key}" class="detail-select">
+          <option value="joined" ${layoutVal === "joined" ? "selected" : ""}>Joined Turtle file</option>
+          <option value="separate" ${layoutVal === "separate" ? "selected" : ""}>Separate files per producer</option>
+        </select>
+      </div>`;
+  }
   if (key === "chunking") {
     // Default to "lines" for chunked serializer (matches Rust default)
     const chunkingVal = current || "lines";
@@ -146,8 +159,6 @@ function optionControl(pluginId, key) {
     chunk_size_bytes: "268435456 (256MB)",
     chunk_prefix: "out",
     inflation_threshold: "0.1",
-    lbd_graph_iri: "https://example.com/lbd",
-    ifcowl_graph_iri: "https://example.com/ifcowl",
     output_stem: "converted-model",
   };
   const placeholder = placeholders[key] || key;

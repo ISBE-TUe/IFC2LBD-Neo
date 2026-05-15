@@ -3,15 +3,15 @@ use std::io::Write;
 use crossbeam::channel::{Receiver, Sender};
 use ifc_model::IfcModel;
 use ifc_step::StepFile;
-use lbd_converter::{stream_step_and_model, ConvertOptions};
+use lbd_converter::{stream_beo, stream_bot, stream_omg_fog, stream_props_opm, ConvertOptions};
 use lbd_ontology::Triple;
 use lbd_pipeline::{
-    BatchKind, ExportError, ExportFileSummary, ExportPlugin, ExportedFile, FailurePolicy,
-    ParallelismMode, PipelineContext, PipelinePlugin, PipelineStage, PluginManifest,
-    PluginRegistry, ProducerError, ProducerPlugin, SerializeStats, SerializerError,
-    SerializerPlugin, TaggedBatch, BBOX_ENRICHER_ID, FILE_EXPORT_ID, IFCOWL_PRODUCER_ID,
-    IFC_TOPOLOGY_PRODUCER_ID, LBD_PRODUCER_ID, NQUADS_CHUNKED_SERIALIZER_ID, NQUADS_SERIALIZER_ID,
-    TOPOLOGY_FULL_PRODUCER_ID, TURTLE_SERIALIZER_ID,
+    BatchKind, BEO_PRODUCER_ID, BOT_PRODUCER_ID, ExportError, ExportFileSummary, ExportPlugin,
+    ExportedFile, FailurePolicy, FILE_EXPORT_ID, IFCOWL_PRODUCER_ID, IFC_TOPOLOGY_PRODUCER_ID,
+    NQUADS_CHUNKED_SERIALIZER_ID, NQUADS_SERIALIZER_ID, OMG_FOG_PRODUCER_ID, ParallelismMode,
+    PipelineContext, PipelinePlugin, PipelineStage, PluginManifest, PluginRegistry, ProducerError,
+    ProducerPlugin, PROPS_OPM_PRODUCER_ID, SerializeStats, SerializerError, SerializerPlugin,
+    TaggedBatch, TOPOLOGY_FULL_PRODUCER_ID, TURTLE_SERIALIZER_ID, BBOX_ENRICHER_ID,
 };
 use lbd_serializer::{
     serialize_nquads_batches_to_writer, serialize_turtle_batch_raw_to_writer,
@@ -44,16 +44,14 @@ pub(crate) fn to_view(manifest: PluginManifest) -> ModuleManifestView {
 
 pub(crate) fn module_option_keys(module_id: &str) -> Vec<String> {
     match module_id {
-        NQUADS_SERIALIZER_ID => vec!["lbd_graph_iri".to_string(), "ifcowl_graph_iri".to_string()],
+        NQUADS_SERIALIZER_ID => vec![],
         NQUADS_CHUNKED_SERIALIZER_ID => vec![
             "chunking".to_string(),
             "chunk_size_lines".to_string(),
             "chunk_size_bytes".to_string(),
             "chunk_prefix".to_string(),
-            "lbd_graph_iri".to_string(),
-            "ifcowl_graph_iri".to_string(),
         ],
-        TURTLE_SERIALIZER_ID => vec!["grouping".to_string()],
+        TURTLE_SERIALIZER_ID => vec!["grouping".to_string(), "layout".to_string()],
         FILE_EXPORT_ID => vec!["output_stem".to_string()],
         BBOX_ENRICHER_ID => vec!["inflation_threshold".to_string()],
         TOPOLOGY_FULL_PRODUCER_ID => vec![
@@ -66,15 +64,17 @@ pub(crate) fn module_option_keys(module_id: &str) -> Vec<String> {
 
 pub(crate) fn browser_registry() -> PluginRegistry {
     let mut registry = PluginRegistry::new();
-    registry.register_producer(LbdProducerPlugin).unwrap();
+    // Modular LBD producers
+    registry.register_producer(BotProducerPlugin).unwrap();
+    registry.register_producer(BeoProducerPlugin).unwrap();
+    registry.register_producer(PropsOpmProducerPlugin).unwrap();
+    registry.register_producer(OmgFogProducerPlugin).unwrap();
+    // Other producers
     registry.register_producer(IfcowlProducerPlugin).unwrap();
-    registry
-        .register_producer(IfcTopologyProducerPlugin)
-        .unwrap();
-    registry.register_producer(BboxEnricherPlugin).unwrap();
-    registry
-        .register_producer(TopologyFullProducerPlugin)
-        .unwrap();
+    // IfcTopologyProducerPlugin, BboxEnricherPlugin, TopologyFullProducerPlugin are
+    // intentionally not registered here — their produce() stubs are not yet wired.
+    // See docs/plan-produce-trait-wiring.md for the implementation plan.
+    // Serializers
     registry
         .register_serializer(TurtleSerializerPlugin)
         .unwrap();
@@ -84,12 +84,13 @@ pub(crate) fn browser_registry() -> PluginRegistry {
     registry
         .register_serializer(NquadsChunkedSerializerPlugin)
         .unwrap();
+    // Export
     registry.register_export(FileExportPlugin).unwrap();
     registry
 }
 
 // ---------------------------------------------------------------------------
-// Conversion helper
+// Helpers
 // ---------------------------------------------------------------------------
 
 fn map_ser_err(e: lbd_serializer::SerializerError) -> SerializerError {
@@ -99,69 +100,240 @@ fn map_ser_err(e: lbd_serializer::SerializerError) -> SerializerError {
     }
 }
 
+/// Spawn a task that forwards raw-triple batches as tagged batches.
+fn forward_as_tagged(
+    raw_receiver: crossbeam::channel::Receiver<Vec<Triple>>,
+    kind: BatchKind,
+    tagged_sender: Sender<TaggedBatch>,
+) {
+    rayon::spawn(move || {
+        for batch in raw_receiver {
+            if tagged_sender
+                .send(TaggedBatch { kind: kind.clone(), triples: batch })
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+}
+
 // ---------------------------------------------------------------------------
-// LBD Producer
+// BOT Producer
 // ---------------------------------------------------------------------------
 
-struct LbdProducerPlugin;
+struct BotProducerPlugin;
 
-impl PipelinePlugin for LbdProducerPlugin {
+impl PipelinePlugin for BotProducerPlugin {
     fn manifest(&self) -> PluginManifest {
         PluginManifest {
-            id: LBD_PRODUCER_ID,
-            display_name: "Built-in LBD producer",
+            id: BOT_PRODUCER_ID,
+            display_name: "BOT",
             stage: PipelineStage::Produce,
-            description: "Generates LBD triples from the typed IFC model.",
+            description: "Generates BOT spatial hierarchy and element-type triples.",
             inputs: vec!["ifc-model"],
-            outputs: vec!["lbd-triples"],
+            outputs: vec!["bot-triples"],
             requires: vec![],
             conflicts_with: vec![],
             failure_policy: FailurePolicy::Required,
             parallelism: ParallelismMode::ParallelByBatch,
             wasm_compatible: true,
+            named_graph_slug: Some("bot"),
         }
     }
 }
 
-impl ProducerPlugin for LbdProducerPlugin {
+impl ProducerPlugin for BotProducerPlugin {
     fn produce(
         &self,
         ctx: &PipelineContext,
         sender: &Sender<TaggedBatch>,
     ) -> Result<(), ProducerError> {
-        let step = ctx.get::<StepFile>().ok_or_else(|| {
-            ProducerError::Conversion("LbdProducerPlugin: missing StepFile in context".to_string())
-        })?;
         let model = ctx.get::<IfcModel>().ok_or_else(|| {
-            ProducerError::Conversion("LbdProducerPlugin: missing IfcModel in context".to_string())
+            ProducerError::Conversion("BotProducerPlugin: missing IfcModel in context".to_string())
         })?;
         let options = ctx.get::<ConvertOptions>().ok_or_else(|| {
             ProducerError::Conversion(
-                "LbdProducerPlugin: missing ConvertOptions in context".to_string(),
+                "BotProducerPlugin: missing ConvertOptions in context".to_string(),
             )
         })?;
 
-        // Create a raw-triple sender that wraps batches as TaggedBatch(Lbd, ..)
         let (raw_sender, raw_receiver) =
             crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
-        let tagged_sender = sender.clone();
+        let graph_iri = BatchKind::new(format!(
+            "{}bot",
+            options.base_uri.trim_end_matches('/')
+        ));
+        forward_as_tagged(raw_receiver, graph_iri, sender.clone());
 
-        // Forward raw batches as tagged batches
-        rayon::spawn(move || {
-            for batch in raw_receiver {
-                if tagged_sender
-                    .send(TaggedBatch {
-                        kind: BatchKind::Lbd,
-                        triples: batch,
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        });
+        stream_bot(&model, &options, &raw_sender)
+            .map(|_| ())
+            .map_err(|_| ProducerError::ChannelClosed)
+    }
+}
 
-        stream_step_and_model(&step, &model, &options, &raw_sender, None)
+// ---------------------------------------------------------------------------
+// BEO Producer
+// ---------------------------------------------------------------------------
+
+struct BeoProducerPlugin;
+
+impl PipelinePlugin for BeoProducerPlugin {
+    fn manifest(&self) -> PluginManifest {
+        PluginManifest {
+            id: BEO_PRODUCER_ID,
+            display_name: "BEO",
+            stage: PipelineStage::Produce,
+            description: "Generates BEO / FURN product-class type triples for IFC elements.",
+            inputs: vec!["ifc-model"],
+            outputs: vec!["beo-triples"],
+            requires: vec![],
+            conflicts_with: vec![],
+            failure_policy: FailurePolicy::Required,
+            parallelism: ParallelismMode::ParallelByBatch,
+            wasm_compatible: true,
+            named_graph_slug: Some("beo"),
+        }
+    }
+}
+
+impl ProducerPlugin for BeoProducerPlugin {
+    fn produce(
+        &self,
+        ctx: &PipelineContext,
+        sender: &Sender<TaggedBatch>,
+    ) -> Result<(), ProducerError> {
+        let model = ctx.get::<IfcModel>().ok_or_else(|| {
+            ProducerError::Conversion("BeoProducerPlugin: missing IfcModel in context".to_string())
+        })?;
+        let options = ctx.get::<ConvertOptions>().ok_or_else(|| {
+            ProducerError::Conversion(
+                "BeoProducerPlugin: missing ConvertOptions in context".to_string(),
+            )
+        })?;
+
+        let (raw_sender, raw_receiver) =
+            crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
+        let graph_iri = BatchKind::new(format!(
+            "{}beo",
+            options.base_uri.trim_end_matches('/')
+        ));
+        forward_as_tagged(raw_receiver, graph_iri, sender.clone());
+
+        stream_beo(&model, &options, &raw_sender)
+            .map(|_| ())
+            .map_err(|_| ProducerError::ChannelClosed)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Props-OPM Producer
+// ---------------------------------------------------------------------------
+
+struct PropsOpmProducerPlugin;
+
+impl PipelinePlugin for PropsOpmProducerPlugin {
+    fn manifest(&self) -> PluginManifest {
+        PluginManifest {
+            id: PROPS_OPM_PRODUCER_ID,
+            display_name: "Props-OPM",
+            stage: PipelineStage::Produce,
+            description: "Generates OPM property-set, quantity-set and standard-attribute triples.",
+            inputs: vec!["ifc-model"],
+            outputs: vec!["props-triples"],
+            requires: vec![],
+            conflicts_with: vec![],
+            failure_policy: FailurePolicy::Required,
+            parallelism: ParallelismMode::ParallelByBatch,
+            wasm_compatible: true,
+            named_graph_slug: Some("props"),
+        }
+    }
+}
+
+impl ProducerPlugin for PropsOpmProducerPlugin {
+    fn produce(
+        &self,
+        ctx: &PipelineContext,
+        sender: &Sender<TaggedBatch>,
+    ) -> Result<(), ProducerError> {
+        let model = ctx.get::<IfcModel>().ok_or_else(|| {
+            ProducerError::Conversion(
+                "PropsOpmProducerPlugin: missing IfcModel in context".to_string(),
+            )
+        })?;
+        let options = ctx.get::<ConvertOptions>().ok_or_else(|| {
+            ProducerError::Conversion(
+                "PropsOpmProducerPlugin: missing ConvertOptions in context".to_string(),
+            )
+        })?;
+
+        let (raw_sender, raw_receiver) =
+            crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
+        let graph_iri = BatchKind::new(format!(
+            "{}props",
+            options.base_uri.trim_end_matches('/')
+        ));
+        forward_as_tagged(raw_receiver, graph_iri, sender.clone());
+
+        stream_props_opm(&model, &options, &raw_sender)
+            .map(|_| ())
+            .map_err(|_| ProducerError::ChannelClosed)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// OMG-FOG Producer
+// ---------------------------------------------------------------------------
+
+struct OmgFogProducerPlugin;
+
+impl PipelinePlugin for OmgFogProducerPlugin {
+    fn manifest(&self) -> PluginManifest {
+        PluginManifest {
+            id: OMG_FOG_PRODUCER_ID,
+            display_name: "OMG-FOG",
+            stage: PipelineStage::Produce,
+            description: "Generates OMG geometry-link triples (omg:hasGeometry / omg:Geometry) for all elements and spatial nodes.",
+            inputs: vec!["ifc-model"],
+            outputs: vec!["omg-triples"],
+            requires: vec![],
+            conflicts_with: vec![],
+            failure_policy: FailurePolicy::Optional,
+            parallelism: ParallelismMode::ParallelByBatch,
+            wasm_compatible: true,
+            named_graph_slug: Some("omg"),
+        }
+    }
+}
+
+impl ProducerPlugin for OmgFogProducerPlugin {
+    fn produce(
+        &self,
+        ctx: &PipelineContext,
+        sender: &Sender<TaggedBatch>,
+    ) -> Result<(), ProducerError> {
+        let model = ctx.get::<IfcModel>().ok_or_else(|| {
+            ProducerError::Conversion(
+                "OmgFogProducerPlugin: missing IfcModel in context".to_string(),
+            )
+        })?;
+        let options = ctx.get::<ConvertOptions>().ok_or_else(|| {
+            ProducerError::Conversion(
+                "OmgFogProducerPlugin: missing ConvertOptions in context".to_string(),
+            )
+        })?;
+
+        let (raw_sender, raw_receiver) =
+            crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
+        let graph_iri = BatchKind::new(format!(
+            "{}omg",
+            options.base_uri.trim_end_matches('/')
+        ));
+        forward_as_tagged(raw_receiver, graph_iri, sender.clone());
+
+        stream_omg_fog(&model, &options, &raw_sender)
+            .map(|_| ())
             .map_err(|_| ProducerError::ChannelClosed)
     }
 }
@@ -176,7 +348,7 @@ impl PipelinePlugin for IfcowlProducerPlugin {
     fn manifest(&self) -> PluginManifest {
         PluginManifest {
             id: IFCOWL_PRODUCER_ID,
-            display_name: "Built-in IfcOWL producer",
+            display_name: "IfcOWL",
             stage: PipelineStage::Produce,
             description: "Generates IfcOWL triples from parsed IFC STEP entities.",
             inputs: vec!["step-file", "ifc-model"],
@@ -186,6 +358,7 @@ impl PipelinePlugin for IfcowlProducerPlugin {
             failure_policy: FailurePolicy::Required,
             parallelism: ParallelismMode::ParallelByPartition,
             wasm_compatible: true,
+            named_graph_slug: Some("ifcowl"),
         }
     }
 }
@@ -212,47 +385,26 @@ impl ProducerPlugin for IfcowlProducerPlugin {
             )
         })?;
 
-        // Create raw-triple senders for LBD and IfcOWL
-        let (lbd_sender, lbd_receiver) =
-            crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
         let (ifcowl_sender, ifcowl_receiver) =
             crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
-        let tagged_sender = sender.clone();
+        let graph_iri = BatchKind::new(format!(
+            "{}ifcowl",
+            options.base_uri.trim_end_matches('/')
+        ));
+        forward_as_tagged(ifcowl_receiver, graph_iri, sender.clone());
 
-        // Forward LBD batches
-        let lbd_tagged = tagged_sender.clone();
-        rayon::spawn(move || {
-            for batch in lbd_receiver {
-                if lbd_tagged
-                    .send(TaggedBatch {
-                        kind: BatchKind::Lbd,
-                        triples: batch,
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        });
-
-        // Forward IfcOWL batches
-        let ifcowl_tagged = sender.clone();
-        rayon::spawn(move || {
-            for batch in ifcowl_receiver {
-                if ifcowl_tagged
-                    .send(TaggedBatch {
-                        kind: BatchKind::Ifcowl,
-                        triples: batch,
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        });
-
-        stream_step_and_model(&step, &model, &options, &lbd_sender, Some(&ifcowl_sender))
-            .map_err(|_| ProducerError::ChannelClosed)
+        // The IfcOWL producer also emits owl:sameAs links (to the alignment graph).
+        // Those are emitted as part of the LBD core-entities pass when emit_ifcowl_links=true.
+        // Here we only produce the IfcOWL entity triples.
+        lbd_converter::modules::ifcowl::stream_ifcowl(
+            &step,
+            &lbd_converter::normalize_base_uri(&options.base_uri),
+            step.header.schema,
+            &ifcowl_sender,
+            options.stream_batch_size,
+            options.ifcowl_max_workers,
+        )
+        .map_err(|_| ProducerError::ChannelClosed)
     }
 }
 
@@ -277,6 +429,7 @@ impl PipelinePlugin for IfcTopologyProducerPlugin {
             failure_policy: FailurePolicy::Optional,
             parallelism: ParallelismMode::ParallelByPartition,
             wasm_compatible: true,
+            named_graph_slug: Some("topology"),
         }
     }
 }
@@ -295,8 +448,7 @@ impl ProducerPlugin for IfcTopologyProducerPlugin {
 }
 
 // ---------------------------------------------------------------------------
-// Bbox Enricher — adds bounding-box geometry triples (geo:asWKT, hasBoundingBox)
-// to the LBD output. Standalone: does NOT implicitly enable topology.
+// Bbox Enricher
 // ---------------------------------------------------------------------------
 
 struct BboxEnricherPlugin;
@@ -310,11 +462,12 @@ impl PipelinePlugin for BboxEnricherPlugin {
             description: "Adds bounding-box geometry triples (GeoSPARQL WKT) to LBD output.",
             inputs: vec!["ifc-model", "step-file"],
             outputs: vec!["bbox-geometry"],
-            requires: vec![LBD_PRODUCER_ID],
+            requires: vec![BOT_PRODUCER_ID],
             conflicts_with: vec![],
             failure_policy: FailurePolicy::Optional,
             parallelism: ParallelismMode::ParallelByPartition,
             wasm_compatible: true,
+            named_graph_slug: None,
         }
     }
 }
@@ -333,8 +486,7 @@ impl ProducerPlugin for BboxEnricherPlugin {
 }
 
 // ---------------------------------------------------------------------------
-// Topology Full — IfcTopology + bbox-based adjacency/intersection detection
-// Produces enriched topology with bot:adjacentElement, bot:intersectingElement edges.
+// Topology Full
 // ---------------------------------------------------------------------------
 
 struct TopologyFullProducerPlugin;
@@ -353,6 +505,7 @@ impl PipelinePlugin for TopologyFullProducerPlugin {
             failure_policy: FailurePolicy::Optional,
             parallelism: ParallelismMode::ParallelByPartition,
             wasm_compatible: true,
+            named_graph_slug: Some("topology"),
         }
     }
 }
@@ -380,16 +533,17 @@ impl PipelinePlugin for TurtleSerializerPlugin {
     fn manifest(&self) -> PluginManifest {
         PluginManifest {
             id: TURTLE_SERIALIZER_ID,
-            display_name: "Built-in Turtle serializer",
+            display_name: "Turtle serializer",
             stage: PipelineStage::Serialize,
             description: "Serializes triples into Turtle output.",
             inputs: vec!["triples"],
             outputs: vec!["turtle-bytes"],
-            requires: vec![LBD_PRODUCER_ID],
+            requires: vec![],
             conflicts_with: vec![],
             failure_policy: FailurePolicy::Optional,
             parallelism: ParallelismMode::Serial,
             wasm_compatible: true,
+            named_graph_slug: None,
         }
     }
 }
@@ -424,16 +578,17 @@ impl PipelinePlugin for NquadsSerializerPlugin {
     fn manifest(&self) -> PluginManifest {
         PluginManifest {
             id: NQUADS_SERIALIZER_ID,
-            display_name: "Built-in N-Quads serializer",
+            display_name: "N-Quads serializer",
             stage: PipelineStage::Serialize,
             description: "Serializes graph streams into N-Quads output.",
             inputs: vec!["quads"],
             outputs: vec!["nquads-bytes"],
-            requires: vec![LBD_PRODUCER_ID],
+            requires: vec![],
             conflicts_with: vec![],
             failure_policy: FailurePolicy::Optional,
             parallelism: ParallelismMode::ParallelByPartition,
             wasm_compatible: true,
+            named_graph_slug: None,
         }
     }
 }
@@ -449,23 +604,17 @@ impl SerializerPlugin for NquadsSerializerPlugin {
         let mut counting = CountingWriterWrap::new(writer);
         for batch in receiver {
             stats.triples_written += batch.triples.len() as u64;
-            let graph_iri = match batch.kind {
-                BatchKind::Lbd => "https://lbd.example.com/lbd",
-                BatchKind::Ifcowl => "https://lbd.example.com/ifcowl",
-                BatchKind::Topology => "https://lbd.example.com/topology",
-            };
-            write_nquads_batch(&mut counting, &batch.triples, graph_iri)?;
+            // The named-graph IRI comes directly from the batch's kind.
+            write_nquads_batch(&mut counting, &batch.triples, batch.kind.iri())?;
         }
         stats.bytes_written = counting.bytes;
         Ok(stats)
     }
 }
 
-/// Write N-Quads batch by sending triples through a temporary channel
-/// so we can reuse the lbd_serializer function.
 fn write_nquads_batch<W: Write>(
     writer: &mut W,
-    triples: &[Triple],
+    triples: &[lbd_ontology::Triple],
     graph_iri: &str,
 ) -> Result<(), SerializerError> {
     let (tx, rx) = crossbeam::channel::bounded(1);
@@ -476,7 +625,7 @@ fn write_nquads_batch<W: Write>(
 }
 
 // ---------------------------------------------------------------------------
-// N-Quads Chunked Serializer (produces chunked N-Quads output)
+// N-Quads Chunked Serializer
 // ---------------------------------------------------------------------------
 
 struct NquadsChunkedSerializerPlugin;
@@ -485,16 +634,17 @@ impl PipelinePlugin for NquadsChunkedSerializerPlugin {
     fn manifest(&self) -> PluginManifest {
         PluginManifest {
             id: NQUADS_CHUNKED_SERIALIZER_ID,
-            display_name: "Built-in N-Quads chunked serializer",
+            display_name: "N-Quads chunked serializer",
             stage: PipelineStage::Serialize,
-            description: "Serializes graph streams into chunked N-Quads output with configurable chunk boundaries.",
+            description: "Serializes graph streams into chunked N-Quads output.",
             inputs: vec!["quads"],
             outputs: vec!["nquads-bytes"],
-            requires: vec![LBD_PRODUCER_ID],
+            requires: vec![],
             conflicts_with: vec![],
             failure_policy: FailurePolicy::Optional,
             parallelism: ParallelismMode::ParallelByPartition,
             wasm_compatible: true,
+            named_graph_slug: None,
         }
     }
 }
@@ -506,17 +656,11 @@ impl SerializerPlugin for NquadsChunkedSerializerPlugin {
         receiver: Receiver<TaggedBatch>,
         writer: &mut dyn Write,
     ) -> Result<SerializeStats, SerializerError> {
-        // For now, same as regular N-Quads — chunking logic to be added
         let mut stats = SerializeStats::default();
         let mut counting = CountingWriterWrap::new(writer);
         for batch in receiver {
             stats.triples_written += batch.triples.len() as u64;
-            let graph_iri = match batch.kind {
-                BatchKind::Lbd => "https://lbd.example.com/lbd",
-                BatchKind::Ifcowl => "https://lbd.example.com/ifcowl",
-                BatchKind::Topology => "https://lbd.example.com/topology",
-            };
-            write_nquads_batch(&mut counting, &batch.triples, graph_iri)?;
+            write_nquads_batch(&mut counting, &batch.triples, batch.kind.iri())?;
         }
         stats.bytes_written = counting.bytes;
         Ok(stats)
@@ -533,7 +677,7 @@ impl PipelinePlugin for FileExportPlugin {
     fn manifest(&self) -> PluginManifest {
         PluginManifest {
             id: FILE_EXPORT_ID,
-            display_name: "Built-in file exporter",
+            display_name: "File exporter",
             stage: PipelineStage::Export,
             description: "Exports browser-downloadable artifacts from serializer output.",
             inputs: vec!["turtle-bytes", "nquads-bytes"],
@@ -543,6 +687,7 @@ impl PipelinePlugin for FileExportPlugin {
             failure_policy: FailurePolicy::Required,
             parallelism: ParallelismMode::Serial,
             wasm_compatible: true,
+            named_graph_slug: None,
         }
     }
 }
@@ -569,7 +714,6 @@ impl ExportPlugin for FileExportPlugin {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// A writer wrapper that counts bytes written (used for stats).
 pub(crate) struct CountingWriterWrap<'a> {
     inner: &'a mut dyn Write,
     pub bytes: u64,

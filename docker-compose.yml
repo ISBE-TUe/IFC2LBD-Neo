@@ -1,0 +1,43 @@
+# ─── Docker Compose for ifc2lbd WASM builds ──────────────────────────────────
+#
+# Two services, one image (built from ./Dockerfile):
+#
+#   check   →  cargo check for the WASM crate (fast, no output files)
+#   build   →  full release build + wasm-bindgen post-processing
+#              writes artifacts to web/wasm-prototype/src/wasm/
+#
+# Volumes:
+#   cargo-registry  persistent cache for downloaded crates (~/.cargo/registry)
+#   cargo-git       persistent cache for git crates
+#   target-cache    persistent Rust build artifacts (avoids full recompile on restart)
+#
+# Quick start:
+#   docker compose build          # build the image once (or after Dockerfile changes)
+#   docker compose run --rm check
+#   docker compose run --rm build
+
+x-wasm-base: &wasm-base
+  build: .
+  volumes:
+    - .:/workspace                                    # project source (live mount)
+    - cargo-registry:/usr/local/cargo/registry        # downloaded crates
+    - cargo-git:/usr/local/cargo/git                  # git-sourced crates
+    - target-cache:/workspace/target                  # incremental build cache
+
+services:
+  check:
+    <<: *wasm-base
+    command: >
+      cargo check
+        -Z build-std=std,panic_abort
+        --target wasm32-unknown-unknown
+        -p ifc2lbd-wasm
+
+  build:
+    <<: *wasm-base
+    command: bash scripts/build_wasm_web.sh
+
+volumes:
+  cargo-registry:
+  cargo-git:
+  target-cache:

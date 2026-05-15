@@ -32,6 +32,14 @@ pub fn serialize_turtle_to_writer<W: Write>(
     write_grouped_turtle(triples, &mut writer, None, true)
 }
 
+pub fn serialize_turtle_grouped_to_writer<W: Write>(
+    triples: &[Triple],
+    mut writer: W,
+    instance_base: Option<&str>,
+) -> Result<(), SerializerError> {
+    write_grouped_turtle(triples, &mut writer, instance_base, true)
+}
+
 pub fn serialize_turtle_to_string(triples: &[Triple]) -> Result<String, SerializerError> {
     let mut buffer = Vec::new();
     serialize_turtle_to_writer(triples, &mut buffer)?;

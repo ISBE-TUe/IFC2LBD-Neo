@@ -1,0 +1,11 @@
+# Don't send large local directories to the Docker build context.
+# (The project is mounted as a volume at runtime, not COPYed into the image.)
+
+target/
+vendor/chijin/target/
+web/node_modules/
+web/wasm-prototype/node_modules/
+.git/
+*.ifc
+out*.ttl
+out*.nq

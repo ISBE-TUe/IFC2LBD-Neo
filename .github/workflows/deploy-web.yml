@@ -1,0 +1,75 @@
+name: Deploy Web Prototype
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust nightly + wasm32 target
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: wasm32-unknown-unknown
+          components: rust-src
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm-web
+
+      - name: Install wasm-bindgen-cli
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen-cli
+
+      - name: Install wabt (wasm2wat / wat2wasm for memory patch)
+        run: sudo apt-get install -y wabt
+
+      - name: Build WASM
+        run: bash scripts/build_wasm_web.sh
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/wasm-prototype/package-lock.json
+
+      - name: Install JS dependencies
+        working-directory: web/wasm-prototype
+        run: npm ci
+
+      - name: Build Vite app
+        working-directory: web/wasm-prototype
+        run: npm run build
+
+      - name: Install Playwright browsers
+        working-directory: web/wasm-prototype
+        run: npx playwright install --with-deps chromium
+
+      - name: Serve built app for E2E tests
+        working-directory: web/wasm-prototype
+        run: npx vite preview --host 0.0.0.0 --port 3000 &
+
+      - name: Run E2E tests
+        working-directory: web/wasm-prototype
+        run: npm run test:e2e
+        env:
+          CI: true
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy dist --project-name=ifc2lbd-web --commit-dirty=true
+          workingDirectory: web/wasm-prototype

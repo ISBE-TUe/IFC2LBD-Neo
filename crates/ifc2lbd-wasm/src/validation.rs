@@ -2,13 +2,14 @@ use std::collections::{HashMap, HashSet};
 
 use crate::types::{
     ConversionRequest, ExecutionSettings, NquadsChunkingMode, NquadsModuleOptions, OutputFormats,
-    TurtleGrouping, WasmApiError,
+    TurtleGrouping, TurtleLayout, WasmApiError,
 };
 use lbd_pipeline::ActivationPlan;
 use lbd_pipeline::{
-    FILE_EXPORT_ID, IFCOWL_PRODUCER_ID, IFC_TOPOLOGY_PRODUCER_ID, LBD_PRODUCER_ID,
-    NQUADS_CHUNKED_SERIALIZER_ID, NQUADS_SERIALIZER_ID, TOPOLOGY_FULL_PRODUCER_ID,
-    TURTLE_SERIALIZER_ID,
+    BEO_PRODUCER_ID, BOT_PRODUCER_ID, FILE_EXPORT_ID, IFCOWL_PRODUCER_ID,
+    IFC_TOPOLOGY_PRODUCER_ID, NQUADS_CHUNKED_SERIALIZER_ID,
+    NQUADS_SERIALIZER_ID, OMG_FOG_PRODUCER_ID, PROPS_OPM_PRODUCER_ID,
+    TOPOLOGY_FULL_PRODUCER_ID, TURTLE_SERIALIZER_ID,
 };
 
 pub(crate) fn normalize_base_for_graph_iri(base_uri: &str) -> String {
@@ -28,10 +29,16 @@ pub(crate) fn dedupe_modules(ids: Vec<String>) -> Vec<String> {
 
 pub(crate) fn validate_activation_plan(plan: &ActivationPlan) -> Result<(), WasmApiError> {
     let active: HashSet<&str> = plan.enabled_ids.iter().map(|id| id.as_str()).collect();
-    if !active.contains(LBD_PRODUCER_ID) {
+    let has_any_producer = active.contains(BOT_PRODUCER_ID)
+        || active.contains(BEO_PRODUCER_ID)
+        || active.contains(PROPS_OPM_PRODUCER_ID)
+        || active.contains(OMG_FOG_PRODUCER_ID)
+        || active.contains(IFCOWL_PRODUCER_ID)
+        || active.contains(IFC_TOPOLOGY_PRODUCER_ID);
+    if !has_any_producer {
         return Err(WasmApiError::Message(format!(
-            "module plan must include `{}`",
-            LBD_PRODUCER_ID
+            "module plan must include at least one producer (`{}`, `{}`, `{}`, `{}`, …)",
+            BOT_PRODUCER_ID, BEO_PRODUCER_ID, PROPS_OPM_PRODUCER_ID, IFCOWL_PRODUCER_ID
         )));
     }
     if !active.contains(FILE_EXPORT_ID) {
@@ -139,20 +146,33 @@ pub(crate) fn resolve_execution_settings(
             )));
         }
     };
+    let turtle_layout = match turtle_entries
+        .and_then(|m| m.get("layout"))
+        .map(String::as_str)
+        .unwrap_or("joined")
+    {
+        "joined" => TurtleLayout::Joined,
+        "separate" => TurtleLayout::Separate,
+        other => {
+            return Err(WasmApiError::Message(format!(
+                "invalid `neo-turtle-serializer.layout={}` (expected joined|separate)",
+                other
+            )));
+        }
+    };
 
     Ok(ExecutionSettings {
         output_formats,
+        // Modular LBD producers — add new producers here as emit_<name> flags
+        emit_bot: active.contains(BOT_PRODUCER_ID),
+        emit_beo: active.contains(BEO_PRODUCER_ID),
+        emit_props_opm: active.contains(PROPS_OPM_PRODUCER_ID),
+        emit_omg_fog: active.contains(OMG_FOG_PRODUCER_ID),
         emit_ifcowl: active.contains(IFCOWL_PRODUCER_ID),
         emit_topology: active.contains(IFC_TOPOLOGY_PRODUCER_ID),
         emit_bbox: active.contains(lbd_pipeline::BBOX_ENRICHER_ID),
         emit_full_topology: active.contains(lbd_pipeline::TOPOLOGY_FULL_PRODUCER_ID),
         nquads: NquadsModuleOptions {
-            lbd_graph_iri: effective_nquads_entries
-                .and_then(|m| m.get("lbd_graph_iri"))
-                .cloned(),
-            ifcowl_graph_iri: effective_nquads_entries
-                .and_then(|m| m.get("ifcowl_graph_iri"))
-                .cloned(),
             chunking: nquads_chunking,
             chunk_size_lines,
             chunk_size_bytes,
@@ -160,6 +180,7 @@ pub(crate) fn resolve_execution_settings(
         },
         output_stem,
         turtle_grouping,
+        turtle_layout,
     })
 }
 
@@ -216,13 +237,16 @@ pub(crate) fn validate_typed_module_configs(
             NQUADS_CHUNKED_SERIALIZER_ID => validate_nquads_chunked_serializer_options(entries)?,
             TURTLE_SERIALIZER_ID => validate_turtle_serializer_options(entries)?,
             FILE_EXPORT_ID => validate_file_export_options(entries)?,
-            LBD_PRODUCER_ID
+            BOT_PRODUCER_ID
+            | BEO_PRODUCER_ID
+            | PROPS_OPM_PRODUCER_ID
+            | OMG_FOG_PRODUCER_ID
             | IFCOWL_PRODUCER_ID
             | IFC_TOPOLOGY_PRODUCER_ID
             | lbd_pipeline::BBOX_ENRICHER_ID => {
                 if !entries.is_empty() {
                     return Err(WasmApiError::Message(format!(
-                        "module `{}` does not support options in wasm phase 1",
+                        "module `{}` does not support options",
                         module_id
                     )));
                 }
@@ -251,9 +275,17 @@ pub(crate) fn validate_turtle_serializer_options(
                     )));
                 }
             }
+            "layout" => {
+                if !matches!(value.as_str(), "joined" | "separate") {
+                    return Err(WasmApiError::Message(format!(
+                        "`neo-turtle-serializer.layout` must be one of joined|separate, got `{}`",
+                        value
+                    )));
+                }
+            }
             other => {
                 return Err(WasmApiError::Message(format!(
-                    "unknown option `neo-turtle-serializer.{}` (supported: grouping)",
+                    "unknown option `neo-turtle-serializer.{}` (supported: grouping, layout)",
                     other
                 )));
             }
@@ -265,14 +297,10 @@ pub(crate) fn validate_turtle_serializer_options(
 pub(crate) fn validate_nquads_serializer_options(
     entries: &HashMap<String, String>,
 ) -> Result<(), WasmApiError> {
-    let allowed = ["lbd_graph_iri", "ifcowl_graph_iri"];
-    for (key, _value) in entries {
-        if !allowed.contains(&key.as_str()) {
-            return Err(WasmApiError::Message(format!(
-                "unsupported option `neo-nquads-serializer.{}` (chunking options are on neo-nquads-chunked-serializer)",
-                key
-            )));
-        }
+    if !entries.is_empty() {
+        return Err(WasmApiError::Message(
+            "neo-nquads-serializer has no configurable options (chunking options belong on neo-nquads-chunked-serializer)".to_string(),
+        ));
     }
     Ok(())
 }
@@ -285,8 +313,6 @@ pub(crate) fn validate_nquads_chunked_serializer_options(
         "chunk_size_lines",
         "chunk_size_bytes",
         "chunk_prefix",
-        "lbd_graph_iri",
-        "ifcowl_graph_iri",
     ];
     for (key, value) in entries {
         if !allowed.contains(&key.as_str()) {

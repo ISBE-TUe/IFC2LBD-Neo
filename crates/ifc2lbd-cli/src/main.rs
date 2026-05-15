@@ -120,8 +120,6 @@ struct Args {
 
 #[derive(Clone, Debug)]
 struct NquadsModuleOptions {
-    lbd_graph_iri: Option<String>,
-    ifcowl_graph_iri: Option<String>,
     chunking: chunk_writer::QuadChunkingMode,
     chunk_size_lines: usize,
     chunk_size_bytes: usize,
@@ -204,16 +202,8 @@ fn main() -> anyhow::Result<()> {
     let emit_ifcowl = settings.emit_ifcowl;
     let turtle_grouping = settings.turtle_grouping;
     let normalized_base = normalize_base_for_graph_iri(&args.base_uri);
-    let lbd_graph_iri = settings
-        .nquads
-        .lbd_graph_iri
-        .clone()
-        .unwrap_or_else(|| format!("{normalized_base}/lbd"));
-    let ifcowl_graph_iri = settings
-        .nquads
-        .ifcowl_graph_iri
-        .clone()
-        .unwrap_or_else(|| format!("{normalized_base}/ifcowl"));
+    let lbd_graph_iri = format!("{normalized_base}/lbd");
+    let ifcowl_graph_iri = format!("{normalized_base}/ifcowl");
 
     let parse_start = Instant::now();
     let step = parse_step_file(input_path)
@@ -959,10 +949,16 @@ fn validate_activation_plan_with_args(
             anyhow::bail!("grafeo export module cannot be combined with N-Quads chunking");
         }
     }
-    if !active.contains(lbd_pipeline::LBD_PRODUCER_ID) {
+    let has_any_producer = active.contains(lbd_pipeline::BOT_PRODUCER_ID)
+        || active.contains(lbd_pipeline::BEO_PRODUCER_ID)
+        || active.contains(lbd_pipeline::PROPS_OPM_PRODUCER_ID)
+        || active.contains(lbd_pipeline::OMG_FOG_PRODUCER_ID);
+    if !has_any_producer {
         anyhow::bail!(
-            "module plan must include `{}`",
-            lbd_pipeline::LBD_PRODUCER_ID
+            "module plan must include at least one LBD producer (`{}`, `{}`, or `{}`)",
+            lbd_pipeline::BOT_PRODUCER_ID,
+            lbd_pipeline::BEO_PRODUCER_ID,
+            lbd_pipeline::PROPS_OPM_PRODUCER_ID,
         );
     }
     let has_file_export = active.contains(lbd_pipeline::FILE_EXPORT_ID);
@@ -1017,10 +1013,6 @@ fn resolve_execution_settings(
     let chunk_prefix = string_with_default(nquads_entries, "chunk_prefix", "out");
     let chunk_min_count = parse_usize_with_default(nquads_entries, "chunk_min_count", 1usize)?;
     let chunk_core_count = parse_optional_usize(nquads_entries, "chunk_core_count")?;
-    let lbd_graph_iri = nquads_entries.and_then(|e| e.get("lbd_graph_iri")).cloned();
-    let ifcowl_graph_iri = nquads_entries
-        .and_then(|e| e.get("ifcowl_graph_iri"))
-        .cloned();
 
     let bbox = if active.contains(lbd_pipeline::BBOX_ENRICHER_ID) {
         let bbox_entries = configs.get(lbd_pipeline::BBOX_ENRICHER_ID);
@@ -1055,8 +1047,6 @@ fn resolve_execution_settings(
         emit_ifcowl: active.contains(lbd_pipeline::IFCOWL_PRODUCER_ID),
         bbox,
         nquads: NquadsModuleOptions {
-            lbd_graph_iri,
-            ifcowl_graph_iri,
             chunking,
             chunk_size_lines,
             chunk_size_bytes,
@@ -1156,10 +1146,10 @@ fn validate_nquads_serializer_module_config(
                     return Err(format!("`neo-nquads-serializer.{}` must be > 0", key));
                 }
             }
-            "chunk_prefix" | "lbd_graph_iri" | "ifcowl_graph_iri" => {}
+            "chunk_prefix" => {}
             other => {
                 return Err(format!(
-                    "unknown option `neo-nquads-serializer.{}` (supported: chunking, chunk_size_lines, chunk_size_bytes, chunk_prefix, chunk_min_count, chunk_core_count, lbd_graph_iri, ifcowl_graph_iri)",
+                    "unknown option `neo-nquads-serializer.{}` (supported: chunking, chunk_size_lines, chunk_size_bytes, chunk_prefix, chunk_min_count, chunk_core_count)",
                     other
                 ));
             }
@@ -1641,8 +1631,6 @@ mod tests {
             emit_ifcowl: false,
             bbox: None,
             nquads: NquadsModuleOptions {
-                lbd_graph_iri: None,
-                ifcowl_graph_iri: None,
                 chunking: chunk_writer::QuadChunkingMode::None,
                 chunk_size_lines: 2_000_000,
                 chunk_size_bytes: 268_435_456,
