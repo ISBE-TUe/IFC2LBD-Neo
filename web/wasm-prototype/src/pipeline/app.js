@@ -9,6 +9,7 @@ import { initSession } from "./session.js";
 import { initSidebar } from "./sidebar.js";
 import { initLogPanel, log } from "./log-panel.js";
 import { saveConfig, loadConfig } from "./config.js";
+import { showCliCommand } from "./cli-command.js";
 
 const RUNTIME_BUILD = "pipeline-v9-2026-05-13T14:00Z";
 
@@ -384,6 +385,7 @@ async function init() {
   document.querySelector("#toggle-postprocess")?.addEventListener("change", (e) => update({ showPostprocess: e.target.checked }));
   document.querySelector("#btn-load")?.addEventListener("click", loadConfig);
   document.querySelector("#btn-save")?.addEventListener("click", saveConfig);
+  document.querySelector("#btn-cli-cmd")?.addEventListener("click", showCliCommand);
   document.querySelector("#btn-run")?.addEventListener("click", runConversion);
   setupOutputDirectoryUiSupport();
 
