@@ -57,5 +57,5 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy dist --project-name=ifc2lbd-web --commit-dirty=true
+          command: pages deploy dist --project-name=ifc2lbd-neo --commit-dirty=true
           workingDirectory: web/wasm-prototype

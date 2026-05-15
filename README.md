@@ -3,7 +3,7 @@
 High-performance Rust converter from IFC STEP to LBD and IfcOWL, built around a
 module-first pipeline architecture.
 
-**Live demo:** [ifc2lbd-web.pages.dev]([ifc2lbd-web.pages.dev](https://ifc2lbd-web.pages.dev))
+**Live demo:** [ifc2lbd-neo.pages.dev]([ifc2lbd-neo.pages.dev](https://ifc2lbd-neo.pages.dev))
 
 ---
 
@@ -18,7 +18,7 @@ The project ships three artefacts:
 
 - `ifc2lbd-neo` — command-line binary (native, full feature set)
 - `ifc2lbd-wasm` — WebAssembly library for in-browser conversion
-- Web prototype — browser UI deployed at [ifc2lbd-web.pages.dev](https://ifc2lbd-web.pages.dev)
+- Web prototype — browser UI deployed at [ifc2lbd-neo.pages.dev](https://ifc2lbd-neo.pages.dev)
 
 ---
 
@@ -188,7 +188,7 @@ docker compose up --build
 
 ## Web Prototype
 
-The browser UI at [ifc2lbd-web.pages.dev](https://ifc2lbd-web.pages.dev) lets you load any IFC file, configure
+The browser UI at [ifc2lbd-neo.pages.dev](https://ifc2lbd-neo.pages.dev) lets you load any IFC file, configure
 the module pipeline, and download the converted RDF output — all processing happens
 client-side in WebAssembly with no server upload.
 
