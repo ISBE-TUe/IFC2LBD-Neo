@@ -387,6 +387,7 @@ async function init() {
   document.querySelector("#btn-save")?.addEventListener("click", saveConfig);
   document.querySelector("#btn-cli-cmd")?.addEventListener("click", showCliCommand);
   document.querySelector("#btn-run")?.addEventListener("click", runConversion);
+  initMusic();
   setupOutputDirectoryUiSupport();
 
   log("WASM ready. Pipeline dashboard v9.");
@@ -936,6 +937,38 @@ function setupOutputDirectoryUiSupport() {
   if (unsupported) unsupported.style.display = "block";
   const meta = document.querySelector("#output-dir-meta");
   if (meta) meta.textContent = "";
+}
+
+function initMusic() {
+  const btn = document.querySelector("#btn-music");
+  const slider = document.querySelector("#music-volume");
+  const widget = document.querySelector("#music-widget");
+  if (!btn || !slider || !widget) return;
+
+  const audio = new Audio("/soundtrack/lbd2neo.mp3");
+  audio.preload = "none";
+  audio.loop = true;
+  audio.volume = slider.value / 100;
+
+  let playing = false;
+
+  btn.addEventListener("click", () => {
+    if (playing) {
+      audio.pause();
+      playing = false;
+      btn.classList.remove("music-btn--on");
+      widget.classList.remove("music-widget--on");
+    } else {
+      audio.play();
+      playing = true;
+      btn.classList.add("music-btn--on");
+      widget.classList.add("music-widget--on");
+    }
+  });
+
+  slider.addEventListener("input", () => {
+    audio.volume = slider.value / 100;
+  });
 }
 
 init().catch((error) => log(`Startup: ${error instanceof Error ? error.message : String(error)}`));
