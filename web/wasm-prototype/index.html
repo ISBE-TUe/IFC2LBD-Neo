@@ -71,6 +71,7 @@
           <div class="rail-section rail-bottom">
             <button class="rail-btn" id="btn-load">Load config</button>
             <button class="rail-btn" id="btn-save">Save config</button>
+            <button class="rail-btn" id="btn-cli-cmd" title="Generate equivalent CLI command">CLI command</button>
           </div>
         </div>
 
@@ -101,6 +102,21 @@
     </div>
 
     <div id="mobile-view" style="display:none"></div>
+
+    <!-- CLI Command Modal (hidden until triggered) -->
+    <div id="cli-modal">
+      <div class="cli-modal-backdrop"></div>
+      <div class="cli-modal-box">
+        <div class="cli-modal-header">
+          <span class="cli-modal-title">CLI Command</span>
+          <button class="cli-modal-close" id="cli-modal-close">&#x2715;</button>
+        </div>
+        <pre class="cli-modal-pre" id="cli-modal-pre"></pre>
+        <div class="cli-modal-footer">
+          <button class="cli-modal-copy" id="cli-modal-copy">Copy</button>
+        </div>
+      </div>
+    </div>
 
     <script>
       const isMobile = window.innerWidth < 900;
