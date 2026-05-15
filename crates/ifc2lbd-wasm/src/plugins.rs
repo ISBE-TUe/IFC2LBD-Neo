@@ -71,13 +71,9 @@ pub(crate) fn browser_registry() -> PluginRegistry {
     registry.register_producer(OmgFogProducerPlugin).unwrap();
     // Other producers
     registry.register_producer(IfcowlProducerPlugin).unwrap();
-    registry
-        .register_producer(IfcTopologyProducerPlugin)
-        .unwrap();
-    registry.register_producer(BboxEnricherPlugin).unwrap();
-    registry
-        .register_producer(TopologyFullProducerPlugin)
-        .unwrap();
+    // IfcTopologyProducerPlugin, BboxEnricherPlugin, TopologyFullProducerPlugin are
+    // intentionally not registered here — their produce() stubs are not yet wired.
+    // See docs/plan-produce-trait-wiring.md for the implementation plan.
     // Serializers
     registry
         .register_serializer(TurtleSerializerPlugin)
