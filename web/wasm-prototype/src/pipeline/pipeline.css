@@ -126,6 +126,8 @@ body {
 .top-info {
   font-size: 10px;
   color: var(--text-dim);
+  display: flex;
+  align-items: center;
 }
 
 .top-btn {
@@ -158,6 +160,45 @@ body {
   background: var(--status-running);
   border-color: var(--status-running);
   color: #fff;
+}
+
+/* ---- Music easter egg ---- */
+.music-widget {
+  display: flex;
+  align-items: center;
+  align-self: center;
+  gap: 4px;
+  margin-right: 4px;
+}
+.music-btn {
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--text-dim);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 2px 5px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s, border-color 0.15s;
+  padding-bottom: 5px;
+}
+.music-btn:hover { color: var(--text); border-color: var(--border); }
+.music-btn--on { color: var(--accent); border-color: var(--accent); }
+.music-volume {
+  width: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: width 0.2s ease, opacity 0.2s ease;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.music-widget--on .music-volume {
+  width: 64px;
+  opacity: 1;
+  pointer-events: auto;
 }
 
 /* ---- Session Grid ---- */
