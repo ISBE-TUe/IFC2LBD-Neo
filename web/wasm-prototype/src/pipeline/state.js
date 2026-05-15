@@ -63,9 +63,18 @@ function notify(prev) {
   }
 }
 
+const SERIALIZERS = ["neo-turtle-serializer", "neo-nquads-serializer", "neo-nquads-chunked-serializer"];
+
 export function toggleModule(id) {
   const mods = new Set(state.activeModules);
-  mods.has(id) ? mods.delete(id) : mods.add(id);
+  if (mods.has(id)) {
+    mods.delete(id);
+  } else {
+    if (SERIALIZERS.includes(id)) {
+      SERIALIZERS.forEach(s => mods.delete(s));
+    }
+    mods.add(id);
+  }
   update({ activeModules: mods });
 }
 
