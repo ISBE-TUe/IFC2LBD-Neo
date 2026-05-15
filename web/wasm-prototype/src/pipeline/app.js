@@ -62,20 +62,6 @@ const TEMPLATES = [
     options: { "neo-nquads-chunked-serializer": { chunking: "lines" } },
   },
   {
-    id: "core-ifcowl-topology-turtle",
-    label: "Core+IfcOWL+Topology → Turtle",
-    desc: "Includes IfcTopology producer and grouped Turtle output",
-    modules: [...LBD_MODULES, "neo-ifcowl-producer", "neo-ifc-topology-producer", "neo-turtle-serializer", "neo-file-export"],
-    options: { "neo-turtle-serializer": { grouping: "sorted", layout: "joined" } },
-  },
-  {
-    id: "core-ifcowl-topology-bbox-turtle",
-    label: "Core+IfcOWL+Topology+Bbox → Turtle",
-    desc: "Topology plus bbox enrichment with joined Turtle output",
-    modules: [...LBD_MODULES, "neo-ifcowl-producer", "neo-ifc-topology-producer", "neo-bbox-enricher", "neo-turtle-serializer", "neo-file-export"],
-    options: { "neo-turtle-serializer": { grouping: "sorted", layout: "joined" } },
-  },
-  {
     id: "core-turtle-streaming",
     label: "Core → Turtle (Streaming)",
     desc: "Low-memory incremental Turtle writer (no grouping)",
@@ -303,7 +289,12 @@ async function init() {
   }
 
   await initWasm();
-  const modules = listModules();
+  const HIDDEN_MODULES = new Set([
+    "neo-ifc-topology-producer",
+    "neo-bbox-enricher",
+    "neo-topology-full-producer",
+  ]);
+  const modules = listModules().filter((m) => !HIDDEN_MODULES.has(m.id));
   update({ modules });
 
   const sessionArea = document.querySelector("#session-area");
@@ -412,6 +403,8 @@ async function runConversion() {
   update({ running: true });
   const runBtn = document.querySelector("#btn-run");
   if (runBtn) { runBtn.disabled = true; runBtn.textContent = "◉ RUNNING"; runBtn.classList.add("running"); }
+  const infoElReset = document.querySelector("#runtime-info");
+  if (infoElReset) infoElReset.innerHTML = "";
 
   try {
     const { activeModules, moduleOptions, baseUri, outputStem, ifcFileBytes } = getState();
