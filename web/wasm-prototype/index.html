@@ -118,22 +118,6 @@
       </div>
     </div>
 
-    <script>
-      const isMobile = window.innerWidth < 900;
-      if (isMobile) {
-        document.getElementById("pipeline-view").style.display = "none";
-        document.getElementById("mobile-view").style.display = "block";
-        const s = document.createElement("script");
-        s.type = "module";
-        s.textContent = `import './src/main.js';`;
-        document.head.appendChild(s);
-      } else {
-        document.getElementById("mobile-view").remove();
-        const s = document.createElement("script");
-        s.type = "module";
-        s.textContent = `import './src/pipeline/app.js';`;
-        document.head.appendChild(s);
-      }
-    </script>
+    <script type="module" src="/src/entry.js"></script>
   </body>
 </html>
