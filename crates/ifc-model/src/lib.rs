@@ -4,6 +4,10 @@
 //! Focuses only on conversion-relevant content (spatial and element nodes, properties, quantities, and relationship indexes for containment, aggregation, hosting, fillings, voids, and space boundaries).
 //! Acts as the shared internal model for LBD conversion, topology derivation, and geometry-backed enrichment, instead of constructing a full intermediate ifcOWL graph.
 
+// TODO IFC4: This model and its tests were developed for IFC2x3. IFC4 introduces
+// property templates, IfcProjectLibrary, new type semantics, and new geometry
+// entities that are not handled below. Extend parsing and tests for IFC4.
+
 mod guid;
 
 use std::collections::HashMap;
@@ -381,6 +385,12 @@ fn classify_entity(entity: &RawEntity) -> PartialModelBuild {
         return partial;
     }
 
+    // TODO IFC4: Add cases for IFC4 entities:
+    // - IFCPROJECTLIBRARY, IFCPROPERTYSETTEMPLATE, IFCPROPERTYTEMPLATE
+    // - IFCTYPEPRODUCT and other type decomposition entities
+    // - new geometry items (e.g., IFCTAPEREDSWEPTAREASOLID)
+    // These may require new parse_* functions and linking logic.
+
     match entity.entity_name.as_str() {
         "IFCPROPERTYSINGLEVALUE" => {
             if let Some(property) = parse_property_single_value(entity) {
@@ -615,6 +625,9 @@ fn parse_property_single_value(entity: &RawEntity) -> Option<PropertySingleValue
 /// Parse `IFCPROPERTYENUMERATEDVALUE('Name',$,(IFCLABEL('VAL1'),...),#ref)`.
 /// We extract the first selected value from the inline list (arg[2]).
 fn parse_property_enumerated_value(entity: &RawEntity) -> Option<PropertyEnumeratedValue> {
+    // TODO IFC4: IFC4 property templates and enumerations can include multiple
+    // selected values and template references (IfcPropertyTemplate). Consider
+    // preserving full list and template references rather than only the first value.
     let name = optional_string(entity.args.first())?;
     // arg[2] is the selected values list: (IFCLABEL('UNSET')) or ($) if none selected
     let first_value = entity
@@ -635,6 +648,10 @@ fn parse_property_enumerated_value(entity: &RawEntity) -> Option<PropertyEnumera
 }
 
 fn parse_property_set(entity: &RawEntity) -> Option<PropertySet> {
+    // TODO IFC4: Add parsing for IfcPropertySetTemplate and IfcPropertyTemplate.
+    // Also update RelDefinesByProperties handling to resolve templates referenced
+    // from types or project libraries.
+
     Some(PropertySet {
         id: entity.id,
         guid: required_guid(entity)?,
@@ -658,6 +675,10 @@ fn parse_physical_quantity(entity: &RawEntity) -> Option<PhysicalQuantity> {
 }
 
 fn parse_element_quantity(entity: &RawEntity) -> Option<ElementQuantity> {
+    // TODO IFC4: Capture IFC4 quantity metadata (measurement method, unit refs,
+    // and any new quantity subtypes). Consider mapping IfcQuantitySet/IfcQuantity
+    // subtype attributes explicitly.
+
     Some(ElementQuantity {
         id: entity.id,
         guid: required_guid(entity)?,
@@ -668,6 +689,10 @@ fn parse_element_quantity(entity: &RawEntity) -> Option<ElementQuantity> {
 }
 
 fn parse_rel_defines_by_properties(entity: &RawEntity) -> Option<RelDefinesByProperties> {
+    // TODO IFC4: Add parsing for IfcPropertySetTemplate and IfcPropertyTemplate.
+    // Also update RelDefinesByProperties handling to resolve templates referenced
+    // from types or project libraries.
+
     Some(RelDefinesByProperties {
         id: entity.id,
         related_objects: refs_from_list(entity.args.get(4)?),
@@ -676,6 +701,10 @@ fn parse_rel_defines_by_properties(entity: &RawEntity) -> Option<RelDefinesByPro
 }
 
 fn parse_rel_defines_by_type(entity: &RawEntity) -> Option<RelDefinesByType> {
+    // TODO IFC4: Enhance type resolution to follow IfcTypeProduct/IfcTypeObject
+    // patterns and to resolve property templates referenced from types or libraries.
+    // refs_from_value should also detect template references.
+
     Some(RelDefinesByType {
         id: entity.id,
         related_objects: refs_from_list(entity.args.get(4)?),
