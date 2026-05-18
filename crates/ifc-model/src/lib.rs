@@ -649,6 +649,10 @@ fn parse_property_enumerated_value(entity: &RawEntity) -> Option<PropertyEnumera
 
 fn parse_property_set(entity: &RawEntity) -> Option<PropertySet> {
     // TODO IFC4: Add parsing for IfcPropertySetTemplate and IfcPropertyTemplate.
+    // IfcSimplePropertyTemplate defines a reusable template for single (simple) properties or simple physical quantities in IFC
+    // — it specifies the property name, type (template type), units, allowed enumerators
+    // or expressions, and how instances should be created from that template.  So, this is not urgent, but nice to have.
+    //
     // Also update RelDefinesByProperties handling to resolve templates referenced
     // from types or project libraries.
 
