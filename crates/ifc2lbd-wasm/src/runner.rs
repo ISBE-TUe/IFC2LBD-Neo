@@ -30,10 +30,10 @@ use crate::validation::{
 use crate::DEFAULT_BASE_URI;
 use lbd_pipeline::{
     BEO_PRODUCER_ID, BOT_PRODUCER_ID, FILE_EXPORT_ID, IFCOWL_PRODUCER_ID,
-    NQUADS_CHUNKED_SERIALIZER_ID, NQUADS_SERIALIZER_ID,
+    NQUADS_CHUNKED_SERIALIZER_ID, NQUADS_SERIALIZER_ID, OMG_FOG_PRODUCER_ID,
     PipelineContext, ResourceLimits, PROPS_OPM_PRODUCER_ID, TURTLE_SERIALIZER_ID,
+    spawn_producers,
 };
-use lbd_pipeline::spawn_producers;
 
 /// Returns true if the named-graph IRI belongs to an IfcOWL (or alignment) graph.
 fn is_ifcowl_graph(iri: &str) -> bool {
@@ -69,11 +69,11 @@ fn make_pipeline_context(
 /// handled by the existing bespoke code paths that precompute geometry.
 fn active_producer_ids_from_settings(settings: &ExecutionSettings) -> Vec<String> {
     let mut ids = Vec::new();
-    if settings.emit_bot { ids.push(lbd_pipeline::BOT_PRODUCER_ID.to_string()); }
-    if settings.emit_beo { ids.push(lbd_pipeline::BEO_PRODUCER_ID.to_string()); }
-    if settings.emit_props_opm { ids.push(lbd_pipeline::PROPS_OPM_PRODUCER_ID.to_string()); }
-    if settings.emit_omg_fog { ids.push(lbd_pipeline::OMG_FOG_PRODUCER_ID.to_string()); }
-    if settings.emit_ifcowl { ids.push(lbd_pipeline::IFCOWL_PRODUCER_ID.to_string()); }
+    if settings.emit_bot { ids.push(BOT_PRODUCER_ID.to_string()); }
+    if settings.emit_beo { ids.push(BEO_PRODUCER_ID.to_string()); }
+    if settings.emit_props_opm { ids.push(PROPS_OPM_PRODUCER_ID.to_string()); }
+    if settings.emit_omg_fog { ids.push(OMG_FOG_PRODUCER_ID.to_string()); }
+    if settings.emit_ifcowl { ids.push(IFCOWL_PRODUCER_ID.to_string()); }
     ids
 }
 
@@ -281,19 +281,18 @@ impl PipelineRunner {
 
         let options = self.make_convert_options(&base_uri, mode, &settings, request);
 
-        // Emit "running" for produce stages
-        if settings.emit_ifcowl {
-            emit_stage_event(
-                sink,
-                IFCOWL_PRODUCER_ID,
-                "Produce",
-                "running",
-                0,
-                0,
-                0,
-                None,
-            )
-            .map_err(|e| WasmApiError::Serialization(e.to_string()))?;
+        // Emit "running" for all active produce stages
+        for (flag, id) in [
+            (settings.emit_bot, BOT_PRODUCER_ID),
+            (settings.emit_beo, BEO_PRODUCER_ID),
+            (settings.emit_props_opm, PROPS_OPM_PRODUCER_ID),
+            (settings.emit_omg_fog, OMG_FOG_PRODUCER_ID),
+            (settings.emit_ifcowl, IFCOWL_PRODUCER_ID),
+        ] {
+            if flag {
+                emit_stage_event(sink, id, "Produce", "running", 0, 0, 0, None)
+                    .map_err(|e| WasmApiError::Serialization(e.to_string()))?;
+            }
         }
         let sink_config = SinkConfig::from_request(request);
         let stream_batch_size = options.stream_batch_size;
@@ -975,7 +974,7 @@ fn turtle_to_sink(
                 .unwrap_or(0);
             let ms = now_ms() - t0;
             let _ = lbd_stage_tx.send(StageDoneEvent {
-                plugin_id: lbd_pipeline::OMG_FOG_PRODUCER_ID,
+                plugin_id: OMG_FOG_PRODUCER_ID,
                 stage: "Produce",
                 duration_ms: ms,
                 triple_count: triples,
@@ -1269,7 +1268,7 @@ fn turtle_to_sink_joined(
     let bot_receiver = raw_receivers.remove(BOT_PRODUCER_ID);
     let beo_receiver = raw_receivers.remove(BEO_PRODUCER_ID);
     let props_receiver = raw_receivers.remove(PROPS_OPM_PRODUCER_ID);
-    let omg_receiver = raw_receivers.remove(lbd_pipeline::OMG_FOG_PRODUCER_ID);
+    let omg_receiver = raw_receivers.remove(OMG_FOG_PRODUCER_ID);
     let ifcowl_receiver = raw_receivers.remove(IFCOWL_PRODUCER_ID);
 
     let mut writer = SinkChunkWriter::new(
@@ -1287,46 +1286,45 @@ fn turtle_to_sink_joined(
     let serialize_t0 = now_ms();
     if matches!(settings.turtle_grouping, TurtleGrouping::Sorted) {
         let mut all_triples: Vec<lbd_ontology::Triple> = Vec::new();
-        if let Some(rx) = bot_receiver {
-            let (triples, count) = collect_turtle_receiver(rx);
-            produce_triples.insert(BOT_PRODUCER_ID, count);
-            all_triples.extend(triples);
+        macro_rules! collect_and_emit {
+            ($rx_opt:expr, $id:expr) => {
+                if let Some(rx) = $rx_opt {
+                    let t0 = now_ms();
+                    let (triples, count) = collect_turtle_receiver(rx);
+                    let ms = now_ms() - t0;
+                    produce_triples.insert($id, count);
+                    produce_durations.insert($id, ms);
+                    emit_stage_event(sink, $id, "Produce", "success", ms, 0, count, None)?;
+                    all_triples.extend(triples);
+                }
+            };
         }
-        if let Some(rx) = beo_receiver {
-            let (triples, count) = collect_turtle_receiver(rx);
-            produce_triples.insert(BEO_PRODUCER_ID, count);
-            all_triples.extend(triples);
-        }
-        if let Some(rx) = props_receiver {
-            let (triples, count) = collect_turtle_receiver(rx);
-            produce_triples.insert(PROPS_OPM_PRODUCER_ID, count);
-            all_triples.extend(triples);
-        }
-        if let Some(rx) = omg_receiver {
-            let (triples, count) = collect_turtle_receiver(rx);
-            produce_triples.insert(lbd_pipeline::OMG_FOG_PRODUCER_ID, count);
-            all_triples.extend(triples);
-        }
-        if let Some(rx) = ifcowl_receiver {
-            let (triples, count) = collect_turtle_receiver(rx);
-            produce_triples.insert(IFCOWL_PRODUCER_ID, count);
-            all_triples.extend(triples);
-        }
+        collect_and_emit!(bot_receiver, BOT_PRODUCER_ID);
+        collect_and_emit!(beo_receiver, BEO_PRODUCER_ID);
+        collect_and_emit!(props_receiver, PROPS_OPM_PRODUCER_ID);
+        collect_and_emit!(omg_receiver, OMG_FOG_PRODUCER_ID);
+        collect_and_emit!(ifcowl_receiver, IFCOWL_PRODUCER_ID);
         serialize_turtle_grouped_to_writer(&all_triples, &mut writer, Some(&instance_base))?;
     } else {
-        if let Some(rx) = bot_receiver { produce_triples.insert(BOT_PRODUCER_ID, serialize_turtle_receiver_to_writer(rx, &mut writer, &options, settings.turtle_grouping, &instance_base)?); }
-        if let Some(rx) = beo_receiver { produce_triples.insert(BEO_PRODUCER_ID, serialize_turtle_receiver_to_writer(rx, &mut writer, &options, settings.turtle_grouping, &instance_base)?); }
-        if let Some(rx) = props_receiver { produce_triples.insert(PROPS_OPM_PRODUCER_ID, serialize_turtle_receiver_to_writer(rx, &mut writer, &options, settings.turtle_grouping, &instance_base)?); }
-        if let Some(rx) = omg_receiver { produce_triples.insert(lbd_pipeline::OMG_FOG_PRODUCER_ID, serialize_turtle_receiver_to_writer(rx, &mut writer, &options, settings.turtle_grouping, &instance_base)?); }
-        if let Some(rx) = ifcowl_receiver { produce_triples.insert(IFCOWL_PRODUCER_ID, serialize_turtle_receiver_to_writer(rx, &mut writer, &options, settings.turtle_grouping, &instance_base)?); }
+        macro_rules! drain_and_emit {
+            ($rx_opt:expr, $id:expr) => {
+                if let Some(rx) = $rx_opt {
+                    let t0 = now_ms();
+                    let count = serialize_turtle_receiver_to_writer(rx, &mut writer, &options, settings.turtle_grouping, &instance_base)?;
+                    let ms = now_ms() - t0;
+                    produce_triples.insert($id, count);
+                    produce_durations.insert($id, ms);
+                    emit_stage_event(sink, $id, "Produce", "success", ms, 0, count, None)?;
+                }
+            };
+        }
+        drain_and_emit!(bot_receiver, BOT_PRODUCER_ID);
+        drain_and_emit!(beo_receiver, BEO_PRODUCER_ID);
+        drain_and_emit!(props_receiver, PROPS_OPM_PRODUCER_ID);
+        drain_and_emit!(omg_receiver, OMG_FOG_PRODUCER_ID);
+        drain_and_emit!(ifcowl_receiver, IFCOWL_PRODUCER_ID);
     }
     let serialize_ms = now_ms() - serialize_t0;
-
-    while let Ok(evt) = stage_rx.try_recv() {
-        produce_durations.insert(evt.plugin_id, evt.duration_ms);
-        let triples = produce_triples.get(evt.plugin_id).copied().unwrap_or(evt.triple_count);
-        emit_stage_event(sink, evt.plugin_id, evt.stage, "success", evt.duration_ms, 0, triples, None)?;
-    }
 
     emit_stage_event(sink, FILE_EXPORT_ID, "Export", "running", 0, 0, 0, None)?;
     let export_t0 = now_ms();
@@ -1388,7 +1386,7 @@ fn turtle_to_sink_separate(
     let bot_receiver = raw_receivers.remove(BOT_PRODUCER_ID);
     let beo_receiver = raw_receivers.remove(BEO_PRODUCER_ID);
     let props_receiver = raw_receivers.remove(PROPS_OPM_PRODUCER_ID);
-    let omg_receiver = raw_receivers.remove(lbd_pipeline::OMG_FOG_PRODUCER_ID);
+    let omg_receiver = raw_receivers.remove(OMG_FOG_PRODUCER_ID);
     let ifcowl_receiver = raw_receivers.remove(IFCOWL_PRODUCER_ID);
 
     emit_stage_event(
@@ -1403,95 +1401,34 @@ fn turtle_to_sink_separate(
     )?;
     let serialize_t0 = now_ms();
 
-    if let Some(rx) = bot_receiver {
-        let (summary, triples) = serialize_turtle_receiver_to_file(
-            rx,
-            format!("{}_bot.ttl", settings.output_stem),
-            "bot",
-            sink,
-            sink_config,
-            &options,
-            settings.turtle_grouping,
-            &instance_base,
-        )?;
-        produce_triples.insert(BOT_PRODUCER_ID, triples);
-        summaries.push(summary);
+    macro_rules! drain_sep_and_emit {
+        ($rx_opt:expr, $slug:literal, $id:expr) => {
+            if let Some(rx) = $rx_opt {
+                let t0 = now_ms();
+                let (summary, triples) = serialize_turtle_receiver_to_file(
+                    rx,
+                    format!("{}_{}.ttl", settings.output_stem, $slug),
+                    $slug,
+                    sink,
+                    sink_config,
+                    &options,
+                    settings.turtle_grouping,
+                    &instance_base,
+                )?;
+                let ms = now_ms() - t0;
+                produce_triples.insert($id, triples);
+                produce_durations.insert($id, ms);
+                emit_stage_event(sink, $id, "Produce", "success", ms, 0, triples, None)?;
+                summaries.push(summary);
+            }
+        };
     }
-    if let Some(rx) = beo_receiver {
-        let (summary, triples) = serialize_turtle_receiver_to_file(
-            rx,
-            format!("{}_beo.ttl", settings.output_stem),
-            "beo",
-            sink,
-            sink_config,
-            &options,
-            settings.turtle_grouping,
-            &instance_base,
-        )?;
-        produce_triples.insert(BEO_PRODUCER_ID, triples);
-        summaries.push(summary);
-    }
-    if let Some(rx) = props_receiver {
-        let (summary, triples) = serialize_turtle_receiver_to_file(
-            rx,
-            format!("{}_props.ttl", settings.output_stem),
-            "props",
-            sink,
-            sink_config,
-            &options,
-            settings.turtle_grouping,
-            &instance_base,
-        )?;
-        produce_triples.insert(PROPS_OPM_PRODUCER_ID, triples);
-        summaries.push(summary);
-    }
-    if let Some(rx) = omg_receiver {
-        let (summary, triples) = serialize_turtle_receiver_to_file(
-            rx,
-            format!("{}_omg.ttl", settings.output_stem),
-            "omg",
-            sink,
-            sink_config,
-            &options,
-            settings.turtle_grouping,
-            &instance_base,
-        )?;
-        produce_triples.insert(lbd_pipeline::OMG_FOG_PRODUCER_ID, triples);
-        summaries.push(summary);
-    }
-    if let Some(rx) = ifcowl_receiver {
-        let (summary, triples) = serialize_turtle_receiver_to_file(
-            rx,
-            format!("{}_ifcowl.ttl", settings.output_stem),
-            "ifcowl",
-            sink,
-            sink_config,
-            &options,
-            settings.turtle_grouping,
-            &instance_base,
-        )?;
-        produce_triples.insert(IFCOWL_PRODUCER_ID, triples);
-        summaries.push(summary);
-    }
+    drain_sep_and_emit!(bot_receiver, "bot", BOT_PRODUCER_ID);
+    drain_sep_and_emit!(beo_receiver, "beo", BEO_PRODUCER_ID);
+    drain_sep_and_emit!(props_receiver, "props", PROPS_OPM_PRODUCER_ID);
+    drain_sep_and_emit!(omg_receiver, "omg", OMG_FOG_PRODUCER_ID);
+    drain_sep_and_emit!(ifcowl_receiver, "ifcowl", IFCOWL_PRODUCER_ID);
     let serialize_ms = now_ms() - serialize_t0;
-
-    while let Ok(evt) = stage_rx.try_recv() {
-        let triples = if evt.triple_count > 0 { evt.triple_count } else { 0 };
-        produce_durations.insert(evt.plugin_id, evt.duration_ms);
-        if triples > 0 || !produce_triples.contains_key(evt.plugin_id) {
-            produce_triples.insert(evt.plugin_id, triples);
-        }
-        emit_stage_event(
-            sink,
-            evt.plugin_id,
-            evt.stage,
-            "success",
-            evt.duration_ms,
-            0,
-            triples,
-            None,
-        )?;
-    }
 
     emit_stage_event(sink, FILE_EXPORT_ID, "Export", "running", 0, 0, 0, None)?;
     let export_t0 = now_ms();
@@ -1618,7 +1555,7 @@ fn nquads_to_sink(
     let bot_receiver = raw_receivers.remove(BOT_PRODUCER_ID);
     let beo_receiver = raw_receivers.remove(BEO_PRODUCER_ID);
     let props_receiver = raw_receivers.remove(PROPS_OPM_PRODUCER_ID);
-    let omg_receiver = raw_receivers.remove(lbd_pipeline::OMG_FOG_PRODUCER_ID);
+    let omg_receiver = raw_receivers.remove(OMG_FOG_PRODUCER_ID);
     let ifcowl_receiver = raw_receivers.remove(IFCOWL_PRODUCER_ID);
 
     let serializer_id = if settings.output_formats.nquads_chunked {
@@ -1634,6 +1571,7 @@ fn nquads_to_sink(
         macro_rules! drain_chunked {
             ($rx_opt:expr, $slug:literal, $producer_id:expr) => {
                 if let Some(rx) = $rx_opt {
+                    let t0 = now_ms();
                     let (file_summaries, triples) = serialize_nquads_receiver_to_chunks(
                         rx,
                         sink,
@@ -1644,7 +1582,10 @@ fn nquads_to_sink(
                         chunk_size_bytes,
                         sink_config,
                     )?;
+                    let ms = now_ms() - t0;
                     produce_triples.insert($producer_id, triples);
+                    produce_durations.insert($producer_id, ms);
+                    emit_stage_event(sink, $producer_id, "Produce", "success", ms, 0, triples, None)?;
                     summaries.extend(file_summaries);
                 }
             };
@@ -1652,22 +1593,9 @@ fn nquads_to_sink(
         drain_chunked!(bot_receiver, "bot", BOT_PRODUCER_ID);
         drain_chunked!(beo_receiver, "beo", BEO_PRODUCER_ID);
         drain_chunked!(props_receiver, "props", PROPS_OPM_PRODUCER_ID);
-        drain_chunked!(omg_receiver, "omg", lbd_pipeline::OMG_FOG_PRODUCER_ID);
+        drain_chunked!(omg_receiver, "omg", OMG_FOG_PRODUCER_ID);
         drain_chunked!(ifcowl_receiver, "ifcowl", IFCOWL_PRODUCER_ID);
         let serialize_ms = now_ms() - serialize_t0;
-
-        while let Ok(evt) = stage_rx.try_recv() {
-            let triples = if evt.triple_count > 0 {
-                evt.triple_count
-            } else {
-                produce_triples.get(evt.plugin_id).copied().unwrap_or(0)
-            };
-            produce_durations.insert(evt.plugin_id, evt.duration_ms);
-            if triples > 0 || !produce_triples.contains_key(evt.plugin_id) {
-                produce_triples.insert(evt.plugin_id, triples);
-            }
-            emit_stage_event(sink, evt.plugin_id, evt.stage, "success", evt.duration_ms, 0, triples, None)?;
-        }
 
         emit_stage_event(sink, FILE_EXPORT_ID, "Export", "running", 0, 0, 0, None)?;
         let export_t0 = now_ms();
@@ -1694,34 +1622,25 @@ fn nquads_to_sink(
         macro_rules! drain_merged {
             ($rx_opt:expr, $slug:literal, $producer_id:expr) => {
                 if let Some(rx) = $rx_opt {
+                    let t0 = now_ms();
                     let triples = serialize_nquads_receiver_to_writer(
                         rx,
                         &mut writer,
                         &format!("{}/{}", normalized_base, $slug),
                     )?;
+                    let ms = now_ms() - t0;
                     produce_triples.insert($producer_id, triples);
+                    produce_durations.insert($producer_id, ms);
+                    emit_stage_event(sink, $producer_id, "Produce", "success", ms, 0, triples, None)?;
                 }
             };
         }
         drain_merged!(bot_receiver, "bot", BOT_PRODUCER_ID);
         drain_merged!(beo_receiver, "beo", BEO_PRODUCER_ID);
         drain_merged!(props_receiver, "props", PROPS_OPM_PRODUCER_ID);
-        drain_merged!(omg_receiver, "omg", lbd_pipeline::OMG_FOG_PRODUCER_ID);
+        drain_merged!(omg_receiver, "omg", OMG_FOG_PRODUCER_ID);
         drain_merged!(ifcowl_receiver, "ifcowl", IFCOWL_PRODUCER_ID);
         let serialize_ms = now_ms() - serialize_t0;
-
-        while let Ok(evt) = stage_rx.try_recv() {
-            let triples = if evt.triple_count > 0 {
-                evt.triple_count
-            } else {
-                produce_triples.get(evt.plugin_id).copied().unwrap_or(0)
-            };
-            produce_durations.insert(evt.plugin_id, evt.duration_ms);
-            if triples > 0 || !produce_triples.contains_key(evt.plugin_id) {
-                produce_triples.insert(evt.plugin_id, triples);
-            }
-            emit_stage_event(sink, evt.plugin_id, evt.stage, "success", evt.duration_ms, 0, triples, None)?;
-        }
 
         emit_stage_event(sink, FILE_EXPORT_ID, "Export", "running", 0, 0, 0, None)?;
         let export_t0 = now_ms();
