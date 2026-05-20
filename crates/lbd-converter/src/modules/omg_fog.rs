@@ -5,7 +5,7 @@ use lbd_ontology::{omg_geometry, omg_has_geometry, rdf_type, Object, Triple};
 use crate::{
     element_resource_iri, geometry_resource_iri, normalize_base_uri, sorted_values,
     spatial_resource_iri, ConvertOptions, StreamError, MAX_STREAM_BATCH_SIZE,
-    MIN_STREAM_BATCH_SIZE, STREAM_BATCH_SIZE,
+    MIN_STREAM_BATCH_SIZE,
 };
 
 /// Emit OMG geometry-link triples for every element and spatial node.
