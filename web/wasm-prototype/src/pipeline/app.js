@@ -335,10 +335,7 @@ async function init() {
   document.querySelector("#file-input")?.addEventListener("change", (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    update({ ifcFile: file });
-    const reader = new FileReader();
-    reader.onload = () => update({ ifcFileBytes: new Uint8Array(reader.result) });
-    reader.readAsArrayBuffer(file);
+    update({ ifcFile: file, ifcFileBytes: null });
     // Update rail UI
     const btn = document.querySelector("#rail-file-btn");
     if (btn) btn.classList.add("has-file");
@@ -403,7 +400,7 @@ async function init() {
 async function runConversion() {
   const state = getState();
   if (state.running) return;
-  if (!state.ifcFileBytes) { log("No file selected."); return; }
+  if (!state.ifcFile) { log("No file selected."); return; }
 
   update({ running: true });
   const runBtn = document.querySelector("#btn-run");
@@ -412,7 +409,9 @@ async function runConversion() {
   if (infoElReset) infoElReset.innerHTML = "";
 
   try {
-    const { activeModules, moduleOptions, baseUri, outputStem, ifcFileBytes } = getState();
+    const { activeModules, moduleOptions, baseUri, outputStem, ifcFile } = getState();
+    // Read file bytes now (at run time) so large files don't block the UI on select.
+    const ifcFileBytes = new Uint8Array(await ifcFile.arrayBuffer());
     const moduleIds = [...activeModules];
     const moduleOptionsArr = [];
     for (const [pluginId, opts] of Object.entries(moduleOptions)) {
