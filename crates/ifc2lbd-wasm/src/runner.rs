@@ -103,7 +103,6 @@ struct StageDoneEvent {
 struct StageDurations {
     /// Maps plugin_id → (duration_ms, triple_count)
     by_producer: HashMap<String, (u64, u64)>,
-    bbox_produce_ms: u64,
     serialize_ms: u64,
     export_ms: u64,
 }
@@ -112,7 +111,6 @@ impl StageDurations {
     fn new() -> Self {
         Self {
             by_producer: HashMap::new(),
-            bbox_produce_ms: 0,
             serialize_ms: 0,
             export_ms: 0,
         }
@@ -120,14 +118,6 @@ impl StageDurations {
 
     fn total_triples(&self) -> u64 {
         self.by_producer.values().map(|(_, t)| t).sum()
-    }
-
-    fn producer_ms(&self, plugin_id: &str) -> u64 {
-        self.by_producer.get(plugin_id).map(|(ms, _)| *ms).unwrap_or(0)
-    }
-
-    fn producer_triples(&self, plugin_id: &str) -> u64 {
-        self.by_producer.get(plugin_id).map(|(_, t)| *t).unwrap_or(0)
     }
 }
 
@@ -984,7 +974,6 @@ fn turtle_to_sink(
     });
 
     // Triple count tracking (counted during serialization)
-    let mut lbd_triple_count: u64 = 0;
     let mut ifcowl_triple_count: u64 = 0;
 
     // --- Serialize IfcOWL (separate file) ---
@@ -1050,7 +1039,6 @@ fn turtle_to_sink(
     let serialize_t0 = now_ms();
 
     for batch in lbd_receiver {
-        lbd_triple_count += batch.len() as u64;
         if options.low_memory_mode {
             serialize_turtle_batch_raw_to_writer(&batch, &mut lbd_writer)?
         } else {
@@ -1229,8 +1217,8 @@ fn turtle_to_sink_joined(
     settings: &ExecutionSettings,
     sink: &Function,
     sink_config: &SinkConfig,
-    stage_tx: &crossbeam::channel::Sender<StageDoneEvent>,
-    stage_rx: &crossbeam::channel::Receiver<StageDoneEvent>,
+    _stage_tx: &crossbeam::channel::Sender<StageDoneEvent>,
+    _stage_rx: &crossbeam::channel::Receiver<StageDoneEvent>,
 ) -> Result<(Vec<OutputFileSummary>, usize, usize, StageDurations), lbd_serializer::SerializerError>
 {
     let chan_cap = if options.low_memory_mode { 4 } else { 16 };
@@ -1363,8 +1351,8 @@ fn turtle_to_sink_separate(
     settings: &ExecutionSettings,
     sink: &Function,
     sink_config: &SinkConfig,
-    stage_tx: &crossbeam::channel::Sender<StageDoneEvent>,
-    stage_rx: &crossbeam::channel::Receiver<StageDoneEvent>,
+    _stage_tx: &crossbeam::channel::Sender<StageDoneEvent>,
+    _stage_rx: &crossbeam::channel::Receiver<StageDoneEvent>,
 ) -> Result<(Vec<OutputFileSummary>, usize, usize, StageDurations), lbd_serializer::SerializerError>
 {
     let chan_cap = if options.low_memory_mode { 4 } else { 16 };
@@ -1526,8 +1514,8 @@ fn nquads_to_sink(
     settings: &ExecutionSettings,
     sink: &Function,
     sink_config: &SinkConfig,
-    stage_tx: &crossbeam::channel::Sender<StageDoneEvent>,
-    stage_rx: &crossbeam::channel::Receiver<StageDoneEvent>,
+    _stage_tx: &crossbeam::channel::Sender<StageDoneEvent>,
+    _stage_rx: &crossbeam::channel::Receiver<StageDoneEvent>,
     is_chunked: bool,
     chunk_mode: SinkChunkingMode,
 ) -> Result<(Vec<OutputFileSummary>, usize, usize, StageDurations), lbd_serializer::SerializerError>
