@@ -366,7 +366,7 @@ impl ProducerPlugin for IfcowlProducerPlugin {
                 "IfcowlProducerPlugin: missing StepFile in context".to_string(),
             )
         })?;
-        let model = ctx.get::<IfcModel>().ok_or_else(|| {
+        let _model = ctx.get::<IfcModel>().ok_or_else(|| {
             ProducerError::Conversion(
                 "IfcowlProducerPlugin: missing IfcModel in context".to_string(),
             )

@@ -431,7 +431,7 @@ impl<'a> SinkQuadChunkWriter<'a> {
     }
 
     fn build_manifest(&self) -> serde_json::Value {
-        use serde_json::{json, Map};
+        use serde_json::json;
         let mut files = Vec::new();
         for entry in &self.entries {
             files.push(json!({

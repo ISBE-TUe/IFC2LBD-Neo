@@ -456,7 +456,6 @@ async function runConversion() {
     const t0 = performance.now();
     resetStageStatuses();
     const result = await runSinkConversionInWorker(input, requestPayload, expectedFiles, requestedThreads);
-    const elapsedMs = performance.now() - t0;
 
     const filesWithPayload = result.renderedFiles.filter(
       (f) => Array.isArray(f?.payloadParts) && f.payloadParts.length > 0
@@ -471,6 +470,7 @@ async function runConversion() {
         if (!writable) {
           throw new Error("Output directory permission denied.");
         }
+        log(`→ neo-file-export: writing files...`);
         const { fileCount, totalBytes } = await writeRenderedFilesToDirectory(filesWithPayload, outputDirectoryHandle);
         renderDownloadsMessage(`Saved ${fileCount} file(s), ${bytesToHuman(totalBytes)}, to ${outputDirectoryName}.`);
         log(`Saved ${fileCount} file(s), ${bytesToHuman(totalBytes)}, to output directory.`);
@@ -481,6 +481,7 @@ async function runConversion() {
     } else {
       renderDownloads(filesWithPayload);
     }
+    const elapsedMs = performance.now() - t0;
     const timeStr = `${(elapsedMs / 1000).toFixed(1)}s`;
     log(`Finished in ${timeStr}.`);
 
@@ -535,13 +536,14 @@ async function writeRenderedFilesToDirectory(files, dirHandle) {
   let totalBytes = 0;
   for (const file of files) {
     if (!file?.filename || !Array.isArray(file.payloadParts)) continue;
-    const blob = new Blob(file.payloadParts, { type: file.mimeType || "application/octet-stream" });
     const fileHandle = await dirHandle.getFileHandle(file.filename, { create: true });
     const writable = await fileHandle.createWritable();
-    await writable.write(blob);
+    for (const chunk of file.payloadParts) {
+      await writable.write(chunk);
+      totalBytes += chunk.byteLength;
+    }
     await writable.close();
     fileCount += 1;
-    totalBytes += blob.size;
   }
   return { fileCount, totalBytes };
 }

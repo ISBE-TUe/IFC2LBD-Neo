@@ -1091,7 +1091,7 @@ fn aabb_disjoint(a: &Aabb, b: &Aabb) -> bool {
 
 /// Result of parry3d mesh contact analysis.
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum ContactType {
+pub(crate) enum ContactType {
     /// Meshes are penetrating (interior overlap) → IntersectingElement
     Intersecting,
     /// Meshes are touching at boundary (zero-distance) → InterfaceOf
