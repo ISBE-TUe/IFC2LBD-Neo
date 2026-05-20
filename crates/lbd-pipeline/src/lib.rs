@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use crossbeam::channel::{Receiver, Sender};
 use lbd_ontology::Triple;
@@ -488,12 +490,38 @@ impl PluginRegistry {
 // spawn_producers — generic helper for running producer plugins in parallel
 // ---------------------------------------------------------------------------
 
-/// Spawn a rayon task for each active producer plugin and return
-/// `(id, receiver)` pairs so callers can drain them into any sink.
+type ProducerQueue = Arc<Mutex<VecDeque<(Arc<dyn ProducerPlugin>, crossbeam::channel::Sender<TaggedBatch>)>>>;
+
+/// Pops the next producer from the shared queue and spawns it as a rayon task.
+/// When that producer finishes it calls itself recursively, forming a chain that
+/// drains the queue at most one producer at a time per "slot".
+fn start_next_producer(queue: ProducerQueue, ctx: Arc<PipelineContext>) {
+    let item = queue.lock().unwrap().pop_front();
+    if let Some((plugin, tx)) = item {
+        rayon::spawn(move || {
+            let _ = plugin.produce(&ctx, &tx);
+            drop(tx); // signal receiver that this producer is done
+            start_next_producer(queue, ctx);
+        });
+    }
+}
+
+/// Spawn producer plugins and return `(id, receiver)` pairs for the caller to drain.
 ///
-/// Producers that return an error (including stub `Unimplemented` ones)
-/// are silently skipped — the receiver side of their channel is simply
-/// dropped, which is the same as not spawning them.
+/// Concurrency is bounded to `max(1, (thread_count - 1) / 2)` simultaneous
+/// producers, where `thread_count = rayon::current_num_threads()`. Each
+/// producer occupies ~2 rayon threads (one for its `rayon::spawn` task and
+/// one for the `forward_as_tagged` hop inside `produce()`). Keeping at least
+/// one thread free prevents the pool from being fully occupied, which would
+/// starve the drain-side consumer and cause a deadlock.
+///
+/// Scaling examples:
+///   4 threads  →  1 concurrent producer  (typical WASM)
+///   8 threads  →  3 concurrent producers
+///  16 threads  →  7 concurrent producers
+///
+/// With many modules the remaining producers queue up and start as slots free,
+/// so throughput scales automatically without ever exhausting the pool.
 ///
 /// # Parameters
 /// * `active_ids` — module IDs to execute (only producer IDs are acted on).
@@ -506,6 +534,11 @@ pub fn spawn_producers(
     ctx: &Arc<PipelineContext>,
     chan_cap: usize,
 ) -> Vec<(String, crossbeam::channel::Receiver<TaggedBatch>)> {
+    let thread_count = rayon::current_num_threads().max(2);
+    let max_concurrent = ((thread_count - 1) / 2).max(1);
+
+    let mut queue: VecDeque<(Arc<dyn ProducerPlugin>, crossbeam::channel::Sender<TaggedBatch>)> =
+        VecDeque::new();
     let mut receivers = Vec::new();
 
     for id in active_ids {
@@ -513,22 +546,14 @@ pub fn spawn_producers(
             Some(p) => p,
             None => continue,
         };
-
         let (tx, rx) = crossbeam::channel::bounded::<TaggedBatch>(chan_cap);
-        let ctx_clone = Arc::clone(ctx);
-        let plugin_clone = plugin.clone();
-
-        rayon::spawn(move || {
-            if let Err(e) = plugin_clone.produce(&ctx_clone, &tx) {
-                // Log at warn level so callers can observe skipped producers.
-                // Stub / unimplemented producers will hit this path.
-                drop(tx); // ensure the receiver sees disconnection
-                let _ = e; // silence unused warning in no-std envs
-            }
-            // tx is dropped here on success too, signalling completion.
-        });
-
         receivers.push((id.clone(), rx));
+        queue.push_back((plugin, tx));
+    }
+
+    let shared_queue = Arc::new(Mutex::new(queue));
+    for _ in 0..max_concurrent {
+        start_next_producer(Arc::clone(&shared_queue), Arc::clone(ctx));
     }
 
     receivers
