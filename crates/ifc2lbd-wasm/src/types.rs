@@ -200,16 +200,18 @@ pub enum NquadsChunkingMode {
 #[derive(Debug, Clone)]
 pub struct ExecutionSettings {
     pub output_formats: OutputFormats,
-    // LBD sub-module activation flags
+    // LBD sub-module activation flags.
+    // These drive `active_producer_ids_from_settings()` which builds the id list
+    // passed to `spawn_producers()`. When the ActivationPlan is threaded through
+    // to the dispatch sites directly, these per-field booleans can be removed.
+    // TODO: replace with ActivationPlan.enabled_ids lookup once the plan is
+    //       propagated into all dispatch sites.
     pub emit_bot: bool,
     pub emit_beo: bool,
     pub emit_props_opm: bool,
     pub emit_omg_fog: bool,
     // Other producer flags
     pub emit_ifcowl: bool,
-    pub emit_topology: bool,
-    pub emit_full_topology: bool,
-    pub emit_bbox: bool,
     pub nquads: NquadsModuleOptions,
     pub output_stem: String,
     pub turtle_grouping: TurtleGrouping,

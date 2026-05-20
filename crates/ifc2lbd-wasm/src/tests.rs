@@ -6,8 +6,8 @@ mod tests {
     use crate::runner::{convert_ifc_impl, resolve_plan_impl};
     use crate::types::ConversionRequest;
     use lbd_pipeline::{
-        BBOX_ENRICHER_ID, FILE_EXPORT_ID, IFCOWL_PRODUCER_ID, LBD_PRODUCER_ID,
-        NQUADS_SERIALIZER_ID, IFC_TOPOLOGY_PRODUCER_ID, TOPOLOGY_FULL_PRODUCER_ID, TURTLE_SERIALIZER_ID,
+        FILE_EXPORT_ID, IFCOWL_PRODUCER_ID, LBD_PRODUCER_ID,
+        NQUADS_SERIALIZER_ID, TURTLE_SERIALIZER_ID,
     };
 
     fn tiny_ifc() -> Vec<u8> {
@@ -26,33 +26,12 @@ mod tests {
         assert!(ids.contains(TURTLE_SERIALIZER_ID));
         assert!(ids.contains(NQUADS_SERIALIZER_ID));
         assert!(ids.contains(FILE_EXPORT_ID));
-        assert!(ids.contains(IFC_TOPOLOGY_PRODUCER_ID));
-        assert!(ids.contains(BBOX_ENRICHER_ID));
-        assert!(ids.contains(TOPOLOGY_FULL_PRODUCER_ID));
     }
 
     #[test]
     fn resolve_plan_rejects_unknown_module() {
         let result = resolve_plan_impl(vec!["neo-nonexistent-module".to_string()], Vec::new());
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn resolve_plan_accepts_ifc_topology() {
-        let result = resolve_plan_impl(
-            vec![
-                IFC_TOPOLOGY_PRODUCER_ID.to_string(),
-                LBD_PRODUCER_ID.to_string(),
-                TURTLE_SERIALIZER_ID.to_string(),
-                FILE_EXPORT_ID.to_string(),
-            ],
-            Vec::new(),
-        );
-        assert!(result.is_ok());
-        assert!(result
-            .unwrap()
-            .enabled_ids
-            .contains(&IFC_TOPOLOGY_PRODUCER_ID.to_string()));
     }
 
     #[test]

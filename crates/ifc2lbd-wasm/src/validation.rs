@@ -7,9 +7,9 @@ use crate::types::{
 use lbd_pipeline::ActivationPlan;
 use lbd_pipeline::{
     BEO_PRODUCER_ID, BOT_PRODUCER_ID, FILE_EXPORT_ID, IFCOWL_PRODUCER_ID,
-    IFC_TOPOLOGY_PRODUCER_ID, NQUADS_CHUNKED_SERIALIZER_ID,
+    NQUADS_CHUNKED_SERIALIZER_ID,
     NQUADS_SERIALIZER_ID, OMG_FOG_PRODUCER_ID, PROPS_OPM_PRODUCER_ID,
-    TOPOLOGY_FULL_PRODUCER_ID, TURTLE_SERIALIZER_ID,
+    TURTLE_SERIALIZER_ID,
 };
 
 pub(crate) fn normalize_base_for_graph_iri(base_uri: &str) -> String {
@@ -33,8 +33,7 @@ pub(crate) fn validate_activation_plan(plan: &ActivationPlan) -> Result<(), Wasm
         || active.contains(BEO_PRODUCER_ID)
         || active.contains(PROPS_OPM_PRODUCER_ID)
         || active.contains(OMG_FOG_PRODUCER_ID)
-        || active.contains(IFCOWL_PRODUCER_ID)
-        || active.contains(IFC_TOPOLOGY_PRODUCER_ID);
+        || active.contains(IFCOWL_PRODUCER_ID);
     if !has_any_producer {
         return Err(WasmApiError::Message(format!(
             "module plan must include at least one producer (`{}`, `{}`, `{}`, `{}`, …)",
@@ -169,9 +168,6 @@ pub(crate) fn resolve_execution_settings(
         emit_props_opm: active.contains(PROPS_OPM_PRODUCER_ID),
         emit_omg_fog: active.contains(OMG_FOG_PRODUCER_ID),
         emit_ifcowl: active.contains(IFCOWL_PRODUCER_ID),
-        emit_topology: active.contains(IFC_TOPOLOGY_PRODUCER_ID),
-        emit_bbox: active.contains(lbd_pipeline::BBOX_ENRICHER_ID),
-        emit_full_topology: active.contains(lbd_pipeline::TOPOLOGY_FULL_PRODUCER_ID),
         nquads: NquadsModuleOptions {
             chunking: nquads_chunking,
             chunk_size_lines,
@@ -241,9 +237,7 @@ pub(crate) fn validate_typed_module_configs(
             | BEO_PRODUCER_ID
             | PROPS_OPM_PRODUCER_ID
             | OMG_FOG_PRODUCER_ID
-            | IFCOWL_PRODUCER_ID
-            | IFC_TOPOLOGY_PRODUCER_ID
-            | lbd_pipeline::BBOX_ENRICHER_ID => {
+            | IFCOWL_PRODUCER_ID => {
                 if !entries.is_empty() {
                     return Err(WasmApiError::Message(format!(
                         "module `{}` does not support options",

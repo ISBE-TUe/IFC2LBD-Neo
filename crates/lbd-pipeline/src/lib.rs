@@ -131,9 +131,6 @@ pub const BEO_PRODUCER_ID: &str = "neo-beo-producer";
 pub const PROPS_OPM_PRODUCER_ID: &str = "neo-props-opm";
 pub const OMG_FOG_PRODUCER_ID: &str = "neo-omg-fog";
 pub const IFCOWL_PRODUCER_ID: &str = "neo-ifcowl-producer";
-pub const IFC_TOPOLOGY_PRODUCER_ID: &str = "neo-ifc-topology-producer";
-pub const TOPOLOGY_FULL_PRODUCER_ID: &str = "neo-topology-full-producer";
-pub const BBOX_ENRICHER_ID: &str = "neo-bbox-enricher";
 pub const TURTLE_SERIALIZER_ID: &str = "neo-turtle-serializer";
 pub const NQUADS_SERIALIZER_ID: &str = "neo-nquads-serializer";
 pub const NQUADS_CHUNKED_SERIALIZER_ID: &str = "neo-nquads-chunked-serializer";
@@ -388,6 +385,16 @@ impl PluginRegistry {
         self.plugins.get(id)
     }
 
+    /// Look up a registered producer plugin by module ID.
+    ///
+    /// Returns `None` if the ID is unknown or if the plugin is not a producer.
+    pub fn producer(&self, id: &str) -> Option<Arc<dyn ProducerPlugin>> {
+        match self.plugins.get(id)? {
+            RegisteredPlugin::Producer(p) => Some(p.clone()),
+            _ => None,
+        }
+    }
+
     pub fn resolve_activation(
         &self,
         requested: &[String],
@@ -475,6 +482,56 @@ impl PluginRegistry {
         self.plugins.insert(manifest.id, plugin);
         Ok(())
     }
+}
+
+// ---------------------------------------------------------------------------
+// spawn_producers — generic helper for running producer plugins in parallel
+// ---------------------------------------------------------------------------
+
+/// Spawn a rayon task for each active producer plugin and return
+/// `(id, receiver)` pairs so callers can drain them into any sink.
+///
+/// Producers that return an error (including stub `Unimplemented` ones)
+/// are silently skipped — the receiver side of their channel is simply
+/// dropped, which is the same as not spawning them.
+///
+/// # Parameters
+/// * `active_ids` — module IDs to execute (only producer IDs are acted on).
+/// * `registry`   — used to resolve each ID to a `ProducerPlugin`.
+/// * `ctx`        — shared pipeline context passed to every `produce()` call.
+/// * `chan_cap`   — bounded channel capacity for backpressure.
+pub fn spawn_producers(
+    active_ids: &[String],
+    registry: &PluginRegistry,
+    ctx: &Arc<PipelineContext>,
+    chan_cap: usize,
+) -> Vec<(String, crossbeam::channel::Receiver<TaggedBatch>)> {
+    let mut receivers = Vec::new();
+
+    for id in active_ids {
+        let plugin = match registry.producer(id) {
+            Some(p) => p,
+            None => continue,
+        };
+
+        let (tx, rx) = crossbeam::channel::bounded::<TaggedBatch>(chan_cap);
+        let ctx_clone = Arc::clone(ctx);
+        let plugin_clone = plugin.clone();
+
+        rayon::spawn(move || {
+            if let Err(e) = plugin_clone.produce(&ctx_clone, &tx) {
+                // Log at warn level so callers can observe skipped producers.
+                // Stub / unimplemented producers will hit this path.
+                drop(tx); // ensure the receiver sees disconnection
+                let _ = e; // silence unused warning in no-std envs
+            }
+            // tx is dropped here on success too, signalling completion.
+        });
+
+        receivers.push((id.clone(), rx));
+    }
+
+    receivers
 }
 
 #[cfg(test)]

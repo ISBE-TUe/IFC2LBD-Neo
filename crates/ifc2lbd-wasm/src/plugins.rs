@@ -7,11 +7,11 @@ use lbd_converter::{stream_beo, stream_bot, stream_omg_fog, stream_props_opm, Co
 use lbd_ontology::Triple;
 use lbd_pipeline::{
     BatchKind, BEO_PRODUCER_ID, BOT_PRODUCER_ID, ExportError, ExportFileSummary, ExportPlugin,
-    ExportedFile, FailurePolicy, FILE_EXPORT_ID, IFCOWL_PRODUCER_ID, IFC_TOPOLOGY_PRODUCER_ID,
+    ExportedFile, FailurePolicy, FILE_EXPORT_ID, IFCOWL_PRODUCER_ID,
     NQUADS_CHUNKED_SERIALIZER_ID, NQUADS_SERIALIZER_ID, OMG_FOG_PRODUCER_ID, ParallelismMode,
     PipelineContext, PipelinePlugin, PipelineStage, PluginManifest, PluginRegistry, ProducerError,
     ProducerPlugin, PROPS_OPM_PRODUCER_ID, SerializeStats, SerializerError, SerializerPlugin,
-    TaggedBatch, TOPOLOGY_FULL_PRODUCER_ID, TURTLE_SERIALIZER_ID, BBOX_ENRICHER_ID,
+    TaggedBatch, TURTLE_SERIALIZER_ID,
 };
 use lbd_serializer::{
     serialize_nquads_batches_to_writer, serialize_turtle_batch_raw_to_writer,
@@ -53,11 +53,6 @@ pub(crate) fn module_option_keys(module_id: &str) -> Vec<String> {
         ],
         TURTLE_SERIALIZER_ID => vec!["grouping".to_string(), "layout".to_string()],
         FILE_EXPORT_ID => vec!["output_stem".to_string()],
-        BBOX_ENRICHER_ID => vec!["inflation_threshold".to_string()],
-        TOPOLOGY_FULL_PRODUCER_ID => vec![
-            "geometry_tolerance".to_string(),
-            "inflation_threshold".to_string(),
-        ],
         _ => Vec::new(),
     }
 }
@@ -71,9 +66,6 @@ pub(crate) fn browser_registry() -> PluginRegistry {
     registry.register_producer(OmgFogProducerPlugin).unwrap();
     // Other producers
     registry.register_producer(IfcowlProducerPlugin).unwrap();
-    // IfcTopologyProducerPlugin, BboxEnricherPlugin, TopologyFullProducerPlugin are
-    // intentionally not registered here — their produce() stubs are not yet wired.
-    // See docs/plan-produce-trait-wiring.md for the implementation plan.
     // Serializers
     registry
         .register_serializer(TurtleSerializerPlugin)
@@ -405,121 +397,6 @@ impl ProducerPlugin for IfcowlProducerPlugin {
             options.ifcowl_max_workers,
         )
         .map_err(|_| ProducerError::ChannelClosed)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// IfcTopology Producer
-// ---------------------------------------------------------------------------
-
-struct IfcTopologyProducerPlugin;
-
-impl PipelinePlugin for IfcTopologyProducerPlugin {
-    fn manifest(&self) -> PluginManifest {
-        PluginManifest {
-            id: IFC_TOPOLOGY_PRODUCER_ID,
-            display_name: "IfcTopology",
-            stage: PipelineStage::Produce,
-            description:
-                "Generates BOT topology triples from IFC spatial and element relationships.",
-            inputs: vec!["ifc-model"],
-            outputs: vec!["topology-triples"],
-            requires: vec![],
-            conflicts_with: vec![],
-            failure_policy: FailurePolicy::Optional,
-            parallelism: ParallelismMode::ParallelByPartition,
-            wasm_compatible: true,
-            named_graph_slug: Some("topology"),
-        }
-    }
-}
-
-impl ProducerPlugin for IfcTopologyProducerPlugin {
-    fn produce(
-        &self,
-        _ctx: &PipelineContext,
-        _sender: &Sender<TaggedBatch>,
-    ) -> Result<(), ProducerError> {
-        Err(ProducerError::Conversion(
-            "IfcTopologyProducerPlugin::produce() not yet wired through PipelineRunner in WASM"
-                .to_string(),
-        ))
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Bbox Enricher
-// ---------------------------------------------------------------------------
-
-struct BboxEnricherPlugin;
-
-impl PipelinePlugin for BboxEnricherPlugin {
-    fn manifest(&self) -> PluginManifest {
-        PluginManifest {
-            id: BBOX_ENRICHER_ID,
-            display_name: "Bbox",
-            stage: PipelineStage::Produce,
-            description: "Adds bounding-box geometry triples (GeoSPARQL WKT) to LBD output.",
-            inputs: vec!["ifc-model", "step-file"],
-            outputs: vec!["bbox-geometry"],
-            requires: vec![BOT_PRODUCER_ID],
-            conflicts_with: vec![],
-            failure_policy: FailurePolicy::Optional,
-            parallelism: ParallelismMode::ParallelByPartition,
-            wasm_compatible: true,
-            named_graph_slug: None,
-        }
-    }
-}
-
-impl ProducerPlugin for BboxEnricherPlugin {
-    fn produce(
-        &self,
-        _ctx: &PipelineContext,
-        _sender: &Sender<TaggedBatch>,
-    ) -> Result<(), ProducerError> {
-        Err(ProducerError::Conversion(
-            "BboxEnricherPlugin::produce() not yet wired through PipelineRunner in WASM"
-                .to_string(),
-        ))
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Topology Full
-// ---------------------------------------------------------------------------
-
-struct TopologyFullProducerPlugin;
-
-impl PipelinePlugin for TopologyFullProducerPlugin {
-    fn manifest(&self) -> PluginManifest {
-        PluginManifest {
-            id: TOPOLOGY_FULL_PRODUCER_ID,
-            display_name: "TopologyFull",
-            stage: PipelineStage::Produce,
-            description: "Full topology with bbox-derived adjacency and intersection detection.",
-            inputs: vec!["ifc-model", "step-file"],
-            outputs: vec!["topology-triples", "adjacency-relations"],
-            requires: vec![],
-            conflicts_with: vec![IFC_TOPOLOGY_PRODUCER_ID],
-            failure_policy: FailurePolicy::Optional,
-            parallelism: ParallelismMode::ParallelByPartition,
-            wasm_compatible: true,
-            named_graph_slug: Some("topology"),
-        }
-    }
-}
-
-impl ProducerPlugin for TopologyFullProducerPlugin {
-    fn produce(
-        &self,
-        _ctx: &PipelineContext,
-        _sender: &Sender<TaggedBatch>,
-    ) -> Result<(), ProducerError> {
-        Err(ProducerError::Conversion(
-            "TopologyFullProducerPlugin::produce() not yet wired through PipelineRunner in WASM"
-                .to_string(),
-        ))
     }
 }
 
