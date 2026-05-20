@@ -5,7 +5,7 @@ use lbd_ontology::{bot_element, bot_has_building, bot_has_site, bot_has_space, b
 
 use crate::{
     element_resource_iri, normalize_base_uri, sorted_values, spatial_class, spatial_resource_iri,
-    ConvertOptions, StreamError, STREAM_BATCH_SIZE, MIN_STREAM_BATCH_SIZE, MAX_STREAM_BATCH_SIZE,
+    ConvertOptions, StreamError, MIN_STREAM_BATCH_SIZE, MAX_STREAM_BATCH_SIZE,
 };
 
 /// Emit BOT spatial-node types, spatial-hierarchy predicates and `bot:Element` typing.

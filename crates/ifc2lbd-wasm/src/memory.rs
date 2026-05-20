@@ -1,4 +1,4 @@
-use crate::types::{ConversionRequest, ExecutionMode, ExecutionSettings, OutputFormats};
+use crate::types::{ConversionRequest, ExecutionMode, ExecutionSettings};
 
 pub(crate) fn execution_mode_str(mode: ExecutionMode) -> &'static str {
     match mode {

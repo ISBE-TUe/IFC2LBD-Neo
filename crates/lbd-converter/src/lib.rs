@@ -55,7 +55,9 @@ use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use rio_api::model::{NamedNode, Subject, Term};
 use rio_api::parser::TriplesParser;
 use rio_turtle::TurtleParser;
+#[cfg(not(target_arch = "wasm32"))]
 use time::format_description::well_known::Rfc3339;
+#[cfg(not(target_arch = "wasm32"))]
 use time::OffsetDateTime;
 
 #[derive(Debug, Clone)]
@@ -1241,10 +1243,6 @@ impl<'a> IfcOwlEmitter<'a> {
 
     fn finish(self) -> Vec<Triple> {
         self.triples
-    }
-
-    fn pending_len(&self) -> usize {
-        self.triples.len()
     }
 
     fn take_triples(&mut self) -> Vec<Triple> {

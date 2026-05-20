@@ -1303,8 +1303,22 @@ fn turtle_to_sink_joined(
         collect_and_emit!(beo_receiver, BEO_PRODUCER_ID);
         collect_and_emit!(props_receiver, PROPS_OPM_PRODUCER_ID);
         collect_and_emit!(omg_receiver, OMG_FOG_PRODUCER_ID);
-        collect_and_emit!(ifcowl_receiver, IFCOWL_PRODUCER_ID);
+        // Write sorted LBD triples first (BOT/BEO/PROPS/OMG — bounded in size).
         serialize_turtle_grouped_to_writer(&all_triples, &mut writer, Some(&instance_base))?;
+        drop(all_triples);
+        // Stream IfcOWL batch-by-batch to avoid collecting potentially GBs into memory.
+        if let Some(rx) = ifcowl_receiver {
+            let t0 = now_ms();
+            let mut count: u64 = 0;
+            for batch in rx {
+                count += batch.len() as u64;
+                serialize_turtle_batch_raw_to_writer(&batch, &mut writer)?;
+            }
+            let ms = now_ms() - t0;
+            produce_triples.insert(IFCOWL_PRODUCER_ID, count);
+            produce_durations.insert(IFCOWL_PRODUCER_ID, ms);
+            emit_stage_event(sink, IFCOWL_PRODUCER_ID, "Produce", "success", ms, 0, count, None)?;
+        }
     } else {
         macro_rules! drain_and_emit {
             ($rx_opt:expr, $id:expr) => {

@@ -4,7 +4,7 @@ use lbd_ontology::Triple;
 
 use crate::{
     emit_props_opm_inner, normalize_base_uri, ConvertOptions, StreamError,
-    STREAM_BATCH_SIZE, MIN_STREAM_BATCH_SIZE, MAX_STREAM_BATCH_SIZE,
+    MIN_STREAM_BATCH_SIZE, MAX_STREAM_BATCH_SIZE,
 };
 
 /// Stream OPM property sets, quantity sets and standard-attribute triples in bounded batches.

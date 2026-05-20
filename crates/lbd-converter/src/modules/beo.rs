@@ -5,7 +5,7 @@ use lbd_ontology::{rdf_type, Object, Triple};
 
 use crate::{
     element_resource_iri, lbd_product_class_iri, normalize_base_uri, sorted_values,
-    ConvertOptions, StreamError, STREAM_BATCH_SIZE, MIN_STREAM_BATCH_SIZE, MAX_STREAM_BATCH_SIZE,
+    ConvertOptions, StreamError, MIN_STREAM_BATCH_SIZE, MAX_STREAM_BATCH_SIZE,
 };
 
 /// Emit BEO / FURN product-class `rdf:type` triples for IFC elements.
