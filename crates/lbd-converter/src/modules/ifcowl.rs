@@ -35,7 +35,7 @@ pub fn stream_ifcowl(
     base: &str,
     schema: StepSchema,
     sender: &Sender<Vec<Triple>>,
-    stream_batch_size: usize,
+    _stream_batch_size: usize,
     max_workers_override: usize,
 ) -> Result<(), StreamError> {
     let mut ids: Vec<_> = step.entities.keys().copied().collect();
@@ -66,17 +66,13 @@ pub fn stream_ifcowl(
         for id in ids {
             let entity = &step.entities[&id];
             emitter.emit_entity(id, entity);
-            if emitter.pending_len() >= stream_batch_size {
-                sender
-                    .send(emitter.take_triples())
-                    .map_err(|_| StreamError::ChannelClosed)?;
+            // Flush after every entity so that large geometry entities
+            // (e.g. IfcCartesianPointList3D with 100k+ coordinates) cannot
+            // accumulate hundreds of MB of triples before the first send.
+            let batch = emitter.take_triples();
+            if !batch.is_empty() {
+                sender.send(batch).map_err(|_| StreamError::ChannelClosed)?;
             }
-        }
-        let remaining = emitter.take_triples();
-        if !remaining.is_empty() {
-            sender
-                .send(remaining)
-                .map_err(|_| StreamError::ChannelClosed)?;
         }
         return Ok(());
     }
@@ -108,17 +104,14 @@ pub fn stream_ifcowl(
                     for id in chunk {
                         let entity = &step_ref.entities[id];
                         emitter.emit_entity(*id, entity);
-                        if emitter.pending_len() >= stream_batch_size {
+                        // Flush after every entity so that large geometry entities
+                        // cannot accumulate hundreds of MB before the first send.
+                        let batch = emitter.take_triples();
+                        if !batch.is_empty() {
                             out_sender
-                                .send(emitter.take_triples())
+                                .send(batch)
                                 .map_err(|_| StreamError::ChannelClosed)?;
                         }
-                    }
-                    let remaining = emitter.take_triples();
-                    if !remaining.is_empty() {
-                        out_sender
-                            .send(remaining)
-                            .map_err(|_| StreamError::ChannelClosed)?;
                     }
                     Ok(())
                 })();
