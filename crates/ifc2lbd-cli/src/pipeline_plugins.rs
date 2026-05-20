@@ -2,15 +2,41 @@ use std::io::Write;
 use std::thread;
 
 use anyhow::Context;
-use crossbeam::channel::Receiver;
+use crossbeam::channel::{Receiver, Sender};
+use ifc_model::IfcModel;
+use ifc_step::StepFile;
+use lbd_converter::{stream_beo, stream_bot, stream_omg_fog, stream_props_opm, ConvertOptions};
+use lbd_ontology::Triple;
 use lbd_pipeline::{
-    ExportPlugin, FailurePolicy, ParallelismMode, PipelinePlugin, PipelineStage, PluginManifest,
-    PluginRegistry, ProducerPlugin, SerializerPlugin, BBOX_ENRICHER_ID, BEO_PRODUCER_ID,
-    BOT_PRODUCER_ID, FILE_EXPORT_ID, GRAFEO_EXPORT_ID, IFCOWL_PRODUCER_ID,
-    IFC_TOPOLOGY_PRODUCER_ID, NQUADS_SERIALIZER_ID,
-    OMG_FOG_PRODUCER_ID, PROPS_OPM_PRODUCER_ID, STDOUT_EXPORT_ID, TOPOLOGY_FULL_PRODUCER_ID,
+    BatchKind, ExportPlugin, FailurePolicy, ParallelismMode, PipelineContext, PipelinePlugin,
+    PipelineStage, PluginManifest, PluginRegistry, ProducerError, ProducerPlugin, SerializerPlugin,
+    TaggedBatch, BEO_PRODUCER_ID, BOT_PRODUCER_ID, FILE_EXPORT_ID,
+    GRAFEO_EXPORT_ID, IFCOWL_PRODUCER_ID, NQUADS_SERIALIZER_ID,
+    OMG_FOG_PRODUCER_ID, PROPS_OPM_PRODUCER_ID, STDOUT_EXPORT_ID,
     TURTLE_SERIALIZER_ID,
 };
+
+// ---------------------------------------------------------------------------
+// Helpers shared by producer implementations
+// ---------------------------------------------------------------------------
+
+/// Spawn a rayon task that forwards raw-triple batches as tagged batches.
+fn forward_as_tagged(
+    raw_receiver: crossbeam::channel::Receiver<Vec<Triple>>,
+    kind: BatchKind,
+    tagged_sender: Sender<TaggedBatch>,
+) {
+    rayon::spawn(move || {
+        for batch in raw_receiver {
+            if tagged_sender
+                .send(TaggedBatch { kind: kind.clone(), triples: batch })
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+}
 use serde::{Deserialize, Serialize};
 
 pub fn built_in_registry() -> PluginRegistry {
@@ -20,13 +46,6 @@ pub fn built_in_registry() -> PluginRegistry {
     registry.register_producer(PropsOpmProducerPlugin).unwrap();
     registry.register_producer(OmgFogProducerPlugin).unwrap();
     registry.register_producer(IfcowlProducerPlugin).unwrap();
-    registry
-        .register_producer(IfcTopologyProducerPlugin)
-        .unwrap();
-    registry
-        .register_producer(TopologyFullProducerPlugin)
-        .unwrap();
-    registry.register_producer(BboxEnricherPlugin).unwrap();
     registry
         .register_serializer(TurtleSerializerPlugin)
         .unwrap();
@@ -44,9 +63,6 @@ struct BeoProducerPlugin;
 struct PropsOpmProducerPlugin;
 struct OmgFogProducerPlugin;
 struct IfcowlProducerPlugin;
-struct IfcTopologyProducerPlugin;
-struct TopologyFullProducerPlugin;
-struct BboxEnricherPlugin;
 struct TurtleSerializerPlugin;
 struct NquadsSerializerPlugin;
 struct FileExportPlugin;
@@ -75,105 +91,33 @@ impl PipelinePlugin for IfcowlProducerPlugin {
 impl ProducerPlugin for IfcowlProducerPlugin {
     fn produce(
         &self,
-        _ctx: &lbd_pipeline::PipelineContext,
-        _sender: &crossbeam::channel::Sender<lbd_pipeline::TaggedBatch>,
-    ) -> Result<(), lbd_pipeline::ProducerError> {
-        Err(lbd_pipeline::ProducerError::Conversion(format!(
-            "produce not yet via PipelineRunner"
-        )))
-    }
-}
-
-impl PipelinePlugin for IfcTopologyProducerPlugin {
-    fn manifest(&self) -> PluginManifest {
-        PluginManifest {
-            id: IFC_TOPOLOGY_PRODUCER_ID,
-            display_name: "Built-in topology producer (light)",
-            stage: PipelineStage::Produce,
-            description: "Generates BOT topology triples from IFC relationship evidence.",
-            inputs: vec!["ifc-model"],
-            outputs: vec!["topology-triples"],
-            requires: vec![],
-            conflicts_with: vec![TOPOLOGY_FULL_PRODUCER_ID],
-            failure_policy: FailurePolicy::Optional,
-            parallelism: ParallelismMode::ParallelByPartition,
-            wasm_compatible: true,
-            named_graph_slug: None,
-        }
-    }
-}
-
-impl ProducerPlugin for IfcTopologyProducerPlugin {
-    fn produce(
-        &self,
-        _ctx: &lbd_pipeline::PipelineContext,
-        _sender: &crossbeam::channel::Sender<lbd_pipeline::TaggedBatch>,
-    ) -> Result<(), lbd_pipeline::ProducerError> {
-        Err(lbd_pipeline::ProducerError::Conversion(format!(
-            "produce not yet via PipelineRunner"
-        )))
-    }
-}
-
-impl PipelinePlugin for TopologyFullProducerPlugin {
-    fn manifest(&self) -> PluginManifest {
-        PluginManifest {
-            id: TOPOLOGY_FULL_PRODUCER_ID,
-            display_name: "Built-in topology producer (full OCC)",
-            stage: PipelineStage::Produce,
-            description: "Generates BOT topology triples using staged geometric refinement with OCC exact checks.",
-            inputs: vec!["ifc-model", "step-file", "geometry-relations"],
-            outputs: vec!["topology-triples"],
-            requires: vec![],
-            conflicts_with: vec![IFC_TOPOLOGY_PRODUCER_ID],
-            failure_policy: FailurePolicy::Optional,
-            parallelism: ParallelismMode::ParallelByPartition,
-            wasm_compatible: false,
-            named_graph_slug: None,
-        }
-    }
-}
-
-impl ProducerPlugin for TopologyFullProducerPlugin {
-    fn produce(
-        &self,
-        _ctx: &lbd_pipeline::PipelineContext,
-        _sender: &crossbeam::channel::Sender<lbd_pipeline::TaggedBatch>,
-    ) -> Result<(), lbd_pipeline::ProducerError> {
-        Err(lbd_pipeline::ProducerError::Conversion(format!(
-            "produce not yet via PipelineRunner"
-        )))
-    }
-}
-
-impl PipelinePlugin for BboxEnricherPlugin {
-    fn manifest(&self) -> PluginManifest {
-        PluginManifest {
-            id: BBOX_ENRICHER_ID,
-            display_name: "Neo bbox enricher",
-            stage: PipelineStage::Produce,
-            description: "Adds bbox geometry enrichment data for LBD output.",
-            inputs: vec!["ifc-model", "step-file"],
-            outputs: vec!["bbox-geometry"],
-            requires: vec![BOT_PRODUCER_ID],
-            conflicts_with: vec![],
-            failure_policy: FailurePolicy::Optional,
-            parallelism: ParallelismMode::ParallelByPartition,
-            wasm_compatible: true,
-            named_graph_slug: None,
-        }
-    }
-}
-
-impl ProducerPlugin for BboxEnricherPlugin {
-    fn produce(
-        &self,
-        _ctx: &lbd_pipeline::PipelineContext,
-        _sender: &crossbeam::channel::Sender<lbd_pipeline::TaggedBatch>,
-    ) -> Result<(), lbd_pipeline::ProducerError> {
-        Err(lbd_pipeline::ProducerError::Conversion(format!(
-            "produce not yet via PipelineRunner"
-        )))
+        ctx: &PipelineContext,
+        sender: &Sender<TaggedBatch>,
+    ) -> Result<(), ProducerError> {
+        let step = ctx.get::<StepFile>().ok_or_else(|| {
+            ProducerError::Conversion(
+                "IfcowlProducerPlugin: missing StepFile in context".to_string(),
+            )
+        })?;
+        let options = ctx.get::<ConvertOptions>().ok_or_else(|| {
+            ProducerError::Conversion(
+                "IfcowlProducerPlugin: missing ConvertOptions in context".to_string(),
+            )
+        })?;
+        let (ifcowl_sender, ifcowl_receiver) =
+            crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
+        let graph_iri =
+            BatchKind::new(format!("{}ifcowl", options.base_uri.trim_end_matches('/')));
+        forward_as_tagged(ifcowl_receiver, graph_iri, sender.clone());
+        lbd_converter::modules::ifcowl::stream_ifcowl(
+            &step,
+            &lbd_converter::normalize_base_uri(&options.base_uri),
+            step.header.schema,
+            &ifcowl_sender,
+            options.stream_batch_size,
+            options.ifcowl_max_workers,
+        )
+        .map_err(|_| ProducerError::ChannelClosed)
     }
 }
 
@@ -356,12 +300,24 @@ impl PipelinePlugin for BotProducerPlugin {
 impl ProducerPlugin for BotProducerPlugin {
     fn produce(
         &self,
-        _ctx: &lbd_pipeline::PipelineContext,
-        _sender: &crossbeam::channel::Sender<lbd_pipeline::TaggedBatch>,
-    ) -> Result<(), lbd_pipeline::ProducerError> {
-        Err(lbd_pipeline::ProducerError::Conversion(
-            "produce not yet via PipelineRunner".to_string(),
-        ))
+        ctx: &PipelineContext,
+        sender: &Sender<TaggedBatch>,
+    ) -> Result<(), ProducerError> {
+        let model = ctx.get::<IfcModel>().ok_or_else(|| {
+            ProducerError::Conversion("BotProducerPlugin: missing IfcModel in context".to_string())
+        })?;
+        let options = ctx.get::<ConvertOptions>().ok_or_else(|| {
+            ProducerError::Conversion(
+                "BotProducerPlugin: missing ConvertOptions in context".to_string(),
+            )
+        })?;
+        let (raw_sender, raw_receiver) =
+            crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
+        let graph_iri = BatchKind::new(format!("{}bot", options.base_uri.trim_end_matches('/')));
+        forward_as_tagged(raw_receiver, graph_iri, sender.clone());
+        stream_bot(&model, &options, &raw_sender)
+            .map(|_| ())
+            .map_err(|_| ProducerError::ChannelClosed)
     }
 }
 
@@ -387,12 +343,24 @@ impl PipelinePlugin for BeoProducerPlugin {
 impl ProducerPlugin for BeoProducerPlugin {
     fn produce(
         &self,
-        _ctx: &lbd_pipeline::PipelineContext,
-        _sender: &crossbeam::channel::Sender<lbd_pipeline::TaggedBatch>,
-    ) -> Result<(), lbd_pipeline::ProducerError> {
-        Err(lbd_pipeline::ProducerError::Conversion(
-            "produce not yet via PipelineRunner".to_string(),
-        ))
+        ctx: &PipelineContext,
+        sender: &Sender<TaggedBatch>,
+    ) -> Result<(), ProducerError> {
+        let model = ctx.get::<IfcModel>().ok_or_else(|| {
+            ProducerError::Conversion("BeoProducerPlugin: missing IfcModel in context".to_string())
+        })?;
+        let options = ctx.get::<ConvertOptions>().ok_or_else(|| {
+            ProducerError::Conversion(
+                "BeoProducerPlugin: missing ConvertOptions in context".to_string(),
+            )
+        })?;
+        let (raw_sender, raw_receiver) =
+            crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
+        let graph_iri = BatchKind::new(format!("{}beo", options.base_uri.trim_end_matches('/')));
+        forward_as_tagged(raw_receiver, graph_iri, sender.clone());
+        stream_beo(&model, &options, &raw_sender)
+            .map(|_| ())
+            .map_err(|_| ProducerError::ChannelClosed)
     }
 }
 
@@ -418,12 +386,26 @@ impl PipelinePlugin for PropsOpmProducerPlugin {
 impl ProducerPlugin for PropsOpmProducerPlugin {
     fn produce(
         &self,
-        _ctx: &lbd_pipeline::PipelineContext,
-        _sender: &crossbeam::channel::Sender<lbd_pipeline::TaggedBatch>,
-    ) -> Result<(), lbd_pipeline::ProducerError> {
-        Err(lbd_pipeline::ProducerError::Conversion(
-            "produce not yet via PipelineRunner".to_string(),
-        ))
+        ctx: &PipelineContext,
+        sender: &Sender<TaggedBatch>,
+    ) -> Result<(), ProducerError> {
+        let model = ctx.get::<IfcModel>().ok_or_else(|| {
+            ProducerError::Conversion(
+                "PropsOpmProducerPlugin: missing IfcModel in context".to_string(),
+            )
+        })?;
+        let options = ctx.get::<ConvertOptions>().ok_or_else(|| {
+            ProducerError::Conversion(
+                "PropsOpmProducerPlugin: missing ConvertOptions in context".to_string(),
+            )
+        })?;
+        let (raw_sender, raw_receiver) =
+            crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
+        let graph_iri = BatchKind::new(format!("{}props", options.base_uri.trim_end_matches('/')));
+        forward_as_tagged(raw_receiver, graph_iri, sender.clone());
+        stream_props_opm(&model, &options, &raw_sender)
+            .map(|_| ())
+            .map_err(|_| ProducerError::ChannelClosed)
     }
 }
 
@@ -449,12 +431,26 @@ impl PipelinePlugin for OmgFogProducerPlugin {
 impl ProducerPlugin for OmgFogProducerPlugin {
     fn produce(
         &self,
-        _ctx: &lbd_pipeline::PipelineContext,
-        _sender: &crossbeam::channel::Sender<lbd_pipeline::TaggedBatch>,
-    ) -> Result<(), lbd_pipeline::ProducerError> {
-        Err(lbd_pipeline::ProducerError::Conversion(
-            "produce not yet via PipelineRunner".to_string(),
-        ))
+        ctx: &PipelineContext,
+        sender: &Sender<TaggedBatch>,
+    ) -> Result<(), ProducerError> {
+        let model = ctx.get::<IfcModel>().ok_or_else(|| {
+            ProducerError::Conversion(
+                "OmgFogProducerPlugin: missing IfcModel in context".to_string(),
+            )
+        })?;
+        let options = ctx.get::<ConvertOptions>().ok_or_else(|| {
+            ProducerError::Conversion(
+                "OmgFogProducerPlugin: missing ConvertOptions in context".to_string(),
+            )
+        })?;
+        let (raw_sender, raw_receiver) =
+            crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
+        let graph_iri = BatchKind::new(format!("{}omg", options.base_uri.trim_end_matches('/')));
+        forward_as_tagged(raw_receiver, graph_iri, sender.clone());
+        stream_omg_fog(&model, &options, &raw_sender)
+            .map(|_| ())
+            .map_err(|_| ProducerError::ChannelClosed)
     }
 }
 
@@ -600,7 +596,7 @@ mod tests {
         let registry = built_in_registry();
         assert_eq!(
             registry.manifests_for_stage(PipelineStage::Produce).len(),
-            8
+            5
         );
         assert_eq!(
             registry.manifests_for_stage(PipelineStage::Serialize).len(),

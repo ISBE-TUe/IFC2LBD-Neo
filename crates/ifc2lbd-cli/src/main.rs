@@ -33,7 +33,6 @@ mod kernel;
 mod mesh;
 mod pipeline_plugins;
 mod producer_plugins;
-mod topology_plugin;
 mod transform;
 mod voxel;
 
@@ -46,7 +45,6 @@ const MAX_CORE_CHUNK_BYTES: u64 = 512 * 1024 * 1024;
 const IFC_TO_NQ_ESTIMATE_MULTIPLIER: u64 = 32;
 const IFCOWL_TO_NQ_ESTIMATE_MULTIPLIER: u64 = 28;
 const LBD_TO_NQ_ESTIMATE_MULTIPLIER: u64 = 2;
-const TOPOLOGY_FULL_TO_NQ_ESTIMATE_MULTIPLIER: u64 = 1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 enum OutputFormat {
@@ -129,16 +127,9 @@ struct NquadsModuleOptions {
 }
 
 #[derive(Clone, Debug)]
-struct BboxModuleOptions {
-    inflation_threshold: f64,
-    report_path: Option<PathBuf>,
-}
-
-#[derive(Clone, Debug)]
 struct ExecutionSettings {
     output_format: OutputFormat,
     emit_ifcowl: bool,
-    bbox: Option<BboxModuleOptions>,
     nquads: NquadsModuleOptions,
     turtle_grouping: TurtleGrouping,
 }
@@ -219,96 +210,18 @@ fn main() -> anyhow::Result<()> {
         build_start.elapsed().as_secs_f64()
     );
 
-    let active_topology_plugin_ids: Vec<String> = activation_plan
-        .enabled_ids
-        .iter()
-        .filter_map(|id| {
-            built_in_registry
-                .plugin(id)
-                .map(|plugin| (id, plugin.manifest()))
-        })
-        .filter(|(_, manifest)| {
-            manifest.stage == lbd_pipeline::PipelineStage::Produce
-                && manifest
-                    .outputs
-                    .iter()
-                    .any(|output| *output == "topology-triples")
-        })
-        .map(|(id, _)| id.clone())
-        .collect();
-    let topology_enabled = !active_topology_plugin_ids.is_empty();
-    let derive_adjacency = active_topology_plugin_ids
-        .iter()
-        .any(|id| topology_plugin::plugin_requires_geometry_relations(id));
     let topology_graph_iri = format!("{normalized_base}/topology");
-
-    let mut geometry_bounding_boxes: Option<Arc<HashMap<EntityId, BoundingBox>>> = None;
-    let mut geometry_wkts: Option<Arc<HashMap<EntityId, String>>> = None;
-    if settings.bbox.is_some() {
-        let bbox_settings = settings
-            .bbox
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("missing bbox module settings"))?;
-        let bbox_start = Instant::now();
-        let (mesh_bboxes, mesh_wkts, bbox_report) = bbox::collect_mesh_bounding_boxes_hybrid(
-            &step,
-            model.elements.keys().copied().collect(),
-            bbox_settings.inflation_threshold,
-        );
-        tracing::info!(
-            "bbox extraction produced {} bboxes in {:.3}s (exact escalations: {} / {}, avg inflation fast/final: {:.3}/{:.3}, max fast/final: {:.3}/{:.3})",
-            mesh_bboxes.len(),
-            bbox_start.elapsed().as_secs_f64(),
-            bbox_report.escalated_exact_count,
-            bbox_report.elements_with_mesh,
-            bbox_report.avg_inflation_fast,
-            bbox_report.avg_inflation_final,
-            bbox_report.max_inflation_fast,
-            bbox_report.max_inflation_final,
-        );
-        if let Some(path) = bbox_settings.report_path.as_ref() {
-            let report_json = serde_json::to_string_pretty(&bbox_report)
-                .context("failed to serialize bbox report JSON")?;
-            std::fs::write(path, report_json)
-                .with_context(|| format!("failed to write bbox report {}", path.display()))?;
-        }
-        geometry_bounding_boxes = Some(bbox::arc_bounding_boxes_from_raw(mesh_bboxes));
-        geometry_wkts = Some(Arc::new(mesh_wkts));
-    }
-
-    let producer_plan =
-        build_producer_execution_plan(output_format, active_topology_plugin_ids.len());
-    if active_topology_plugin_ids.len() > 1 && !producer_plan.parallel_topology_plugin {
-        anyhow::bail!(
-            "multiple topology producer modules require `--output-format nquads` so they can run in parallel"
-        );
-    }
-    if !active_topology_plugin_ids.is_empty() {
-        tracing::info!(
-            "topology producer modules selected: {} (parallel_nquads_mode={})",
-            active_topology_plugin_ids.join(", "),
-            producer_plan.parallel_topology_plugin
-        );
-    }
 
     let base_options = ConvertOptions {
         base_uri: args.base_uri,
         emit_ifcowl_links: emit_ifcowl,
-        enable_topology: if producer_plan.parallel_topology_plugin {
-            false
-        } else {
-            topology_enabled
-        },
-        enable_topology_extension: if producer_plan.parallel_topology_plugin {
-            false
-        } else {
-            derive_adjacency
-        },
+        enable_topology: false,
+        enable_topology_extension: false,
         topology_only: false,
-        suppress_non_topology_fallback: producer_plan.parallel_topology_plugin,
+        suppress_non_topology_fallback: false,
         geometry_relations: None,
-        geometry_bounding_boxes: geometry_bounding_boxes.clone(),
-        geometry_wkts: geometry_wkts.clone(),
+        geometry_bounding_boxes: None,
+        geometry_wkts: None,
         geometry_tolerance: args.geometry_tolerance,
         low_memory_mode: false,
         stream_batch_size: 8 * 1024,
@@ -320,12 +233,6 @@ fn main() -> anyhow::Result<()> {
     let lbd_receiver = converter_lbd_receiver;
 
     let (ifcowl_sender, mut ifcowl_receiver) = if emit_ifcowl {
-        let (sender, receiver) = crossbeam::channel::bounded(SERIALIZER_CHANNEL_CAPACITY);
-        (Some(sender), Some(receiver))
-    } else {
-        (None, None)
-    };
-    let (topology_sender, mut topology_receiver) = if producer_plan.parallel_topology_plugin {
         let (sender, receiver) = crossbeam::channel::bounded(SERIALIZER_CHANNEL_CAPACITY);
         (Some(sender), Some(receiver))
     } else {
@@ -356,23 +263,11 @@ fn main() -> anyhow::Result<()> {
         settings.nquads.chunk_min_count,
         input_file_size_bytes.saturating_mul(LBD_TO_NQ_ESTIMATE_MULTIPLIER),
     );
-    let topology_chunk_core_count =
-        chunk_writer::resolve_effective_core_chunk_count_for_estimated_bytes(
-            settings.nquads.chunking,
-            settings.nquads.chunk_core_count,
-            settings.nquads.chunk_min_count,
-            if derive_adjacency {
-                input_file_size_bytes.saturating_mul(TOPOLOGY_FULL_TO_NQ_ESTIMATE_MULTIPLIER)
-            } else {
-                (input_file_size_bytes / 8).max(1)
-            },
-        );
     if settings.nquads.chunking == chunk_writer::QuadChunkingMode::Cores {
         tracing::info!(
-            "core chunk targets (auto): ifcowl={}, lbd={}, topology={}",
+            "core chunk targets (auto): ifcowl={}, lbd={}",
             ifcowl_chunk_core_count.unwrap_or(1),
             lbd_chunk_core_count.unwrap_or(1),
-            topology_chunk_core_count.unwrap_or(1),
         );
     }
     let merged_ifcowl_receiver = if output_format == OutputFormat::Nquads {
@@ -380,11 +275,7 @@ fn main() -> anyhow::Result<()> {
     } else {
         None
     };
-    let merged_topology_receiver = if output_format == OutputFormat::Nquads {
-        topology_receiver.take()
-    } else {
-        None
-    };
+    let merged_topology_receiver: Option<crossbeam::channel::Receiver<Vec<lbd_ontology::Triple>>> = None;
     let lbd_thread = thread::spawn(move || -> anyhow::Result<()> {
         match output_format {
             OutputFormat::Turtle => match lbd_target {
@@ -464,19 +355,7 @@ fn main() -> anyhow::Result<()> {
                     } else {
                         None
                     };
-                    let mut topology_chunk_writer = if merged_topology_receiver.is_some() {
-                        Some(chunk_writer::QuadChunkWriter::new(
-                            chunk_writer::resolve_quad_chunk_output_dir(lbd_target.as_deref()),
-                            format!("{}-topology", quad_chunk_prefix),
-                            quad_chunking_mode,
-                            quad_chunk_size_lines,
-                            quad_chunk_size_bytes,
-                            quad_chunk_min_count,
-                            topology_chunk_core_count,
-                        )?)
-                    } else {
-                        None
-                    };
+                    let mut topology_chunk_writer: Option<chunk_writer::QuadChunkWriter> = None;
 
                     let ifcowl_thread = if let Some(ifcowl_receiver) = merged_ifcowl_receiver {
                         let ifcowl_graph = ifcowl_graph_iri_thread.clone();
@@ -639,166 +518,20 @@ fn main() -> anyhow::Result<()> {
     }
 
     let producer_start = Instant::now();
-    let write_topology_report = settings.bbox.is_none();
-    let bbox_inflation_threshold = settings
-        .bbox
-        .as_ref()
-        .map(|bbox| bbox.inflation_threshold)
-        .unwrap_or(1.5);
-    let bbox_report_path = settings
-        .bbox
-        .as_ref()
-        .and_then(|bbox| bbox.report_path.clone());
-    if producer_plan.parallel_topology_plugin {
-        let model_ref = &model;
-        let step_ref = &step;
-        let converter_lbd_sender_clone = converter_lbd_sender.clone();
-        let topology_sender_clone = topology_sender
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("missing topology sender for parallel topology mode"))?;
-        let topology_base = base_options.base_uri.clone();
-        let input_path_buf = input_path.to_path_buf();
-        let geometry_tolerance = args.geometry_tolerance;
-        let ifcowl_sender_clone = ifcowl_sender.clone();
-        let mut producer_tasks = vec![ProducerTaskSpec {
-            plugin_id: "neo-core-conversion".to_string(),
-            failure_policy: FailurePolicy::Required,
-            task: Box::new(move || {
-                producer_plugins::run_core_conversion_plugin(
-                    step_ref,
-                    model_ref,
-                    &base_options,
-                    &converter_lbd_sender_clone,
-                    ifcowl_sender_clone.as_ref(),
-                )
-                .context("failed to run core conversion producer module")?;
-                Ok(())
-            }),
-        }];
-        for plugin_id in &active_topology_plugin_ids {
-            let plugin_id = plugin_id.clone();
-            let failure_policy = resolve_failure_policy(&built_in_registry, &plugin_id);
-            let topology_sender_clone = topology_sender_clone.clone();
-            let topology_base = topology_base.clone();
-            let input_path_buf = input_path_buf.clone();
-            let bbox_report_path = bbox_report_path.clone();
-            let module_config = module_configs.get(&plugin_id).cloned();
-            producer_tasks.push(ProducerTaskSpec {
-                plugin_id: plugin_id.clone(),
-                failure_policy,
-                task: Box::new(move || {
-                    let topology_execution = topology_plugin::run_topology_plugin(
-                        &plugin_id,
-                        &topology_plugin::TopologyExecutionContext {
-                            model: model_ref,
-                            step: step_ref,
-                            input_path: &input_path_buf,
-                            geometry_tolerance,
-                            bbox_inflation_threshold,
-                            bbox_report_path: bbox_report_path.as_deref(),
-                            write_report: write_topology_report,
-                            module_config: module_config.as_ref(),
-                        },
-                    )?;
-                    let topology_options = ConvertOptions {
-                        base_uri: topology_base,
-                        emit_ifcowl_links: false,
-                        enable_topology: true,
-                        enable_topology_extension: topology_execution.enable_topology_extension,
-                        topology_only: true,
-                        suppress_non_topology_fallback: false,
-                        geometry_relations: topology_execution.geometry_relations,
-                        geometry_bounding_boxes: None,
-                        geometry_wkts: None,
-                        geometry_tolerance,
-                        low_memory_mode: false,
-                        stream_batch_size: 8 * 1024,
-                        ifcowl_max_workers: 16,
-                    };
-                    producer_plugins::run_topology_producer_plugin(
-                        model_ref,
-                        &topology_options,
-                        &topology_sender_clone,
-                    )
-                    .with_context(|| {
-                        format!("failed to run topology producer module `{}`", plugin_id)
-                    })?;
-                    Ok(())
-                }),
-            });
-        }
-        run_producer_plugin_tasks(producer_tasks)?;
-    } else {
-        let options = if derive_adjacency {
-            let module_config = active_topology_plugin_ids
-                .first()
-                .and_then(|id| module_configs.get(id));
-            let topology_execution = topology_plugin::run_topology_plugin(
-                active_topology_plugin_ids
-                    .first()
-                    .map(String::as_str)
-                    .ok_or_else(|| anyhow::anyhow!("missing topology plugin selection"))?,
-                &topology_plugin::TopologyExecutionContext {
-                    model: &model,
-                    step: &step,
-                    input_path,
-                    geometry_tolerance: args.geometry_tolerance,
-                    bbox_inflation_threshold,
-                    bbox_report_path: bbox_report_path.as_deref(),
-                    write_report: true,
-                    module_config,
-                },
-            )?;
-            ConvertOptions {
-                base_uri: base_options.base_uri.clone(),
-                emit_ifcowl_links: emit_ifcowl,
-                enable_topology: topology_enabled,
-                enable_topology_extension: topology_execution.enable_topology_extension,
-                topology_only: false,
-                suppress_non_topology_fallback: false,
-                geometry_relations: topology_execution.geometry_relations,
-                geometry_bounding_boxes: geometry_bounding_boxes.clone(),
-                geometry_wkts: geometry_wkts.clone(),
-                geometry_tolerance: args.geometry_tolerance,
-                low_memory_mode: false,
-                stream_batch_size: 8 * 1024,
-                ifcowl_max_workers: 16,
-            }
-        } else {
-            ConvertOptions {
-                base_uri: base_options.base_uri.clone(),
-                emit_ifcowl_links: emit_ifcowl,
-                enable_topology: topology_enabled,
-                enable_topology_extension: derive_adjacency,
-                topology_only: false,
-                suppress_non_topology_fallback: false,
-                geometry_relations: None,
-                geometry_bounding_boxes: geometry_bounding_boxes.clone(),
-                geometry_wkts: geometry_wkts.clone(),
-                geometry_tolerance: args.geometry_tolerance,
-                low_memory_mode: false,
-                stream_batch_size: 8 * 1024,
-                ifcowl_max_workers: 16,
-            }
-        };
-
-        producer_plugins::run_core_conversion_plugin(
-            &step,
-            &model,
-            &options,
-            &converter_lbd_sender,
-            ifcowl_sender.as_ref(),
-        )
-        .context("failed to run core conversion producer module")?;
-    }
+    producer_plugins::run_core_conversion_plugin(
+        &step,
+        &model,
+        &base_options,
+        &converter_lbd_sender,
+        ifcowl_sender.as_ref(),
+    )
+    .context("failed to run core conversion producer module")?;
     tracing::info!(
         "phase triple_production completed in {:.3}s",
         producer_start.elapsed().as_secs_f64()
     );
     drop(converter_lbd_sender);
     drop(ifcowl_sender);
-    drop(topology_sender);
 
     let serializer_join_start = Instant::now();
     lbd_thread
@@ -921,12 +654,8 @@ fn validate_typed_module_configs(
     configs: &HashMap<String, HashMap<String, String>>,
 ) -> Result<(), String> {
     for (module_id, entries) in configs {
-        topology_plugin::validate_typed_module_config(module_id, entries)?;
         if module_id == lbd_pipeline::NQUADS_SERIALIZER_ID {
             validate_nquads_serializer_module_config(entries)?;
-        }
-        if module_id == lbd_pipeline::BBOX_ENRICHER_ID {
-            validate_bbox_module_config(entries)?;
         }
         if module_id == lbd_pipeline::TURTLE_SERIALIZER_ID {
             validate_turtle_serializer_module_config(entries)?;
@@ -1014,20 +743,6 @@ fn resolve_execution_settings(
     let chunk_min_count = parse_usize_with_default(nquads_entries, "chunk_min_count", 1usize)?;
     let chunk_core_count = parse_optional_usize(nquads_entries, "chunk_core_count")?;
 
-    let bbox = if active.contains(lbd_pipeline::BBOX_ENRICHER_ID) {
-        let bbox_entries = configs.get(lbd_pipeline::BBOX_ENRICHER_ID);
-        let inflation_threshold = parse_f64_with_default(bbox_entries, "inflation_threshold", 1.5)?;
-        let report_path = bbox_entries
-            .and_then(|entries| entries.get("report_path"))
-            .map(PathBuf::from);
-        Some(BboxModuleOptions {
-            inflation_threshold,
-            report_path,
-        })
-    } else {
-        None
-    };
-
     let turtle_entries = configs.get(lbd_pipeline::TURTLE_SERIALIZER_ID);
     let turtle_grouping = match turtle_entries
         .and_then(|e| e.get("grouping"))
@@ -1045,7 +760,6 @@ fn resolve_execution_settings(
     Ok(ExecutionSettings {
         output_format,
         emit_ifcowl: active.contains(lbd_pipeline::IFCOWL_PRODUCER_ID),
-        bbox,
         nquads: NquadsModuleOptions {
             chunking,
             chunk_size_lines,
@@ -1629,7 +1343,6 @@ mod tests {
         ExecutionSettings {
             output_format,
             emit_ifcowl: false,
-            bbox: None,
             nquads: NquadsModuleOptions {
                 chunking: chunk_writer::QuadChunkingMode::None,
                 chunk_size_lines: 2_000_000,
