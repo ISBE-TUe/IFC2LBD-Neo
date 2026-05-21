@@ -14,6 +14,7 @@ pub use modules::bbox::compute_approximate_bboxes;
 // To add a new module: create modules/<name>.rs, pub mod it in modules/mod.rs, add pub use here.
 pub use modules::bot::stream_bot;
 pub use modules::beo::stream_beo;
+pub use modules::ifcowl::stream_ifcowl;
 pub use modules::omg_fog::stream_omg_fog;
 pub use modules::props_opm::stream_props_opm;
 
@@ -35,14 +36,15 @@ use lbd_geometry::{
 use lbd_ontology::{
     beo_class, bot_adjacent_element, bot_adjacent_zone, bot_building, bot_contains_element,
     bot_contains_zone, bot_has_sub_element, bot_interface, bot_interface_of,
-    bot_intersecting_element, bot_site, bot_space, bot_storey, express_has_boolean,
+    bot_intersecting_element, bot_site, bot_space, bot_storey, bot_zone, express_has_boolean,
     express_has_double, express_has_integer, express_has_logical, express_has_string,
     express_logical_value, furn_class, geo_as_wkt, geo_geometry, geo_wkt_literal,
     lbd_has_bounding_box, lbd_has_property_set, lbd_has_quantity_set, lbd_project,
     lbd_property_set, lbd_quantity_set, list_has_contents, list_has_next,
     opm_current_property_state, opm_current_property_state_predicate, opm_has_property_state,
     opm_property, owl_imports, owl_object_property, owl_ontology, props_property,
-    prov_generated_at_time, rdf_member, rdf_type, rdfs_comment, rdfs_label, schema_value,
+    prov_generated_at_time, rdf_member, rdf_type, rdfs_comment, rdfs_label,
+    schema_applicable_type, schema_value,
     smls_unit, unit_iri, Object, Triple, EXPRESS, XSD,
 };
 #[cfg(test)]
@@ -423,25 +425,20 @@ where
             let Some(structure) = model.spatial_nodes.get(&structure_id) else {
                 continue;
             };
-            if matches!(
-                structure.spatial_type,
-                SpatialType::Storey | SpatialType::Space
-            ) {
-                let structure_subject =
-                    spatial_resource_iri(base, structure.spatial_type, &structure.guid);
-                for contained_id in baseline_containment_closure(model, element_id) {
-                    let Some(contained_element) = model.elements.get(&contained_id) else {
-                        continue;
-                    };
-                    if !emitted_storey_contains.insert((structure_id, contained_id)) {
-                        continue;
-                    }
-                    emit(Triple {
-                        subject: structure_subject.clone(),
-                        predicate: bot_contains_element(),
-                        object: Object::Iri(element_resource_iri(base, contained_element)),
-                    })?;
+            let structure_subject =
+                spatial_resource_iri(base, structure.spatial_type, &structure.guid);
+            for contained_id in baseline_containment_closure(model, element_id) {
+                let Some(contained_element) = model.elements.get(&contained_id) else {
+                    continue;
+                };
+                if !emitted_storey_contains.insert((structure_id, contained_id)) {
+                    continue;
                 }
+                emit(Triple {
+                    subject: structure_subject.clone(),
+                    predicate: bot_contains_element(),
+                    object: Object::Iri(element_resource_iri(base, contained_element)),
+                })?;
             }
         }
 
@@ -544,6 +541,36 @@ where
     let mut emitted_lbd_property_sets = HashSet::new();
     let mut emitted_lbd_quantity_sets = HashSet::new();
 
+    // Build lookup: property_set_id → PropertySetTemplate (from IfcRelDefinesByTemplate)
+    let pset_to_template: HashMap<EntityId, EntityId> = model
+        .rel_defines_by_template
+        .iter()
+        .flat_map(|rel| {
+            rel.related_property_sets
+                .iter()
+                .map(move |&pset_id| (pset_id, rel.relating_template))
+        })
+        .collect();
+    // Build lookup: template_id → HashMap<name, SimplePropertyTemplate>
+    let template_props: HashMap<EntityId, HashMap<&str, &ifc_model::SimplePropertyTemplate>> =
+        model
+            .property_set_templates
+            .iter()
+            .map(|(&tmpl_id, tmpl)| {
+                let props: HashMap<&str, &ifc_model::SimplePropertyTemplate> = tmpl
+                    .property_template_ids
+                    .iter()
+                    .filter_map(|id| {
+                        model
+                            .simple_property_templates
+                            .get(id)
+                            .map(|st| (st.name.as_str(), st))
+                    })
+                    .collect();
+                (tmpl_id, props)
+            })
+            .collect();
+
     let mut property_object_ids: Vec<_> = model.property_sets_for_object.keys().copied().collect();
     property_object_ids.sort_unstable();
     for object_id in property_object_ids {
@@ -562,6 +589,7 @@ where
                 predicate: lbd_has_property_set(),
                 object: Object::Iri(set_subject.clone()),
             })?;
+            let pset_template_id = pset_to_template.get(&property_set.id).copied();
             if emitted_lbd_property_sets.insert(property_set.id) {
                 emit(Triple {
                     subject: set_subject.clone(),
@@ -575,7 +603,21 @@ where
                         object: Object::Literal(name.to_string()),
                     })?;
                 }
+                // Emit schema:applicableType from template if available
+                if let Some(tmpl_id) = pset_template_id {
+                    if let Some(tmpl) = model.property_set_templates.get(&tmpl_id) {
+                        if let Some(applicable) = tmpl.applicable_entity.as_ref() {
+                            emit(Triple {
+                                subject: set_subject.clone(),
+                                predicate: schema_applicable_type(),
+                                object: Object::Literal(applicable.to_string()),
+                            })?;
+                        }
+                    }
+                }
             }
+            let active_template_props = pset_template_id
+                .and_then(|id| template_props.get(&id));
             for property_id in &property_set.properties {
                 // --- IfcPropertySingleValue ---
                 if let Some(property) = model.property_single_values.get(property_id) {
@@ -609,15 +651,28 @@ where
                             emit(Triple {
                                 subject: set_subject.clone(),
                                 predicate: rdf_member(),
-                                object: Object::Iri(property_subject),
+                                object: Object::Iri(property_subject.clone()),
                             })?;
+                            // Emit rdfs:comment from SimplePropertyTemplate if available
+                            if let Some(tmpl_props) = active_template_props {
+                                if let Some(st) = tmpl_props.get(property.name.as_str()) {
+                                    if let Some(desc) = st.description.as_ref() {
+                                        emit(Triple {
+                                            subject: property_subject,
+                                            predicate: rdfs_comment(),
+                                            object: Object::Literal(desc.to_string()),
+                                        })?;
+                                    }
+                                }
+                            }
                         }
                     }
                     continue;
                 }
                 // --- IfcPropertyEnumeratedValue ---
                 if let Some(property) = model.property_enumerated_values.get(property_id) {
-                    if let Some(value) = enumerated_value_object(property) {
+                    let enum_values = enumerated_value_objects(property);
+                    for value in enum_values {
                         let predicate_local = property_local_name(&property.name);
                         emit_property_declaration(
                             &mut declared_object_properties,
@@ -927,7 +982,7 @@ where
     })
 }
 
-fn baseline_containment_closure(model: &IfcModel, root_id: EntityId) -> Vec<EntityId> {
+pub(crate) fn baseline_containment_closure(model: &IfcModel, root_id: EntityId) -> Vec<EntityId> {
     let mut result = vec![root_id];
     let Some(root) = model.elements.get(&root_id) else {
         return result;
@@ -2263,6 +2318,10 @@ fn spatial_segment(spatial_type: SpatialType) -> &'static str {
         SpatialType::Building => "building",
         SpatialType::Storey => "storey",
         SpatialType::Space => "space",
+        SpatialType::Zone
+        | SpatialType::Facility
+        | SpatialType::FacilityPart
+        | SpatialType::ExternalSpatialElement => "zone",
     }
 }
 
@@ -2273,6 +2332,10 @@ pub(crate) fn spatial_class(spatial_type: SpatialType) -> String {
         SpatialType::Building => bot_building(),
         SpatialType::Storey => bot_storey(),
         SpatialType::Space => bot_space(),
+        SpatialType::Zone
+        | SpatialType::Facility
+        | SpatialType::FacilityPart
+        | SpatialType::ExternalSpatialElement => bot_zone(),
     }
 }
 
@@ -2402,6 +2465,10 @@ pub(crate) fn ifcowl_spatial_iri(base: &str, node: &ifc_model::SpatialNode) -> S
         SpatialType::Building => "IfcBuilding",
         SpatialType::Storey => "IfcBuildingStorey",
         SpatialType::Space => "IfcSpace",
+        SpatialType::Zone => "IfcSpatialZone",
+        SpatialType::Facility => "IfcFacility",
+        SpatialType::FacilityPart => "IfcFacilityPart",
+        SpatialType::ExternalSpatialElement => "IfcExternalSpatialElement",
     };
     ifcowl_entity_iri(base, Some(class_name), node.id)
 }
@@ -2593,14 +2660,19 @@ fn property_value_object(property: &PropertySingleValue) -> Option<Object> {
     quantity_value_object(property.nominal_value.as_ref())
 }
 
-fn enumerated_value_object(property: &PropertyEnumeratedValue) -> Option<Object> {
-    let v = property.first_value.as_ref()?;
-    let trimmed = v.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(Object::Literal(trimmed.to_string()))
-    }
+fn enumerated_value_objects(property: &PropertyEnumeratedValue) -> Vec<Object> {
+    property
+        .values
+        .iter()
+        .filter_map(|v| {
+            let trimmed = v.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(Object::Literal(trimmed.to_string()))
+            }
+        })
+        .collect()
 }
 
 fn quantity_value_object(value: Option<&StepValue>) -> Option<Object> {

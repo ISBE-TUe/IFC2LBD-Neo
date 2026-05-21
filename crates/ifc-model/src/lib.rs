@@ -4,9 +4,8 @@
 //! Focuses only on conversion-relevant content (spatial and element nodes, properties, quantities, and relationship indexes for containment, aggregation, hosting, fillings, voids, and space boundaries).
 //! Acts as the shared internal model for LBD conversion, topology derivation, and geometry-backed enrichment, instead of constructing a full intermediate ifcOWL graph.
 
-// TODO IFC4: This model and its tests were developed for IFC2x3. IFC4 introduces
-// property templates, IfcProjectLibrary, new type semantics, and new geometry
-// entities that are not handled below. Extend parsing and tests for IFC4.
+//! IFC4/IFC4.3 entity coverage expanded: new spatial types (SpatialZone, Facility,
+//! FacilityPart), ~100 element types, IfcRelNests, property templates, IfcProjectLibrary.
 
 mod guid;
 
@@ -105,14 +104,14 @@ pub struct PropertySingleValue {
 }
 
 /// An IFC property whose value is one or more enumeration literals.
-/// `#328=IFCPROPERTYENUMERATEDVALUE('Status',$,(IFCLABEL('UNSET')),#329);`
-/// We store the first selected value as a plain string for LBD emission.
+/// `#328=IFCPROPERTYENUMERATEDVALUE('Status',$,(IFCLABEL('UNSET'),IFCLABEL('NEW')),#329);`
+/// All selected values are stored for faithful LBD emission.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PropertyEnumeratedValue {
     pub id: EntityId,
     pub name: SmolStr,
-    /// First selected enumeration value, e.g. "UNSET"
-    pub first_value: Option<SmolStr>,
+    /// All selected enumeration values, e.g. ["UNSET"] or ["A", "B"]
+    pub values: Vec<SmolStr>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -176,6 +175,49 @@ pub struct UnitAssignment {
     pub units: Vec<EntityId>,
 }
 
+/// A named template describing a set of properties applicable to a given entity type.
+/// `IFCPROPERTYSETTEMPLATE('Pset_WallCommon',$,$,'IfcWall/IfcWallStandardCase',$,(#10,#11),$)`
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PropertySetTemplate {
+    pub id: EntityId,
+    pub name: SmolStr,
+    pub description: Option<SmolStr>,
+    /// Entity type filter string, e.g. "IfcWall/IfcWallStandardCase"
+    pub applicable_entity: Option<SmolStr>,
+    /// References to SimplePropertyTemplate entities
+    pub property_template_ids: Vec<EntityId>,
+}
+
+/// A template describing a single property: its type, measure, and allowed values.
+/// `IFCSIMPLEPROPERTYTEMPLATE('IsExternal',$,$,$,'P_SINGLEVALUE','IfcBoolean',$,$,$,$,$)`
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SimplePropertyTemplate {
+    pub id: EntityId,
+    pub name: SmolStr,
+    pub description: Option<SmolStr>,
+    /// Template type enum, e.g. "P_SINGLEVALUE", "P_ENUMERATEDVALUE"
+    pub template_type: Option<SmolStr>,
+    /// Primary measure type IRI fragment, e.g. "IfcLengthMeasure"
+    pub primary_measure_type: Option<SmolStr>,
+}
+
+/// Links property set instances to their defining template via IFCRELDEFINESBYTEMPLATE.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelDefinesByTemplate {
+    pub id: EntityId,
+    /// Property set instances (arg[4])
+    pub related_property_sets: Vec<EntityId>,
+    /// The IfcPropertySetTemplate (arg[5])
+    pub relating_template: EntityId,
+}
+
+/// Top-level library container (IfcProjectLibrary) for property set templates and type products.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectLibrary {
+    pub id: EntityId,
+    pub name: Option<SmolStr>,
+}
+
 #[derive(Debug, Clone)]
 pub struct IfcModel {
     pub schema: StepSchema,
@@ -200,6 +242,10 @@ pub struct IfcModel {
     pub guid_to_entity: HashMap<SmolStr, EntityId>,
     pub property_sets_for_object: HashMap<EntityId, Vec<EntityId>>,
     pub quantities_for_object: HashMap<EntityId, Vec<EntityId>>,
+    pub property_set_templates: HashMap<EntityId, PropertySetTemplate>,
+    pub simple_property_templates: HashMap<EntityId, SimplePropertyTemplate>,
+    pub rel_defines_by_template: Vec<RelDefinesByTemplate>,
+    pub project_library: Option<ProjectLibrary>,
 }
 
 impl IfcModel {
@@ -229,6 +275,10 @@ struct PartialModelBuild {
     children_of: HashMap<EntityId, Vec<EntityId>>,
     contained_in: HashMap<EntityId, EntityId>,
     guid_to_entity: HashMap<SmolStr, EntityId>,
+    property_set_templates: HashMap<EntityId, PropertySetTemplate>,
+    simple_property_templates: HashMap<EntityId, SimplePropertyTemplate>,
+    rel_defines_by_template: Vec<RelDefinesByTemplate>,
+    project_library: Option<ProjectLibrary>,
 }
 
 impl PartialModelBuild {
@@ -253,6 +303,15 @@ impl PartialModelBuild {
         self.rel_voids.extend(other.rel_voids);
         self.rel_fills.extend(other.rel_fills);
         self.guid_to_entity.extend(other.guid_to_entity);
+        self.property_set_templates
+            .extend(other.property_set_templates);
+        self.simple_property_templates
+            .extend(other.simple_property_templates);
+        self.rel_defines_by_template
+            .extend(other.rel_defines_by_template);
+        if other.project_library.is_some() {
+            self.project_library = other.project_library;
+        }
 
         for (parent, children) in other.children_of {
             self.children_of.entry(parent).or_default().extend(children);
@@ -364,6 +423,10 @@ pub fn build_model(step: &StepFile) -> Result<IfcModel, ModelError> {
         guid_to_entity: partial.guid_to_entity,
         property_sets_for_object,
         quantities_for_object,
+        property_set_templates: partial.property_set_templates,
+        simple_property_templates: partial.simple_property_templates,
+        rel_defines_by_template: partial.rel_defines_by_template,
+        project_library: partial.project_library,
     })
 }
 
@@ -384,12 +447,6 @@ fn classify_entity(entity: &RawEntity) -> PartialModelBuild {
         }
         return partial;
     }
-
-    // TODO IFC4: Add cases for IFC4 entities:
-    // - IFCPROJECTLIBRARY, IFCPROPERTYSETTEMPLATE, IFCPROPERTYTEMPLATE
-    // - IFCTYPEPRODUCT and other type decomposition entities
-    // - new geometry items (e.g., IFCTAPEREDSWEPTAREASOLID)
-    // These may require new parse_* functions and linking logic.
 
     match entity.entity_name.as_str() {
         "IFCPROPERTYSINGLEVALUE" => {
@@ -446,7 +503,7 @@ fn classify_entity(entity: &RawEntity) -> PartialModelBuild {
                 partial.unit_assignments.insert(assignment.id, assignment);
             }
         }
-        "IFCRELAGGREGATES" => {
+        "IFCRELAGGREGATES" | "IFCRELNESTS" => {
             if let Some(rel) = parse_rel_aggregates(entity) {
                 partial
                     .children_of
@@ -478,6 +535,27 @@ fn classify_entity(entity: &RawEntity) -> PartialModelBuild {
             if let Some(rel) = parse_rel_fills_element(entity) {
                 partial.rel_fills.push(rel);
             }
+        }
+        "IFCPROPERTYSETTEMPLATE" => {
+            if let Some(tmpl) = parse_property_set_template(entity) {
+                partial.property_set_templates.insert(tmpl.id, tmpl);
+            }
+        }
+        "IFCSIMPLEPROPERTYTEMPLATE" => {
+            if let Some(tmpl) = parse_simple_property_template(entity) {
+                partial.simple_property_templates.insert(tmpl.id, tmpl);
+            }
+        }
+        "IFCRELDEFINESBYTEMPLATE" => {
+            if let Some(rel) = parse_rel_defines_by_template(entity) {
+                partial.rel_defines_by_template.push(rel);
+            }
+        }
+        "IFCPROJECTLIBRARY" => {
+            partial.project_library = Some(ProjectLibrary {
+                id: entity.id,
+                name: optional_string(entity.args.get(2)),
+            });
         }
         _ => {}
     }
@@ -567,7 +645,8 @@ fn element_predefined_type(entity: &RawEntity) -> Option<SmolStr> {
         "IFCDOOR" | "IFCWINDOW" => optional_enum(entity.args.get(10)),
         "IFCROOF" | "IFCSTAIR" => optional_enum(entity.args.get(8)),
         "IFCWALL" | "IFCWALLSTANDARDCASE" => optional_enum(entity.args.get(8)),
-        _ => None,
+        // Most IFC4/IFC4.3 elements have PredefinedType at arg[8]
+        _ => optional_enum(entity.args.get(8)),
     }
 }
 
@@ -622,40 +701,33 @@ fn parse_property_single_value(entity: &RawEntity) -> Option<PropertySingleValue
     })
 }
 
-/// Parse `IFCPROPERTYENUMERATEDVALUE('Name',$,(IFCLABEL('VAL1'),...),#ref)`.
-/// We extract the first selected value from the inline list (arg[2]).
+/// Parse `IFCPROPERTYENUMERATEDVALUE('Name',$,(IFCLABEL('VAL1'),IFCLABEL('VAL2')),#ref)`.
+/// All selected values from arg[2] are collected.
 fn parse_property_enumerated_value(entity: &RawEntity) -> Option<PropertyEnumeratedValue> {
-    // TODO IFC4: IFC4 property templates and enumerations can include multiple
-    // selected values and template references (IfcPropertyTemplate). Consider
-    // preserving full list and template references rather than only the first value.
     let name = optional_string(entity.args.first())?;
     // arg[2] is the selected values list: (IFCLABEL('UNSET')) or ($) if none selected
-    let first_value = entity
+    let values = entity
         .args
         .get(2)
         .and_then(|v| v.as_list())
-        .and_then(|items| items.first())
-        .and_then(|item| {
-            // Each item is a typed value like IFCLABEL('UNSET') or IFCIDENTIFIER('X')
-            let inner = item.unwrap_typed();
-            inner.as_str().map(SmolStr::new)
-        });
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    let inner = item.unwrap_typed();
+                    inner.as_str().map(SmolStr::new)
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     Some(PropertyEnumeratedValue {
         id: entity.id,
         name,
-        first_value,
+        values,
     })
 }
 
 fn parse_property_set(entity: &RawEntity) -> Option<PropertySet> {
-    // TODO IFC4: Add parsing for IfcPropertySetTemplate and IfcPropertyTemplate.
-    // IfcSimplePropertyTemplate defines a reusable template for single (simple) properties or simple physical quantities in IFC
-    // — it specifies the property name, type (template type), units, allowed enumerators
-    // or expressions, and how instances should be created from that template.  So, this is not urgent, but nice to have.
-    //
-    // Also update RelDefinesByProperties handling to resolve templates referenced
-    // from types or project libraries.
-
     Some(PropertySet {
         id: entity.id,
         guid: required_guid(entity)?,
@@ -679,10 +751,6 @@ fn parse_physical_quantity(entity: &RawEntity) -> Option<PhysicalQuantity> {
 }
 
 fn parse_element_quantity(entity: &RawEntity) -> Option<ElementQuantity> {
-    // TODO IFC4: Capture IFC4 quantity metadata (measurement method, unit refs,
-    // and any new quantity subtypes). Consider mapping IfcQuantitySet/IfcQuantity
-    // subtype attributes explicitly.
-
     Some(ElementQuantity {
         id: entity.id,
         guid: required_guid(entity)?,
@@ -693,10 +761,6 @@ fn parse_element_quantity(entity: &RawEntity) -> Option<ElementQuantity> {
 }
 
 fn parse_rel_defines_by_properties(entity: &RawEntity) -> Option<RelDefinesByProperties> {
-    // TODO IFC4: Add parsing for IfcPropertySetTemplate and IfcPropertyTemplate.
-    // Also update RelDefinesByProperties handling to resolve templates referenced
-    // from types or project libraries.
-
     Some(RelDefinesByProperties {
         id: entity.id,
         related_objects: refs_from_list(entity.args.get(4)?),
@@ -705,10 +769,6 @@ fn parse_rel_defines_by_properties(entity: &RawEntity) -> Option<RelDefinesByPro
 }
 
 fn parse_rel_defines_by_type(entity: &RawEntity) -> Option<RelDefinesByType> {
-    // TODO IFC4: Enhance type resolution to follow IfcTypeProduct/IfcTypeObject
-    // patterns and to resolve property templates referenced from types or libraries.
-    // refs_from_value should also detect template references.
-
     Some(RelDefinesByType {
         id: entity.id,
         related_objects: refs_from_list(entity.args.get(4)?),
@@ -738,6 +798,40 @@ fn parse_unit_assignment(entity: &RawEntity) -> Option<UnitAssignment> {
     Some(UnitAssignment {
         id: entity.id,
         units: refs_from_list(entity.args.first()?),
+    })
+}
+
+fn parse_property_set_template(entity: &RawEntity) -> Option<PropertySetTemplate> {
+    let name = optional_string(entity.args.get(2))?;
+    Some(PropertySetTemplate {
+        id: entity.id,
+        name,
+        description: optional_string(entity.args.get(3)),
+        applicable_entity: optional_string(entity.args.get(4)),
+        property_template_ids: entity
+            .args
+            .get(5)
+            .map(refs_from_list)
+            .unwrap_or_default(),
+    })
+}
+
+fn parse_simple_property_template(entity: &RawEntity) -> Option<SimplePropertyTemplate> {
+    let name = optional_string(entity.args.get(2))?;
+    Some(SimplePropertyTemplate {
+        id: entity.id,
+        name,
+        description: optional_string(entity.args.get(3)),
+        template_type: optional_enum(entity.args.get(4)),
+        primary_measure_type: optional_string(entity.args.get(5)),
+    })
+}
+
+fn parse_rel_defines_by_template(entity: &RawEntity) -> Option<RelDefinesByTemplate> {
+    Some(RelDefinesByTemplate {
+        id: entity.id,
+        related_property_sets: refs_from_list(entity.args.get(4)?),
+        relating_template: entity.args.get(5)?.as_ref()?,
     })
 }
 

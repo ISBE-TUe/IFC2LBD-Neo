@@ -140,6 +140,10 @@ pub fn lbd_z_max() -> String {
     format!("{LBD}z-max")
 }
 
+pub fn bot_zone() -> String {
+    format!("{BOT}Zone")
+}
+
 pub fn bot_site() -> String {
     format!("{BOT}Site")
 }
@@ -226,6 +230,10 @@ pub fn opm_value() -> String {
 
 pub fn schema_value() -> String {
     format!("{SCHEMA}value")
+}
+
+pub fn schema_applicable_type() -> String {
+    format!("{SCHEMA}applicableType")
 }
 
 pub fn smls_unit() -> String {

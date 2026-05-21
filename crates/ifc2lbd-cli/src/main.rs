@@ -17,10 +17,9 @@ use clap::{Parser, ValueEnum};
 use ifc_model::build_model;
 use ifc_model::IfcModel;
 use ifc_step::{parse_step_file, EntityId, StepFile};
-use lbd_converter::ConvertOptions;
+use lbd_converter::{normalize_base_uri, stream_beo, stream_bot, stream_ifcowl, stream_omg_fog, stream_props_opm, ConvertOptions};
 use lbd_geometry::csg::derive_relations_with_csg_batched;
 use lbd_geometry::{BoundingBox, ExactCheckOptions, GeometryRelation};
-use lbd_pipeline::FailurePolicy;
 use lbd_serializer::{
     serialize_lbd_batches_incremental_to_writer, serialize_lbd_batches_to_writer,
     serialize_nquads_batches_to_writer, serialize_nquads_merged_batches_to_writer,
@@ -32,7 +31,6 @@ mod chunk_writer;
 mod kernel;
 mod mesh;
 mod pipeline_plugins;
-mod producer_plugins;
 mod transform;
 mod voxel;
 
@@ -518,14 +516,62 @@ fn main() -> anyhow::Result<()> {
     }
 
     let producer_start = Instant::now();
-    producer_plugins::run_core_conversion_plugin(
-        &step,
-        &model,
-        &base_options,
-        &converter_lbd_sender,
-        ifcowl_sender.as_ref(),
-    )
-    .context("failed to run core conversion producer module")?;
+    // Run IfcOWL in a background thread (if requested), then sequentially run the
+    // active LBD producer modules.  This mirrors the WASM path so both produce
+    // identical triples.
+    let lbd_base = normalize_base_uri(&base_options.base_uri);
+    let ifcowl_result: anyhow::Result<()> = if let Some(sender) = ifcowl_sender.as_ref() {
+        let sender = sender.clone();
+        let schema = step.header.schema;
+        let base_clone = lbd_base.clone();
+        let batch_size = base_options.stream_batch_size;
+        let max_workers = base_options.ifcowl_max_workers;
+        let step_ref = &step;
+        std::thread::scope(|scope| -> anyhow::Result<()> {
+            let ifcowl_handle = scope.spawn(move || {
+                stream_ifcowl(step_ref, &base_clone, schema, &sender, batch_size, max_workers)
+                    .map_err(|e| anyhow::anyhow!("ifcowl streaming failed: {:?}", e))
+            });
+            if active_plugins.contains(lbd_pipeline::BOT_PRODUCER_ID) {
+                stream_bot(&model, &base_options, &converter_lbd_sender)
+                    .map_err(|e| anyhow::anyhow!("bot streaming failed: {:?}", e))?;
+            }
+            if active_plugins.contains(lbd_pipeline::BEO_PRODUCER_ID) {
+                stream_beo(&model, &base_options, &converter_lbd_sender)
+                    .map_err(|e| anyhow::anyhow!("beo streaming failed: {:?}", e))?;
+            }
+            if active_plugins.contains(lbd_pipeline::PROPS_OPM_PRODUCER_ID) {
+                stream_props_opm(&model, &base_options, &converter_lbd_sender)
+                    .map_err(|e| anyhow::anyhow!("props-opm streaming failed: {:?}", e))?;
+            }
+            if active_plugins.contains(lbd_pipeline::OMG_FOG_PRODUCER_ID) {
+                stream_omg_fog(&model, &base_options, &converter_lbd_sender)
+                    .map_err(|e| anyhow::anyhow!("omg-fog streaming failed: {:?}", e))?;
+            }
+            ifcowl_handle
+                .join()
+                .map_err(|_| anyhow::anyhow!("ifcowl thread panicked"))?
+        })
+    } else {
+        if active_plugins.contains(lbd_pipeline::BOT_PRODUCER_ID) {
+            stream_bot(&model, &base_options, &converter_lbd_sender)
+                .map_err(|e| anyhow::anyhow!("bot streaming failed: {:?}", e))?;
+        }
+        if active_plugins.contains(lbd_pipeline::BEO_PRODUCER_ID) {
+            stream_beo(&model, &base_options, &converter_lbd_sender)
+                .map_err(|e| anyhow::anyhow!("beo streaming failed: {:?}", e))?;
+        }
+        if active_plugins.contains(lbd_pipeline::PROPS_OPM_PRODUCER_ID) {
+            stream_props_opm(&model, &base_options, &converter_lbd_sender)
+                .map_err(|e| anyhow::anyhow!("props-opm streaming failed: {:?}", e))?;
+        }
+        if active_plugins.contains(lbd_pipeline::OMG_FOG_PRODUCER_ID) {
+            stream_omg_fog(&model, &base_options, &converter_lbd_sender)
+                .map_err(|e| anyhow::anyhow!("omg-fog streaming failed: {:?}", e))?;
+        }
+        Ok(())
+    };
+    ifcowl_result.context("failed to run core conversion producer modules")?;
     tracing::info!(
         "phase triple_production completed in {:.3}s",
         producer_start.elapsed().as_secs_f64()
@@ -922,94 +968,6 @@ fn validate_bbox_module_config(entries: &HashMap<String, String>) -> Result<(), 
     Ok(())
 }
 
-type ProducerTask<'a> = Box<dyn FnOnce() -> anyhow::Result<()> + Send + 'a>;
-
-struct ProducerTaskSpec<'a> {
-    plugin_id: String,
-    failure_policy: FailurePolicy,
-    task: ProducerTask<'a>,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct ProducerExecutionPlan {
-    parallel_topology_plugin: bool,
-}
-
-fn build_producer_execution_plan(
-    output_format: OutputFormat,
-    topology_plugin_count: usize,
-) -> ProducerExecutionPlan {
-    ProducerExecutionPlan {
-        parallel_topology_plugin: output_format == OutputFormat::Nquads
-            && topology_plugin_count > 0,
-    }
-}
-
-fn resolve_failure_policy(
-    registry: &lbd_pipeline::PluginRegistry,
-    plugin_id: &str,
-) -> FailurePolicy {
-    registry
-        .plugin(plugin_id)
-        .map(|plugin| plugin.manifest().failure_policy)
-        .unwrap_or(FailurePolicy::Required)
-}
-
-fn run_producer_plugin_tasks<'a>(tasks: Vec<ProducerTaskSpec<'a>>) -> anyhow::Result<()> {
-    std::thread::scope(|scope| -> anyhow::Result<()> {
-        let mut handles = Vec::with_capacity(tasks.len());
-        for spec in tasks {
-            let ProducerTaskSpec {
-                plugin_id,
-                failure_policy,
-                task,
-            } = spec;
-            let handle = scope.spawn(move || task());
-            handles.push((plugin_id, failure_policy, handle));
-        }
-        let mut required_errors = Vec::new();
-        for (plugin_id, failure_policy, handle) in handles {
-            let result = handle
-                .join()
-                .map_err(|_| anyhow::anyhow!("producer module `{}` panicked", plugin_id));
-            match (failure_policy, result) {
-                (_, Ok(Ok(()))) => {}
-                (FailurePolicy::Optional, Ok(Err(error))) => {
-                    tracing::warn!(
-                        "optional producer module `{}` failed and will be skipped: {}",
-                        plugin_id,
-                        error
-                    );
-                }
-                (FailurePolicy::Optional, Err(error)) => {
-                    tracing::warn!(
-                        "optional producer module `{}` panicked and will be skipped: {}",
-                        plugin_id,
-                        error
-                    );
-                }
-                (FailurePolicy::Required, Ok(Err(error))) => {
-                    required_errors.push(anyhow::anyhow!(
-                        "required producer module `{}` failed: {}",
-                        plugin_id,
-                        error
-                    ));
-                }
-                (FailurePolicy::Required, Err(error)) => {
-                    required_errors.push(anyhow::anyhow!(
-                        "required producer module `{}` panicked: {}",
-                        plugin_id,
-                        error
-                    ));
-                }
-            }
-        }
-        if let Some(error) = required_errors.into_iter().next() {
-            return Err(error);
-        }
-        Ok(())
-    })
-}
 
 pub(crate) fn topology_full_relations(
     model: &IfcModel,

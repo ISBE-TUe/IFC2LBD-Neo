@@ -17,6 +17,8 @@ pub enum TopologyNodeKind {
     Building,
     Storey,
     Space,
+    /// IFC4/IFC4.3 spatial zones, facilities, facility parts, external spatial elements
+    Zone,
     Element,
     Interface,
 }
@@ -241,6 +243,10 @@ fn spatial_node_kind(spatial_type: SpatialType) -> TopologyNodeKind {
         SpatialType::Building => TopologyNodeKind::Building,
         SpatialType::Storey => TopologyNodeKind::Storey,
         SpatialType::Space => TopologyNodeKind::Space,
+        SpatialType::Zone
+        | SpatialType::Facility
+        | SpatialType::FacilityPart
+        | SpatialType::ExternalSpatialElement => TopologyNodeKind::Zone,
     }
 }
 
@@ -408,4 +414,5 @@ mod tests {
             .filter(|edge| edge.kind == TopologyEdgeKind::AdjacentZone)
             .all(|edge| edge.source != edge.target));
     }
+
 }
