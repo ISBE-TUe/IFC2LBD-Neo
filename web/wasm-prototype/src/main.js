@@ -108,9 +108,7 @@ const getConversionWorker = () => {
       const filename = data.filename;
       if (!filename || data.chunk == null) return;
       const chunk = data.chunk instanceof Uint8Array ? data.chunk : new Uint8Array(data.chunk);
-      const chunks = pending.memoryFiles.get(filename) || [];
-      chunks.push(chunk);
-      pending.memoryFiles.set(filename, chunks);
+      accumulateChunk(pending.memoryFiles, filename, chunk);
       return;
     }
 
@@ -119,7 +117,7 @@ const getConversionWorker = () => {
         filename: meta.filename,
         mimeType: meta.mimeType,
         role: meta.role,
-        payloadParts: pending.memoryFiles.get(meta.filename) || []
+        payloadParts: finalizeChunks(pending.memoryFiles, meta.filename),
       }));
       pendingConversionRequests.delete(data.id);
       pending.resolve({
@@ -137,6 +135,24 @@ const getConversionWorker = () => {
   });
   return conversionWorker;
 };
+
+const CHUNK_COALESCE_COUNT = 32;
+function accumulateChunk(map, filename, chunk) {
+  let entry = map.get(filename);
+  if (!entry) { entry = { pending: [], blobs: [] }; map.set(filename, entry); }
+  entry.pending.push(chunk);
+  if (entry.pending.length >= CHUNK_COALESCE_COUNT) {
+    entry.blobs.push(new Blob(entry.pending));
+    entry.pending = [];
+  }
+}
+function finalizeChunks(map, filename) {
+  const entry = map.get(filename);
+  if (!entry) return [];
+  if (Array.isArray(entry)) return entry;
+  if (entry.pending.length > 0) { entry.blobs.push(new Blob(entry.pending)); entry.pending = []; }
+  return entry.blobs;
+}
 
 const runSinkConversionInWorker = (input, requestPayload, expectedFiles, requestedThreads) =>
   new Promise((resolve, reject) => {

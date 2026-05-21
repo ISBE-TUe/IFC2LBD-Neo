@@ -163,28 +163,20 @@ function getConversionWorker() {
     if (data.type === "chunk") {
       if (!data.filename || data.chunk == null) return;
       const chunk = data.chunk instanceof Uint8Array ? data.chunk : new Uint8Array(data.chunk);
-      const chunks = pending.memoryFiles.get(data.filename) || [];
-      chunks.push(chunk);
-      pending.memoryFiles.set(data.filename, chunks);
+      accumulateChunk(pending.memoryFiles, data.filename, chunk);
       return;
     }
 
     if (data.type === "done") {
-      // Assemble all files that came through the sink.
-      // For known files (single .nq, .ttl), use expectedFiles metadata.
-      // For chunked output, the sink emitted fileStart/fileChunk/fileEnd with
-      // dynamic filenames — we build the file list from memoryFiles directly.
       const renderedFiles = [];
       const knownFilenames = new Set(pending.expectedFiles.map(m => m.filename));
-      // Known files first (with metadata from expectedFiles)
       for (const meta of pending.expectedFiles) {
         renderedFiles.push({
           filename: meta.filename, mimeType: meta.mimeType, role: meta.role,
-          payloadParts: pending.memoryFiles.get(meta.filename) || []
+          payloadParts: finalizeChunks(pending.memoryFiles, meta.filename),
         });
       }
-      // Then any additional files from the sink (chunked .part-XXX.nq, manifest.json, etc.)
-      for (const [filename, chunks] of pending.memoryFiles.entries()) {
+      for (const [filename] of pending.memoryFiles.entries()) {
         if (!knownFilenames.has(filename)) {
           const isManifest = filename.endsWith(".manifest.json");
           const isNq = filename.endsWith(".nq");
@@ -192,7 +184,7 @@ function getConversionWorker() {
             filename,
             mimeType: isManifest ? "application/json" : isNq ? "application/n-quads" : "application/octet-stream",
             role: isManifest ? "manifest" : isNq ? "chunk" : "other",
-            payloadParts: chunks,
+            payloadParts: finalizeChunks(pending.memoryFiles, filename),
           });
         }
       }
@@ -245,9 +237,7 @@ async function runSinkConversionInMain(input, requestPayload, expectedFiles, req
     }
     if (event.type === "fileChunk" && event.filename && event.chunk != null) {
       const chunk = event.chunk instanceof Uint8Array ? event.chunk : new Uint8Array(event.chunk);
-      const chunks = memoryFiles.get(event.filename) || [];
-      chunks.push(chunk);
-      memoryFiles.set(event.filename, chunks);
+      accumulateChunk(memoryFiles, event.filename, chunk);
     }
   };
   const streamResult = convertIfcToSink(input, requestPayload, sink);
@@ -258,10 +248,10 @@ async function runSinkConversionInMain(input, requestPayload, expectedFiles, req
       filename: meta.filename,
       mimeType: meta.mimeType,
       role: meta.role,
-      payloadParts: memoryFiles.get(meta.filename) || [],
+      payloadParts: finalizeChunks(memoryFiles, meta.filename),
     });
   }
-  for (const [filename, chunks] of memoryFiles.entries()) {
+  for (const [filename] of memoryFiles.entries()) {
     if (!knownFilenames.has(filename)) {
       const isManifest = filename.endsWith(".manifest.json");
       const isNq = filename.endsWith(".nq");
@@ -269,7 +259,7 @@ async function runSinkConversionInMain(input, requestPayload, expectedFiles, req
         filename,
         mimeType: isManifest ? "application/json" : isNq ? "application/n-quads" : "application/octet-stream",
         role: isManifest ? "manifest" : isNq ? "chunk" : "other",
-        payloadParts: chunks,
+        payloadParts: finalizeChunks(memoryFiles, filename),
       });
     }
   }
@@ -536,16 +526,38 @@ async function writeRenderedFilesToDirectory(files, dirHandle) {
   let totalBytes = 0;
   for (const file of files) {
     if (!file?.filename || !Array.isArray(file.payloadParts)) continue;
+    const blob = new Blob(file.payloadParts, { type: file.mimeType || "application/octet-stream" });
     const fileHandle = await dirHandle.getFileHandle(file.filename, { create: true });
     const writable = await fileHandle.createWritable();
-    for (const chunk of file.payloadParts) {
-      await writable.write(chunk);
-      totalBytes += chunk.byteLength;
-    }
+    await writable.write(blob);
     await writable.close();
     fileCount += 1;
+    totalBytes += blob.size;
   }
   return { fileCount, totalBytes };
+}
+
+// Coalesce every N raw Uint8Array chunks into a Blob as they arrive so that the
+// final Blob construction at download time is cheap (Blob-from-Blobs is O(1) refs,
+// not O(size) copying like Blob-from-Uint8Arrays).
+const CHUNK_COALESCE_COUNT = 32;
+
+function accumulateChunk(map, filename, chunk) {
+  let entry = map.get(filename);
+  if (!entry) { entry = { pending: [], blobs: [] }; map.set(filename, entry); }
+  entry.pending.push(chunk);
+  if (entry.pending.length >= CHUNK_COALESCE_COUNT) {
+    entry.blobs.push(new Blob(entry.pending));
+    entry.pending = [];
+  }
+}
+
+function finalizeChunks(map, filename) {
+  const entry = map.get(filename);
+  if (!entry) return [];
+  if (Array.isArray(entry)) return entry;
+  if (entry.pending.length > 0) { entry.blobs.push(new Blob(entry.pending)); entry.pending = []; }
+  return entry.blobs;
 }
 
 function escapeHtml(value) {
