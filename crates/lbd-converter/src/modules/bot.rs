@@ -1,11 +1,14 @@
+use std::collections::HashSet;
+
 use crossbeam::channel::Sender;
 use ifc_model::IfcModel;
 use ifc_schema::SpatialType;
-use lbd_ontology::{bot_element, bot_has_building, bot_has_site, bot_has_space, bot_has_storey, rdf_type, Object, Triple};
+use lbd_ontology::{bot_contains_element, bot_element, bot_has_building, bot_has_site, bot_has_space, bot_has_storey, rdf_type, Object, Triple};
 
 use crate::{
-    element_resource_iri, normalize_base_uri, sorted_values, spatial_class, spatial_resource_iri,
-    ConvertOptions, StreamError, MIN_STREAM_BATCH_SIZE, MAX_STREAM_BATCH_SIZE,
+    baseline_containment_closure, element_resource_iri, normalize_base_uri, sorted_values,
+    spatial_class, spatial_resource_iri, ConvertOptions, StreamError, MIN_STREAM_BATCH_SIZE,
+    MAX_STREAM_BATCH_SIZE,
 };
 
 /// Emit BOT spatial-node types, spatial-hierarchy predicates and `bot:Element` typing.
@@ -71,6 +74,42 @@ where
                     object: Object::Iri(spatial_resource_iri(base, child.spatial_type, &child.guid)),
                 })?;
             }
+        }
+    }
+
+    // bot:containsElement — emit for all spatial structures via contained_in map
+    let mut emitted = HashSet::new();
+    let mut pairs: Vec<_> = model
+        .contained_in
+        .iter()
+        .filter_map(|(&element_id, &structure_id)| {
+            if model.elements.contains_key(&element_id)
+                && model.spatial_nodes.contains_key(&structure_id)
+            {
+                Some((structure_id, element_id))
+            } else {
+                None
+            }
+        })
+        .collect();
+    pairs.sort_unstable();
+    for (structure_id, element_id) in pairs {
+        let Some(structure) = model.spatial_nodes.get(&structure_id) else {
+            continue;
+        };
+        let structure_subject = spatial_resource_iri(base, structure.spatial_type, &structure.guid);
+        for contained_id in baseline_containment_closure(model, element_id) {
+            let Some(contained_element) = model.elements.get(&contained_id) else {
+                continue;
+            };
+            if !emitted.insert((structure_id, contained_id)) {
+                continue;
+            }
+            emit(Triple {
+                subject: structure_subject.clone(),
+                predicate: bot_contains_element(),
+                object: Object::Iri(element_resource_iri(base, contained_element)),
+            })?;
         }
     }
 
