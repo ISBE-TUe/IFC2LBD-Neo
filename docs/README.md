@@ -22,3 +22,4 @@ Template crates (copy, don't modify): `crates/plugin-template-{preprocess,produc
 ## Plans
 
 - [WebAssembly Plan](./future-wasm-plan.md) — browser WASM delivery phases
+- [Dynamic WASM Plugins](./plan-dynamic-plugins.md) — Grasshopper-style local plugin directory, WASM ABI, GitHub Actions CI/CD
