@@ -755,14 +755,16 @@ fn validate_activation_plan_with_args(
         );
     }
     let has_file_export = active.contains(lbd_pipeline::FILE_EXPORT_ID);
+    let has_log_export = active.contains(lbd_pipeline::LOG_EXPORT_ID);
     let has_stdout_export = active.contains(lbd_pipeline::STDOUT_EXPORT_ID);
     let has_grafeo_export = active.contains(lbd_pipeline::GRAFEO_EXPORT_ID);
     let export_count =
-        has_file_export as usize + has_stdout_export as usize + has_grafeo_export as usize;
+        has_file_export as usize + has_log_export as usize + has_stdout_export as usize + has_grafeo_export as usize;
     if export_count != 1 {
         anyhow::bail!(
-            "module plan must include exactly one export module (`{}`, `{}`, or `{}`)",
+            "module plan must include exactly one export module (`{}`, `{}`, `{}`, or `{}`)",
             lbd_pipeline::FILE_EXPORT_ID,
+            lbd_pipeline::LOG_EXPORT_ID,
             lbd_pipeline::STDOUT_EXPORT_ID,
             lbd_pipeline::GRAFEO_EXPORT_ID
         );

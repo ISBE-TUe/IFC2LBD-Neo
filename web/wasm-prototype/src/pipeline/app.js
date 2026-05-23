@@ -11,13 +11,13 @@ import { initLogPanel, log } from "./log-panel.js";
 import { saveConfig, loadConfig } from "./config.js";
 import { showCliCommand } from "./cli-command.js";
 
-const RUNTIME_BUILD = "pipeline-v9-2026-05-13T14:00Z";
+const RUNTIME_BUILD = "pipeline-v10-2026-05-23T18:25Z";
 
 // ---------------------------------------------------------------------------
 // Pipeline Templates
 // ---------------------------------------------------------------------------
 
-const LBD_MODULES = ["neo-bot-producer", "neo-beo-producer", "neo-props-opm", "neo-omg-fog"];
+const LBD_MODULES = ["neo-bot-producer", "neo-beo-producer", "neo-props-opm", "neo-bsdd-producer", "neo-omg-fog"];
 
 const TEMPLATES = [
   {
@@ -379,7 +379,7 @@ async function init() {
   initMusic();
   setupOutputDirectoryUiSupport();
 
-  log("WASM ready. Pipeline dashboard v9.");
+  log("WASM ready. Pipeline dashboard v10.");
   log(`Build: ${RUNTIME_BUILD}`);
 }
 
@@ -437,6 +437,7 @@ async function runConversion() {
               ...(activeModules.has("neo-bot-producer") ? [{ filename: `${outputStem}_bot.ttl`, mimeType: "text/turtle", role: "bot" }] : []),
               ...(activeModules.has("neo-beo-producer") ? [{ filename: `${outputStem}_beo.ttl`, mimeType: "text/turtle", role: "beo" }] : []),
               ...(activeModules.has("neo-props-opm") ? [{ filename: `${outputStem}_props.ttl`, mimeType: "text/turtle", role: "props" }] : []),
+              ...(activeModules.has("neo-bsdd-producer") ? [{ filename: `${outputStem}_bsdd.ttl`, mimeType: "text/turtle", role: "bsdd" }] : []),
               ...(activeModules.has("neo-omg-fog") ? [{ filename: `${outputStem}_omg.ttl`, mimeType: "text/turtle", role: "omg" }] : []),
               ...(activeModules.has("neo-ifcowl-producer") ? [{ filename: `${outputStem}_ifcowl.ttl`, mimeType: "text/turtle", role: "ifcowl" }] : []),
               ...(activeModules.has("neo-ifc-topology-producer") ? [{ filename: `${outputStem}_topology.ttl`, mimeType: "text/turtle", role: "topology" }] : []),

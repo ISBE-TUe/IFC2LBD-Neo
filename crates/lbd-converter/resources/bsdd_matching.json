@@ -1,0 +1,63 @@
+{
+  "class_aliases": {
+    "ifcwallstandardcase": "IfcWall",
+    "ifcfurnishingelement": "IfcFurnishingElement",
+    "ifcbuildingelementproxy": "IfcBuildingElementProxy"
+  },
+  "pset_aliases": {
+    "abhangigkeiten": "PSet_Revit_Constraints",
+    "abmessungen": "PSet_Revit_Dimensions",
+    "iddaten": "PSet_Revit_Type_Identity_Data",
+    "materialienundoberflachen": "PSet_Revit_Materials_and_Finishes",
+    "phasen": "PSet_Revit_Phasing",
+    "sonstige": "PSet_Revit_Other",
+    "tragwerk": "PSet_Revit_Structural",
+    "statischeberechnung": "PSet_Revit_Structural_Analysis",
+    "geometrischeposition": "PSet_Revit_Constraints",
+    "geometrievontragwerksschnitt": "PSet_Revit_Structural"
+  },
+  "prop_aliases": {
+    "lange": "Length",
+    "hohe": "Height",
+    "breite": "Width",
+    "flache": "Area",
+    "volumen": "Volume",
+    "familie": "Family",
+    "typ": "Type",
+    "typid": "Type ID",
+    "familienname": "Family Name",
+    "kategorie": "Category",
+    "schnittlange": "Cut Length",
+    "tragwerksverwendung": "Structural Usage",
+    "bewehrungsuberdeckungobereflache": "Top Cover",
+    "bewehrungsuberdeckunguntereflache": "Bottom Cover",
+    "bewehrungsuberdeckungandereflachen": "Other Cover",
+    "querschnittsform": "Shape",
+    "querschnittsflache": "Area",
+    "umfang": "Perimeter",
+    "referenzebene": "Reference Level",
+    "startebenenversatz": "Start Level Offset",
+    "endebenenversatz": "End Level Offset",
+    "arbeitsebene": "Work Plane",
+    "ausrichtung": "Orientation",
+    "beschreibung": "Description",
+    "baugruppenkennzeichen": "Assembly Code",
+    "baugruppenbeschreibung": "Assembly Description",
+    "omniclassnummer": "OmniClass Number",
+    "omniclasstitel": "OmniClass Title",
+    "phaseerstellt": "Phase Created",
+    "tragendesmaterial": "Material"
+  },
+  "hard_mappings": {
+    "ifcbeam|psetbeamcommon|isexternal": "IsExternal",
+    "ifcbeam|psetbeamcommon|loadbearing": "LoadBearing",
+    "ifcbeam|psetbeamcommon|roll": "Roll",
+    "ifcbeam|psetbeamcommon|slope": "Slope",
+    "ifcbeam|psetbeamcommon|span": "Span"
+  },
+  "schema_class_aliases": {
+    "IFC2X3": {
+      "ifcwallstandardcase": "IfcWall"
+    }
+  }
+}

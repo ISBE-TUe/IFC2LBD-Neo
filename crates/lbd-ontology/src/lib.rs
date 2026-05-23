@@ -36,7 +36,7 @@ pub const PREFIXES: [(&str, &str); 22] = [
     ("opm", OPM),
     ("bsddc", BSDDC),
     ("bsddp", BSDDP),
-    ("bm", BSDDM),
+    ("bsddm", BSDDM),
     ("omg", OMG),
     ("geo", GEO),
     ("schema", SCHEMA),
@@ -220,10 +220,6 @@ pub fn geo_wkt_literal() -> String {
 
 pub fn opm_current_property_state() -> String {
     format!("{OPM}CurrentPropertyState")
-}
-
-pub fn opm_current_property_state_predicate() -> String {
-    format!("{OPM}currentPropertyState")
 }
 
 pub fn opm_has_property_state() -> String {

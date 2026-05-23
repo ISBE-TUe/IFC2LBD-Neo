@@ -16,6 +16,7 @@ lbd-converter = { workspace = true }
 lbd-ontology = { workspace = true }
 lbd-pipeline = { workspace = true }
 lbd-serializer = { workspace = true }
+plugin-property-preprocess = { workspace = true }
 crossbeam = { workspace = true }
 rayon = { workspace = true }
 serde = { workspace = true }

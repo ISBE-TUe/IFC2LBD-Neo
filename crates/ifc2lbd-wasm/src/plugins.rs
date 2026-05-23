@@ -4,16 +4,18 @@ use std::sync::{Arc, Mutex};
 use crossbeam::channel::Sender;
 use ifc_model::IfcModel;
 use ifc_step::StepFile;
-use lbd_converter::{stream_beo, stream_bot, stream_bsdd, stream_omg_fog, stream_props_opm, ConvertOptions};
+use lbd_converter::{stream_beo, stream_bot, stream_bsdd_with_cache, stream_omg_fog, stream_props_opm, BsddMatchCache, ConvertOptions};
 use lbd_ontology::Triple;
 use lbd_pipeline::{
     BatchKind, DerivedFile, ExportError, ExportFileSummary, ExportPlugin, ExportSession,
-    FailurePolicy, FILE_EXPORT_ID, IFCOWL_PRODUCER_ID, NQUADS_CHUNKED_SERIALIZER_ID,
+    FailurePolicy, FILE_EXPORT_ID, IFCOWL_PRODUCER_ID, LOG_EXPORT_ID, NQUADS_CHUNKED_SERIALIZER_ID,
     NQUADS_SERIALIZER_ID, OMG_FOG_PRODUCER_ID, ParallelismMode, PipelineContext, PipelinePlugin,
-    PipelineStage, PluginManifest, PluginRegistry, ProducerError, ProducerPlugin, SerializerPlugin,
-    TaggedBatch, BEO_PRODUCER_ID, BOT_PRODUCER_ID, BSDD_PRODUCER_ID, PROPS_OPM_PRODUCER_ID,
-    TURTLE_SERIALIZER_ID,
+    PipelineLogBundle, PipelineStage, PluginManifest, PluginRegistry, ProducerError,
+    ProducerPlugin, SerializerPlugin, TaggedBatch, BEO_PRODUCER_ID, BOT_PRODUCER_ID,
+    BSDD_PRODUCER_ID, PROPS_OPM_PRODUCER_ID, TURTLE_SERIALIZER_ID,
 };
+use serde_json;
+use plugin_property_preprocess::{BsddMatchPreprocessPlugin, CleanupPreprocessPlugin};
 use wasm_bindgen::prelude::*;
 
 use crate::types::ModuleManifestView;
@@ -50,12 +52,15 @@ pub(crate) fn module_option_keys(module_id: &str) -> Vec<String> {
         ],
         TURTLE_SERIALIZER_ID => vec!["grouping".to_string(), "layout".to_string()],
         FILE_EXPORT_ID => vec!["output_stem".to_string()],
+        LOG_EXPORT_ID => vec![],
         _ => Vec::new(),
     }
 }
 
 pub(crate) fn browser_registry() -> PluginRegistry {
     let mut registry = PluginRegistry::new();
+    registry.register_preprocess(CleanupPreprocessPlugin).unwrap();
+    registry.register_preprocess(BsddMatchPreprocessPlugin).unwrap();
     // Modular LBD producers
     registry.register_producer(BotProducerPlugin).unwrap();
     registry.register_producer(BeoProducerPlugin).unwrap();
@@ -70,6 +75,7 @@ pub(crate) fn browser_registry() -> PluginRegistry {
     registry.register_serializer(NquadsChunkedSerializerPlugin).unwrap();
     // Export
     registry.register_export(FileExportPlugin).unwrap();
+    registry.register_export(LogExportPlugin).unwrap();
     registry
 }
 
@@ -251,7 +257,8 @@ impl ProducerPlugin for BsddProducerPlugin {
             BatchKind::new(format!("{}bsdd", options.base_uri.trim_end_matches('/')));
         forward_as_tagged(raw_receiver, graph_iri, sender.clone());
 
-        stream_bsdd(&model, &options, &raw_sender)
+        let cache = ctx.get::<BsddMatchCache>();
+        stream_bsdd_with_cache(&model, &options, &raw_sender, cache.as_deref())
             .map(|_| ())
             .map_err(|e| ProducerError::Conversion(format!("bSDD streaming failed: {e}")))
     }
@@ -516,6 +523,7 @@ impl SerializerPlugin for NquadsChunkedSerializerPlugin {}
 // ---------------------------------------------------------------------------
 
 struct FileExportPlugin;
+struct LogExportPlugin;
 
 impl PipelinePlugin for FileExportPlugin {
     fn manifest(&self) -> PluginManifest {
@@ -549,6 +557,43 @@ impl ExportPlugin for FileExportPlugin {
     }
 }
 
+impl PipelinePlugin for LogExportPlugin {
+    fn manifest(&self) -> PluginManifest {
+        PluginManifest {
+            id: LOG_EXPORT_ID,
+            display_name: "Log exporter",
+            stage: PipelineStage::Export,
+            description: "Collects serialized output and writes conversion-log.json sidecar in memory.",
+            inputs: vec!["turtle-bytes", "nquads-bytes"],
+            outputs: vec!["browser-files", "log-sidecar"],
+            requires: vec![],
+            conflicts_with: vec![FILE_EXPORT_ID],
+            failure_policy: FailurePolicy::Required,
+            parallelism: ParallelismMode::Serial,
+            wasm_compatible: true,
+            named_graph_slug: None,
+            needs_full_graph: false,
+        }
+    }
+}
+
+impl ExportPlugin for LogExportPlugin {
+    fn start_session(
+        &self,
+        ctx: &PipelineContext,
+    ) -> Result<Box<dyn ExportSession>, ExportError> {
+        let logs = ctx
+            .get::<PipelineLogBundle>()
+            .map(|l| (*l).clone())
+            .unwrap_or_default();
+        Ok(Box::new(WasmLogExportSession {
+            buffers: Arc::new(Mutex::new(Vec::new())),
+            derived: Vec::new(),
+            logs,
+        }))
+    }
+}
+
 /// In-memory export session for the browser environment.
 ///
 /// `open_sink()` returns a writer that appends to an in-memory `Vec<u8>`.
@@ -557,6 +602,12 @@ struct WasmFileExportSession {
     /// Shared storage: (filename, mime_type, role, bytes).
     buffers: Arc<Mutex<Vec<(String, String, String, Vec<u8>)>>>,
     derived: Vec<ExportFileSummary>,
+}
+
+struct WasmLogExportSession {
+    buffers: Arc<Mutex<Vec<(String, String, String, Vec<u8>)>>>,
+    derived: Vec<ExportFileSummary>,
+    logs: PipelineLogBundle,
 }
 
 impl ExportSession for WasmFileExportSession {
@@ -592,6 +643,59 @@ impl ExportSession for WasmFileExportSession {
     fn finalize(self: Box<Self>) -> Result<Vec<ExportFileSummary>, ExportError> {
         let mut summaries = self.derived;
         let guard = self.buffers.lock().unwrap();
+        for (filename, mime_type, role, bytes) in guard.iter() {
+            summaries.push(ExportFileSummary {
+                filename: filename.clone(),
+                mime_type: mime_type.clone(),
+                role: role.clone(),
+                bytes: bytes.len() as u64,
+            });
+        }
+        Ok(summaries)
+    }
+}
+
+impl ExportSession for WasmLogExportSession {
+    fn open_sink(
+        &mut self,
+        filename: &str,
+        mime_type: &str,
+        role: &str,
+    ) -> Result<Box<dyn Write + Send>, ExportError> {
+        let buffers = Arc::clone(&self.buffers);
+        let filename = filename.to_string();
+        let mime_type = mime_type.to_string();
+        let role = role.to_string();
+        Ok(Box::new(WasmSinkWriter {
+            buffers,
+            filename,
+            mime_type,
+            role,
+            buf: Vec::new(),
+        }))
+    }
+
+    fn accept_derived_file(&mut self, file: DerivedFile) -> Result<(), ExportError> {
+        self.derived.push(ExportFileSummary {
+            filename: file.filename,
+            mime_type: file.mime_type.to_string(),
+            role: "derived".to_string(),
+            bytes: file.bytes.len() as u64,
+        });
+        Ok(())
+    }
+
+    fn finalize(self: Box<Self>) -> Result<Vec<ExportFileSummary>, ExportError> {
+        let mut summaries = self.derived;
+        let mut guard = self.buffers.lock().unwrap();
+        let json = serde_json::to_vec_pretty(&self.logs)
+            .map_err(|e| ExportError::Export(format!("cannot serialize conversion-log.json: {e}")))?;
+        guard.push((
+            "conversion-log.json".to_string(),
+            "application/json".to_string(),
+            "log".to_string(),
+            json,
+        ));
         for (filename, mime_type, role, bytes) in guard.iter() {
             summaries.push(ExportFileSummary {
                 filename: filename.clone(),

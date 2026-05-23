@@ -732,6 +732,7 @@ dependencies = [
  "lbd-pipeline",
  "lbd-serializer",
  "lbd-topology",
+ "plugin-property-preprocess",
  "plugin-topology-full",
  "rayon",
  "rio_api",
@@ -756,6 +757,7 @@ dependencies = [
  "lbd-ontology",
  "lbd-pipeline",
  "lbd-serializer",
+ "plugin-property-preprocess",
  "rayon",
  "serde",
  "serde-wasm-bindgen",
@@ -851,6 +853,7 @@ dependencies = [
  "serde",
  "serde_json",
  "smol_str",
+ "strsim",
  "thiserror",
  "time",
  "tracing",
@@ -902,6 +905,7 @@ dependencies = [
  "lbd-ontology",
  "rayon",
  "serde",
+ "serde_json",
  "thiserror",
 ]
 
@@ -1272,6 +1276,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "51bae2ac328883f7acdfea3d66a7c35751187f870bc81f94563733a154d7a670"
 dependencies = [
  "plotters-backend",
+]
+
+[[package]]
+name = "plugin-property-preprocess"
+version = "0.1.0"
+dependencies = [
+ "ifc-model",
+ "lbd-converter",
+ "lbd-pipeline",
+ "serde_json",
+ "tracing",
 ]
 
 [[package]]

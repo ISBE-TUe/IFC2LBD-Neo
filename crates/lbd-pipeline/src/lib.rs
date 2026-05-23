@@ -173,8 +173,23 @@ pub const TURTLE_SERIALIZER_ID: &str = "neo-turtle-serializer";
 pub const NQUADS_SERIALIZER_ID: &str = "neo-nquads-serializer";
 pub const NQUADS_CHUNKED_SERIALIZER_ID: &str = "neo-nquads-chunked-serializer";
 pub const FILE_EXPORT_ID: &str = "neo-file-export";
+pub const LOG_EXPORT_ID: &str = "neo-log-export";
 pub const STDOUT_EXPORT_ID: &str = "neo-stdout-export";
 pub const GRAFEO_EXPORT_ID: &str = "neo-grafeo-export";
+pub const CLEANUP_PREPROCESS_ID: &str = "neo-cleanup-preprocess";
+pub const BSDD_MATCH_PREPROCESS_ID: &str = "neo-bsdd-match-preprocess";
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct PipelineLogBundle {
+    pub entries: Vec<PipelineLogEntry>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PipelineLogEntry {
+    pub module_id: String,
+    pub metric: String,
+    pub value: serde_json::Value,
+}
 
 /// A tagged batch of triples produced by a producer plugin.
 #[derive(Clone, Debug)]
