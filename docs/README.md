@@ -1,34 +1,24 @@
 # Documentation
 
-Use this folder entry point first.
+## Architecture
 
-## Current Docs (Read These First)
+- [Converter Pipeline](./converter-pipeline.md) — stage order, threading model, channel backpressure
+- [WASM vs CLI Comparison](./wasm-vs-cli-comparison.md) — where the two runners diverge
+- [Full Topology Workflow](./topology-full-workflow.md) — geometry kernel, adjacency, topology producer
 
-- [Status Matrix](./current/status.md)
-- [Paper Plan](./current/paper-plan.md)
-- [Converter Pipeline](./current/converter-pipeline.md)
-- [Full Topology Workflow](./current/topology-full-workflow.md)
-- [Contributing](./current/contributing.md)
-- [Testing and Benchmarks](./current/testing-and-benchmarking.md)
-- [Future WebAssembly Plan](./current/future-wasm-plan.md)
-- [Module Authoring and Activation](./current/plugin-authoring-and-activation.md)
-- [Agent Module Instructions](./current/agent-plugin-instructions.md)
-- [Oxigraph Loading](./current/oxigraph-loading.md)
+## Plugin Development
 
-## Plans (Active Roadmaps)
+- [Plugin Authoring and Activation](./plugin-authoring-and-activation.md) — canonical guide; start here
+- [Agent Plugin Instructions](./agent-plugin-instructions.md) — AI-agent-specific workflow for building plugins
 
-- [Plans Index](./plans/README.md)
-- [Topology Pipeline Plan](./plans/topology-pipeline-plan.md)
-- [Geometry Kernel Plan](./plans/geometry-kernel-plan.md)
+Template crates (copy, don't modify): `crates/plugin-template-{preprocess,producer,postprocess,export}/`
 
-## Reference (Background)
+## Operations
 
-- [Reference Index](./reference/README.md)
-- [Architecture History](./reference/architecture-history.md)
-- [Geometry Kernel Adapter](./reference/geometry-kernel-adapter.md)
+- [Contributing](./contributing.md)
+- [Testing and Benchmarking](./testing-and-benchmarking.md)
+- [Oxigraph Loading](./oxigraph-loading.md) — how to load chunked N-Quads output into Oxigraph
 
-## Archive (Historical Notes)
+## Plans
 
-- [Archive Index](./archive/README.md)
-
-Rule: if docs conflict, prefer files under `docs/current/`.
+- [WebAssembly Plan](./future-wasm-plan.md) — browser WASM delivery phases

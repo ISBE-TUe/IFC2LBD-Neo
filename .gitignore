@@ -22,22 +22,11 @@ __pycache__/
 *.nq
 
 # Generated outputs / reports
-artifacts/**/*.ttl
-artifacts/wasm-node/
-artifacts/outputs/
-artifacts/test-output/
-artifacts/benchmarks/**
-artifacts/paper-benchmarks/**
-artifacts/reference-java/**
-artifacts/topology/**
-!artifacts/benchmarks/.gitkeep
-!artifacts/paper-benchmarks/.gitkeep
-!artifacts/reference-java/.gitkeep
-!artifacts/topology/.gitkeep
-benchmark_results/
 out.ttl
 out_ifcowl.ttl
 *_ifcowl.ttl
+test-results/
+benchmark_results/
 
 # Web build deps/outputs
 **/node_modules/
