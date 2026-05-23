@@ -23,7 +23,7 @@ const ALL_STAGES = [
 
 // Module sort order: modular producers first, then others
 const PRODUCE_ORDER = [
-  "neo-bot-producer", "neo-beo-producer", "neo-props-opm", "neo-omg-fog",
+  "neo-bot-producer", "neo-beo-producer", "neo-props-opm", "neo-bsdd-producer", "neo-omg-fog",
   "neo-ifcowl-producer", "neo-ifc-topology-producer", "neo-bbox-enricher",
 ];
 const SERIALIZE_ORDER = ["neo-turtle-serializer", "neo-nquads-serializer", "neo-nquads-chunked-serializer"];

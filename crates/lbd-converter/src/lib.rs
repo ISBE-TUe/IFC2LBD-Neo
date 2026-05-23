@@ -9,7 +9,10 @@ pub mod modules;
 /// Compute approximate bounding boxes from STEP data (no mesh/OCC dependency).
 /// Used by the WASM bbox enricher for topology enrichment.
 pub use modules::bbox::compute_approximate_bboxes;
-pub use modules::bsdd::stream_bsdd;
+pub use modules::bsdd::{
+    build_bsdd_match_cache, dedup_model_property_sets, stream_bsdd, stream_bsdd_with_cache,
+    BsddMatchCache,
+};
 
 // LBD sub-module public streaming API — each produces its own named graph.
 // To add a new module: create modules/<name>.rs, pub mod it in modules/mod.rs, add pub use here.
@@ -42,7 +45,7 @@ use lbd_ontology::{
     express_logical_value, furn_class, geo_as_wkt, geo_geometry, geo_wkt_literal,
     lbd_has_bounding_box, lbd_has_property_set, lbd_has_quantity_set, lbd_project,
     lbd_property_set, lbd_quantity_set, list_has_contents, list_has_next,
-    opm_current_property_state, opm_current_property_state_predicate, opm_has_property_state,
+    opm_current_property_state, opm_has_property_state,
     opm_property, owl_imports, owl_object_property, owl_ontology, props_property,
     prov_generated_at_time, rdf_member, rdf_type, rdfs_comment, rdfs_label,
     schema_applicable_type, schema_value,
@@ -1712,11 +1715,6 @@ where
         object: Object::Iri(state_subject.clone()),
     })?;
     emit(Triple {
-        subject: property_subject.clone(),
-        predicate: opm_current_property_state_predicate(),
-        object: Object::Iri(state_subject.clone()),
-    })?;
-    emit(Triple {
         subject: state_subject.clone(),
         predicate: rdf_type(),
         object: Object::Iri(opm_current_property_state()),
@@ -2377,7 +2375,7 @@ fn property_resource_iri(base: &str, predicate_local: &str, guid: &str, set_scop
     format!("{base}/prop_{prop}_{set_suffix}_{object_suffix}")
 }
 
-fn property_set_resource_iri(base: &str, guid: &str) -> String {
+pub(crate) fn property_set_resource_iri(base: &str, guid: &str) -> String {
     let suffix = canonical_guid_token(guid);
     format!("{base}/propertyset_{suffix}")
 }
@@ -2962,11 +2960,6 @@ mod tests {
         assert!(result.triples.iter().any(|triple| {
             triple.subject == area_property
                 && triple.predicate == opm_has_property_state()
-                && matches!(&triple.object, Object::Iri(iri) if iri.contains("/state_area_") || iri.contains("/state_area"))
-        }));
-        assert!(result.triples.iter().any(|triple| {
-            triple.subject == area_property
-                && triple.predicate == opm_current_property_state_predicate()
                 && matches!(&triple.object, Object::Iri(iri) if iri.contains("/state_area_") || iri.contains("/state_area"))
         }));
         assert!(result.triples.iter().any(|triple| {

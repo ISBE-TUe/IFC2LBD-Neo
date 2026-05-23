@@ -29,7 +29,7 @@ use crate::validation::{
 };
 use crate::DEFAULT_BASE_URI;
 use lbd_pipeline::{
-    BEO_PRODUCER_ID, BOT_PRODUCER_ID, FILE_EXPORT_ID, IFCOWL_PRODUCER_ID,
+    BEO_PRODUCER_ID, BOT_PRODUCER_ID, BSDD_PRODUCER_ID, FILE_EXPORT_ID, IFCOWL_PRODUCER_ID,
     NQUADS_CHUNKED_SERIALIZER_ID, NQUADS_SERIALIZER_ID, OMG_FOG_PRODUCER_ID,
     PipelineContext, PipelineStage, ResourceLimits, PROPS_OPM_PRODUCER_ID, TURTLE_SERIALIZER_ID,
     spawn_preprocessors, spawn_producers,
@@ -71,6 +71,7 @@ fn active_producer_ids_from_settings(settings: &ExecutionSettings) -> Vec<String
     let mut ids = Vec::new();
     if settings.emit_bot { ids.push(BOT_PRODUCER_ID.to_string()); }
     if settings.emit_beo { ids.push(BEO_PRODUCER_ID.to_string()); }
+    if settings.emit_bsdd { ids.push(BSDD_PRODUCER_ID.to_string()); }
     if settings.emit_props_opm { ids.push(PROPS_OPM_PRODUCER_ID.to_string()); }
     if settings.emit_omg_fog { ids.push(OMG_FOG_PRODUCER_ID.to_string()); }
     if settings.emit_ifcowl { ids.push(IFCOWL_PRODUCER_ID.to_string()); }
@@ -275,6 +276,7 @@ impl PipelineRunner {
         for (flag, id) in [
             (settings.emit_bot, BOT_PRODUCER_ID),
             (settings.emit_beo, BEO_PRODUCER_ID),
+            (settings.emit_bsdd, BSDD_PRODUCER_ID),
             (settings.emit_props_opm, PROPS_OPM_PRODUCER_ID),
             (settings.emit_omg_fog, OMG_FOG_PRODUCER_ID),
             (settings.emit_ifcowl, IFCOWL_PRODUCER_ID),
@@ -1263,6 +1265,7 @@ fn turtle_to_sink_joined(
 
     let bot_receiver = raw_receivers.remove(BOT_PRODUCER_ID);
     let beo_receiver = raw_receivers.remove(BEO_PRODUCER_ID);
+    let bsdd_receiver = raw_receivers.remove(BSDD_PRODUCER_ID);
     let props_receiver = raw_receivers.remove(PROPS_OPM_PRODUCER_ID);
     let omg_receiver = raw_receivers.remove(OMG_FOG_PRODUCER_ID);
     let ifcowl_receiver = raw_receivers.remove(IFCOWL_PRODUCER_ID);
@@ -1297,6 +1300,7 @@ fn turtle_to_sink_joined(
         }
         collect_and_emit!(bot_receiver, BOT_PRODUCER_ID);
         collect_and_emit!(beo_receiver, BEO_PRODUCER_ID);
+        collect_and_emit!(bsdd_receiver, BSDD_PRODUCER_ID);
         collect_and_emit!(props_receiver, PROPS_OPM_PRODUCER_ID);
         collect_and_emit!(omg_receiver, OMG_FOG_PRODUCER_ID);
         // Write sorted LBD triples first (BOT/BEO/PROPS/OMG — bounded in size).
@@ -1330,6 +1334,7 @@ fn turtle_to_sink_joined(
         }
         drain_and_emit!(bot_receiver, BOT_PRODUCER_ID);
         drain_and_emit!(beo_receiver, BEO_PRODUCER_ID);
+        drain_and_emit!(bsdd_receiver, BSDD_PRODUCER_ID);
         drain_and_emit!(props_receiver, PROPS_OPM_PRODUCER_ID);
         drain_and_emit!(omg_receiver, OMG_FOG_PRODUCER_ID);
         drain_and_emit!(ifcowl_receiver, IFCOWL_PRODUCER_ID);
@@ -1403,6 +1408,7 @@ fn turtle_to_sink_separate(
 
     let bot_receiver = raw_receivers.remove(BOT_PRODUCER_ID);
     let beo_receiver = raw_receivers.remove(BEO_PRODUCER_ID);
+    let bsdd_receiver = raw_receivers.remove(BSDD_PRODUCER_ID);
     let props_receiver = raw_receivers.remove(PROPS_OPM_PRODUCER_ID);
     let omg_receiver = raw_receivers.remove(OMG_FOG_PRODUCER_ID);
     let ifcowl_receiver = raw_receivers.remove(IFCOWL_PRODUCER_ID);
@@ -1443,6 +1449,7 @@ fn turtle_to_sink_separate(
     }
     drain_sep_and_emit!(bot_receiver, "bot", BOT_PRODUCER_ID);
     drain_sep_and_emit!(beo_receiver, "beo", BEO_PRODUCER_ID);
+    drain_sep_and_emit!(bsdd_receiver, "bsdd", BSDD_PRODUCER_ID);
     drain_sep_and_emit!(props_receiver, "props", PROPS_OPM_PRODUCER_ID);
     drain_sep_and_emit!(omg_receiver, "omg", OMG_FOG_PRODUCER_ID);
     drain_sep_and_emit!(ifcowl_receiver, "ifcowl", IFCOWL_PRODUCER_ID);
@@ -1580,6 +1587,7 @@ fn nquads_to_sink(
 
     let bot_receiver = raw_receivers.remove(BOT_PRODUCER_ID);
     let beo_receiver = raw_receivers.remove(BEO_PRODUCER_ID);
+    let bsdd_receiver = raw_receivers.remove(BSDD_PRODUCER_ID);
     let props_receiver = raw_receivers.remove(PROPS_OPM_PRODUCER_ID);
     let omg_receiver = raw_receivers.remove(OMG_FOG_PRODUCER_ID);
     let ifcowl_receiver = raw_receivers.remove(IFCOWL_PRODUCER_ID);
@@ -1618,6 +1626,7 @@ fn nquads_to_sink(
         }
         drain_chunked!(bot_receiver, "bot", BOT_PRODUCER_ID);
         drain_chunked!(beo_receiver, "beo", BEO_PRODUCER_ID);
+        drain_chunked!(bsdd_receiver, "bsdd", BSDD_PRODUCER_ID);
         drain_chunked!(props_receiver, "props", PROPS_OPM_PRODUCER_ID);
         drain_chunked!(omg_receiver, "omg", OMG_FOG_PRODUCER_ID);
         drain_chunked!(ifcowl_receiver, "ifcowl", IFCOWL_PRODUCER_ID);
@@ -1663,6 +1672,7 @@ fn nquads_to_sink(
         }
         drain_merged!(bot_receiver, "bot", BOT_PRODUCER_ID);
         drain_merged!(beo_receiver, "beo", BEO_PRODUCER_ID);
+        drain_merged!(bsdd_receiver, "bsdd", BSDD_PRODUCER_ID);
         drain_merged!(props_receiver, "props", PROPS_OPM_PRODUCER_ID);
         drain_merged!(omg_receiver, "omg", OMG_FOG_PRODUCER_ID);
         drain_merged!(ifcowl_receiver, "ifcowl", IFCOWL_PRODUCER_ID);
@@ -1746,6 +1756,7 @@ fn export_browser_files(
 
         let bot_triples = collect_producer!(settings.emit_bot, |tx| lbd_converter::stream_bot(model, options, tx));
         let beo_triples = collect_producer!(settings.emit_beo, |tx| lbd_converter::stream_beo(model, options, tx));
+        let bsdd_triples = collect_producer!(settings.emit_bsdd, |tx| lbd_converter::stream_bsdd(model, options, tx));
         let props_triples = collect_producer!(settings.emit_props_opm, |tx| lbd_converter::stream_props_opm(model, options, tx));
         let omg_triples = collect_producer!(settings.emit_omg_fog, |tx| lbd_converter::stream_omg_fog(model, options, tx));
         let ifcowl_triples = collect_producer!(settings.emit_ifcowl, |tx| lbd_converter::modules::ifcowl::stream_ifcowl(
@@ -1766,6 +1777,7 @@ fn export_browser_files(
         }
         write_producer_nq!(bot_triples, "bot");
         write_producer_nq!(beo_triples, "beo");
+        write_producer_nq!(bsdd_triples, "bsdd");
         write_producer_nq!(props_triples, "props");
         write_producer_nq!(omg_triples, "omg");
         write_producer_nq!(ifcowl_triples, "ifcowl");

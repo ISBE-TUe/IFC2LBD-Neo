@@ -208,6 +208,7 @@ pub struct ExecutionSettings {
     //       propagated into all dispatch sites.
     pub emit_bot: bool,
     pub emit_beo: bool,
+    pub emit_bsdd: bool,
     pub emit_props_opm: bool,
     pub emit_omg_fog: bool,
     // Other producer flags

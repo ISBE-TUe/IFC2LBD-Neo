@@ -6,7 +6,8 @@ use crate::types::{
 };
 use lbd_pipeline::ActivationPlan;
 use lbd_pipeline::{
-    BEO_PRODUCER_ID, BOT_PRODUCER_ID, FILE_EXPORT_ID, IFCOWL_PRODUCER_ID,
+    BEO_PRODUCER_ID, BOT_PRODUCER_ID, BSDD_PRODUCER_ID, FILE_EXPORT_ID, IFCOWL_PRODUCER_ID,
+    LOG_EXPORT_ID,
     NQUADS_CHUNKED_SERIALIZER_ID,
     NQUADS_SERIALIZER_ID, OMG_FOG_PRODUCER_ID, PROPS_OPM_PRODUCER_ID,
     TURTLE_SERIALIZER_ID,
@@ -31,6 +32,7 @@ pub(crate) fn validate_activation_plan(plan: &ActivationPlan) -> Result<(), Wasm
     let active: HashSet<&str> = plan.enabled_ids.iter().map(|id| id.as_str()).collect();
     let has_any_producer = active.contains(BOT_PRODUCER_ID)
         || active.contains(BEO_PRODUCER_ID)
+        || active.contains(BSDD_PRODUCER_ID)
         || active.contains(PROPS_OPM_PRODUCER_ID)
         || active.contains(OMG_FOG_PRODUCER_ID)
         || active.contains(IFCOWL_PRODUCER_ID);
@@ -40,10 +42,10 @@ pub(crate) fn validate_activation_plan(plan: &ActivationPlan) -> Result<(), Wasm
             BOT_PRODUCER_ID, BEO_PRODUCER_ID, PROPS_OPM_PRODUCER_ID, IFCOWL_PRODUCER_ID
         )));
     }
-    if !active.contains(FILE_EXPORT_ID) {
+    if !active.contains(FILE_EXPORT_ID) && !active.contains(LOG_EXPORT_ID) {
         return Err(WasmApiError::Message(format!(
-            "module plan must include `{}`",
-            FILE_EXPORT_ID
+            "module plan must include `{}` or `{}`",
+            FILE_EXPORT_ID, LOG_EXPORT_ID
         )));
     }
     let has_nquads =
@@ -165,6 +167,7 @@ pub(crate) fn resolve_execution_settings(
         // Modular LBD producers — add new producers here as emit_<name> flags
         emit_bot: active.contains(BOT_PRODUCER_ID),
         emit_beo: active.contains(BEO_PRODUCER_ID),
+        emit_bsdd: active.contains(BSDD_PRODUCER_ID),
         emit_props_opm: active.contains(PROPS_OPM_PRODUCER_ID),
         emit_omg_fog: active.contains(OMG_FOG_PRODUCER_ID),
         emit_ifcowl: active.contains(IFCOWL_PRODUCER_ID),
