@@ -31,8 +31,8 @@ use crate::DEFAULT_BASE_URI;
 use lbd_pipeline::{
     BEO_PRODUCER_ID, BOT_PRODUCER_ID, FILE_EXPORT_ID, IFCOWL_PRODUCER_ID,
     NQUADS_CHUNKED_SERIALIZER_ID, NQUADS_SERIALIZER_ID, OMG_FOG_PRODUCER_ID,
-    PipelineContext, ResourceLimits, PROPS_OPM_PRODUCER_ID, TURTLE_SERIALIZER_ID,
-    spawn_producers,
+    PipelineContext, PipelineStage, ResourceLimits, PROPS_OPM_PRODUCER_ID, TURTLE_SERIALIZER_ID,
+    spawn_preprocessors, spawn_producers,
 };
 
 /// Returns true if the named-graph IRI belongs to an IfcOWL (or alignment) graph.
@@ -1233,18 +1233,26 @@ fn turtle_to_sink_joined(
     // -----------------------------------------------------------------------
     let options_arc = std::sync::Arc::new(options.clone());
     let step_arc = std::sync::Arc::new(step);
-    let ctx = std::sync::Arc::new(make_pipeline_context(
+    let registry = crate::plugins::browser_registry();
+    let mut ctx = make_pipeline_context(
         model.clone(),
         options_arc.clone(),
         step_arc.clone(),
         chan_cap,
-    ));
+    );
+    let preprocess_ids: Vec<String> = registry
+        .manifests_for_stage(PipelineStage::Preprocess)
+        .into_iter()
+        .map(|m| m.id.to_string())
+        .collect();
+    spawn_preprocessors(&preprocess_ids, &registry, &mut ctx)
+        .map_err(|e| lbd_serializer::SerializerError::Io(std::io::Error::other(e)))?;
+    let ctx = std::sync::Arc::new(ctx);
 
     // The context uses options without topology-disable (topology runs separately via
     // bespoke path). The ProducerPlugin::produce() implementations for BOT/BEO/PROPS/OMG
     // only use base_uri and do not check enable_topology, so passing options as-is is fine.
     let producer_ids = active_producer_ids_from_settings(settings);
-    let registry = crate::plugins::browser_registry();
     let mut raw_receivers: std::collections::HashMap<String, _> = {
         let mut map = std::collections::HashMap::new();
         for (id, rx) in spawn_producers(&producer_ids, &registry, &ctx, chan_cap) {
@@ -1368,15 +1376,23 @@ fn turtle_to_sink_separate(
     // -----------------------------------------------------------------------
     let options_arc = std::sync::Arc::new(options.clone());
     let step_arc = std::sync::Arc::new(step);
-    let ctx = std::sync::Arc::new(make_pipeline_context(
+    let registry = crate::plugins::browser_registry();
+    let mut ctx = make_pipeline_context(
         model.clone(),
         options_arc.clone(),
         step_arc.clone(),
         chan_cap,
-    ));
+    );
+    let preprocess_ids: Vec<String> = registry
+        .manifests_for_stage(PipelineStage::Preprocess)
+        .into_iter()
+        .map(|m| m.id.to_string())
+        .collect();
+    spawn_preprocessors(&preprocess_ids, &registry, &mut ctx)
+        .map_err(|e| lbd_serializer::SerializerError::Io(std::io::Error::other(e)))?;
+    let ctx = std::sync::Arc::new(ctx);
 
     let producer_ids = active_producer_ids_from_settings(settings);
-    let registry = crate::plugins::browser_registry();
     let mut raw_receivers: std::collections::HashMap<String, _> = {
         let mut map = std::collections::HashMap::new();
         for (id, rx) in spawn_producers(&producer_ids, &registry, &ctx, chan_cap) {
@@ -1537,15 +1553,23 @@ fn nquads_to_sink(
     // -----------------------------------------------------------------------
     let options_arc = std::sync::Arc::new(options.clone());
     let step_arc = std::sync::Arc::new(step);
-    let ctx = std::sync::Arc::new(make_pipeline_context(
+    let registry = crate::plugins::browser_registry();
+    let mut ctx = make_pipeline_context(
         model.clone(),
         options_arc.clone(),
         step_arc.clone(),
         chan_cap,
-    ));
+    );
+    let preprocess_ids: Vec<String> = registry
+        .manifests_for_stage(PipelineStage::Preprocess)
+        .into_iter()
+        .map(|m| m.id.to_string())
+        .collect();
+    spawn_preprocessors(&preprocess_ids, &registry, &mut ctx)
+        .map_err(|e| lbd_serializer::SerializerError::Io(std::io::Error::other(e)))?;
+    let ctx = std::sync::Arc::new(ctx);
 
     let producer_ids = active_producer_ids_from_settings(settings);
-    let registry = crate::plugins::browser_registry();
     let mut raw_receivers: std::collections::HashMap<String, _> = {
         let mut map = std::collections::HashMap::new();
         for (id, rx) in spawn_producers(&producer_ids, &registry, &ctx, chan_cap) {

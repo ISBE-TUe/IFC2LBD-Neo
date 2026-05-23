@@ -1272,6 +1272,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "plugin-template-export"
+version = "0.1.0"
+dependencies = [
+ "lbd-pipeline",
+]
+
+[[package]]
+name = "plugin-template-postprocess"
+version = "0.1.0"
+dependencies = [
+ "lbd-ontology",
+ "lbd-pipeline",
+]
+
+[[package]]
+name = "plugin-template-preprocess"
+version = "0.1.0"
+dependencies = [
+ "lbd-pipeline",
+]
+
+[[package]]
+name = "plugin-template-producer"
+version = "0.1.0"
+dependencies = [
+ "crossbeam",
+ "lbd-ontology",
+ "lbd-pipeline",
+]
+
+[[package]]
 name = "plugin-topology-full"
 version = "0.1.0"
 dependencies = [

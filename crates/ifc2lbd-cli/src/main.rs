@@ -179,14 +179,16 @@ fn main() -> anyhow::Result<()> {
     let ifcowl_graph_iri = format!("{normalized_base}/ifcowl");
 
     let parse_start = Instant::now();
-    let step = parse_step_file(input_path)
-        .with_context(|| format!("failed to parse STEP file {}", input_path.display()))?;
+    let step = std::sync::Arc::new(
+        parse_step_file(input_path)
+            .with_context(|| format!("failed to parse STEP file {}", input_path.display()))?,
+    );
     tracing::info!(
         "phase parse_step_file completed in {:.3}s",
         parse_start.elapsed().as_secs_f64()
     );
     let build_start = Instant::now();
-    let model = build_model(&step).context("failed to build IFC model")?;
+    let model = std::sync::Arc::new(build_model(&step).context("failed to build IFC model")?);
     tracing::info!(
         "phase build_model completed in {:.3}s",
         build_start.elapsed().as_secs_f64()
@@ -209,6 +211,35 @@ fn main() -> anyhow::Result<()> {
         stream_batch_size: 8 * 1024,
         ifcowl_max_workers: 16,
     };
+
+    // CLI producers use direct streaming (not spawn_producers), so we must
+    // explicitly run the preprocess stage here before those calls execute.
+    let preprocess_ids: Vec<String> = activation_plan
+        .enabled_ids
+        .iter()
+        .filter_map(|id| built_in_registry.plugin(id).map(|p| p.manifest()))
+        .filter(|m| m.stage == lbd_pipeline::PipelineStage::Preprocess)
+        .map(|m| m.id.to_string())
+        .collect();
+    let limits = lbd_pipeline::ResourceLimits {
+        memory_budget_bytes: 0,
+        thread_count: rayon::current_num_threads().max(1),
+        channel_capacity: SERIALIZER_CHANNEL_CAPACITY,
+        batch_size: base_options.stream_batch_size,
+    };
+    let mut ctx = lbd_pipeline::PipelineContext::new(limits);
+    ctx.insert(model.clone());
+    ctx.insert(std::sync::Arc::new(base_options.clone()));
+    ctx.insert(step.clone());
+    lbd_pipeline::spawn_preprocessors(&preprocess_ids, &built_in_registry, &mut ctx)
+        .map_err(|e| anyhow::anyhow!("preprocess stage failed: {:?}", e))?;
+    // Re-read model and step — preprocess plugins may have replaced them via ctx.replace().
+    let model = ctx
+        .get::<ifc_model::IfcModel>()
+        .ok_or_else(|| anyhow::anyhow!("IfcModel missing from context after preprocess"))?;
+    let step = ctx
+        .get::<ifc_step::StepFile>()
+        .ok_or_else(|| anyhow::anyhow!("StepFile missing from context after preprocess"))?;
 
     let (converter_lbd_sender, converter_lbd_receiver) =
         crossbeam::channel::bounded(SERIALIZER_CHANNEL_CAPACITY);
