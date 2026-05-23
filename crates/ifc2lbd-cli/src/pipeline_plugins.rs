@@ -11,7 +11,7 @@ use lbd_pipeline::{
     BatchKind, ExportPlugin, FailurePolicy, ParallelismMode, PipelineContext, PipelinePlugin,
     PipelineStage, PluginManifest, PluginRegistry, ProducerError, ProducerPlugin, SerializerPlugin,
     TaggedBatch, BEO_PRODUCER_ID, BOT_PRODUCER_ID, FILE_EXPORT_ID,
-    GRAFEO_EXPORT_ID, IFCOWL_PRODUCER_ID, NQUADS_SERIALIZER_ID,
+    GRAFEO_EXPORT_ID, IFCOWL_PRODUCER_ID, NQUADS_CHUNKED_SERIALIZER_ID, NQUADS_SERIALIZER_ID,
     OMG_FOG_PRODUCER_ID, PROPS_OPM_PRODUCER_ID, STDOUT_EXPORT_ID,
     TURTLE_SERIALIZER_ID,
 };
@@ -52,6 +52,9 @@ pub fn built_in_registry() -> PluginRegistry {
     registry
         .register_serializer(NquadsSerializerPlugin)
         .unwrap();
+    registry
+        .register_serializer(NquadsChunkedSerializerPlugin)
+        .unwrap();
     registry.register_export(FileExportPlugin).unwrap();
     registry.register_export(StdoutExportPlugin).unwrap();
     registry.register_export(GrafeoExportPlugin).unwrap();
@@ -65,6 +68,7 @@ struct OmgFogProducerPlugin;
 struct IfcowlProducerPlugin;
 struct TurtleSerializerPlugin;
 struct NquadsSerializerPlugin;
+struct NquadsChunkedSerializerPlugin;
 struct FileExportPlugin;
 struct StdoutExportPlugin;
 struct GrafeoExportPlugin;
@@ -173,6 +177,38 @@ impl PipelinePlugin for NquadsSerializerPlugin {
 }
 
 impl SerializerPlugin for NquadsSerializerPlugin {
+    fn serialize(
+        &self,
+        _ctx: &lbd_pipeline::PipelineContext,
+        _receiver: crossbeam::channel::Receiver<lbd_pipeline::TaggedBatch>,
+        _writer: &mut dyn std::io::Write,
+    ) -> Result<lbd_pipeline::SerializeStats, lbd_pipeline::SerializerError> {
+        Err(lbd_pipeline::SerializerError::Serialization(
+            "serialize not yet via PipelineRunner".to_string(),
+        ))
+    }
+}
+
+impl PipelinePlugin for NquadsChunkedSerializerPlugin {
+    fn manifest(&self) -> PluginManifest {
+        PluginManifest {
+            id: NQUADS_CHUNKED_SERIALIZER_ID,
+            display_name: "Built-in N-Quads chunked serializer",
+            stage: PipelineStage::Serialize,
+            description: "Serializes graph streams into chunked N-Quads files with a chunk manifest.",
+            inputs: vec!["quads"],
+            outputs: vec!["nquads-chunks"],
+            requires: vec![],
+            conflicts_with: vec![TURTLE_SERIALIZER_ID, NQUADS_SERIALIZER_ID],
+            failure_policy: FailurePolicy::Required,
+            parallelism: ParallelismMode::ParallelByPartition,
+            wasm_compatible: true,
+            named_graph_slug: None,
+        }
+    }
+}
+
+impl SerializerPlugin for NquadsChunkedSerializerPlugin {
     fn serialize(
         &self,
         _ctx: &lbd_pipeline::PipelineContext,

@@ -401,29 +401,12 @@ impl Write for QuadChunkWriter {
 
 const MIN_CORE_CHUNK_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_CORE_CHUNK_BYTES: u64 = 512 * 1024 * 1024;
-const IFC_TO_NQ_ESTIMATE_MULTIPLIER: u64 = 32;
 
 pub(crate) fn resolve_quad_chunk_output_dir(output_file: Option<&Path>) -> PathBuf {
     output_file
         .and_then(Path::parent)
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."))
-}
-
-pub(crate) fn resolve_effective_core_chunk_count(
-    mode: QuadChunkingMode,
-    requested_core_count: Option<usize>,
-    min_chunk_count: usize,
-    input_file_size_bytes: u64,
-) -> Option<usize> {
-    let estimated_nq_bytes =
-        (input_file_size_bytes.saturating_mul(IFC_TO_NQ_ESTIMATE_MULTIPLIER)).max(1);
-    resolve_effective_core_chunk_count_for_estimated_bytes(
-        mode,
-        requested_core_count,
-        min_chunk_count,
-        estimated_nq_bytes,
-    )
 }
 
 pub(crate) fn resolve_effective_core_chunk_count_for_estimated_bytes(
