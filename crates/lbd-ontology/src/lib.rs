@@ -10,6 +10,9 @@ pub const UNIT: &str = "http://qudt.org/vocab/unit/";
 pub const LIST: &str = "https://w3id.org/list#";
 pub const EXPRESS: &str = "https://w3id.org/express#";
 pub const OPM: &str = "https://w3id.org/opm#";
+pub const BSDDC: &str = "https://identifier.buildingsmart.org/uri/buildingsmart/ifc/4.3/class/";
+pub const BSDDP: &str = "https://identifier.buildingsmart.org/uri/buildingsmart/ifc/4.3/prop/";
+pub const BSDDM: &str = "https://w3id.org/ifc2lbd/bsdd-meta#";
 pub const OMG: &str = "https://w3id.org/omg#";
 pub const GEO: &str = "http://www.opengis.net/ont/geosparql#";
 pub const SCHEMA: &str = "http://schema.org/";
@@ -20,7 +23,7 @@ pub const RDF: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
 pub const RDFS: &str = "http://www.w3.org/2000/01/rdf-schema#";
 pub const XSD: &str = "http://www.w3.org/2001/XMLSchema#";
 
-pub const PREFIXES: [(&str, &str); 19] = [
+pub const PREFIXES: [(&str, &str); 22] = [
     ("bot", BOT),
     ("topo", TOPO),
     ("beo", BEO),
@@ -31,6 +34,9 @@ pub const PREFIXES: [(&str, &str); 19] = [
     ("list", LIST),
     ("express", EXPRESS),
     ("opm", OPM),
+    ("bsddc", BSDDC),
+    ("bsddp", BSDDP),
+    ("bm", BSDDM),
     ("omg", OMG),
     ("geo", GEO),
     ("schema", SCHEMA),

@@ -23,3 +23,6 @@ rio_turtle = { workspace = true }
 time = { workspace = true }
 percent-encoding = { workspace = true }
 unicode-normalization = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+flate2 = { workspace = true }

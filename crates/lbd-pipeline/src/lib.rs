@@ -166,6 +166,7 @@ impl BatchKind {
 pub const BOT_PRODUCER_ID: &str = "neo-bot-producer";
 pub const BEO_PRODUCER_ID: &str = "neo-beo-producer";
 pub const PROPS_OPM_PRODUCER_ID: &str = "neo-props-opm";
+pub const BSDD_PRODUCER_ID: &str = "neo-bsdd-producer";
 pub const OMG_FOG_PRODUCER_ID: &str = "neo-omg-fog";
 pub const IFCOWL_PRODUCER_ID: &str = "neo-ifcowl-producer";
 pub const TURTLE_SERIALIZER_ID: &str = "neo-turtle-serializer";
