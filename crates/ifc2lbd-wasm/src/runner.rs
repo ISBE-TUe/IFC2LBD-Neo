@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::io::{self};
 
+use serde_json;
+
 use ifc_model::build_model;
 use ifc_step::{parse_step_bytes, StepFile};
 #[cfg(target_arch = "wasm32")]
@@ -29,10 +31,11 @@ use crate::validation::{
 };
 use crate::DEFAULT_BASE_URI;
 use lbd_pipeline::{
-    BEO_PRODUCER_ID, BOT_PRODUCER_ID, BSDD_PRODUCER_ID, FILE_EXPORT_ID, IFCOWL_PRODUCER_ID,
+    BEO_PRODUCER_ID, BOT_PRODUCER_ID, BSDD_MATCH_PREPROCESS_ID, BSDD_PRODUCER_ID,
+    CLEANUP_PREPROCESS_ID, FILE_EXPORT_ID, IFCOWL_PRODUCER_ID,
     NQUADS_CHUNKED_SERIALIZER_ID, NQUADS_SERIALIZER_ID, OMG_FOG_PRODUCER_ID,
-    PipelineContext, PipelineStage, ResourceLimits, PROPS_OPM_PRODUCER_ID, TURTLE_SERIALIZER_ID,
-    spawn_preprocessors, spawn_producers,
+    PipelineContext, PipelineLogBundle, PipelineStage, ResourceLimits, PROPS_OPM_PRODUCER_ID,
+    TURTLE_SERIALIZER_ID, spawn_preprocessors, spawn_producers,
 };
 
 /// Returns true if the named-graph IRI belongs to an IfcOWL (or alignment) graph.
@@ -102,7 +105,9 @@ struct StageDoneEvent {
 
 /// Per-stage measured durations and triple counts.
 struct StageDurations {
-    /// Maps plugin_id → (duration_ms, triple_count)
+    /// Maps preprocess plugin_id → duration_ms
+    by_preprocess: Vec<(String, u64)>,
+    /// Maps producer plugin_id → (duration_ms, triple_count)
     by_producer: HashMap<String, (u64, u64)>,
     serialize_ms: u64,
     export_ms: u64,
@@ -111,6 +116,7 @@ struct StageDurations {
 impl StageDurations {
     fn new() -> Self {
         Self {
+            by_preprocess: Vec::new(),
             by_producer: HashMap::new(),
             serialize_ms: 0,
             export_ms: 0,
@@ -359,6 +365,17 @@ impl PipelineRunner {
                     triples_out: 0,
                     error: None,
                 }];
+                for (plugin_id, duration_ms) in &stage_durations.by_preprocess {
+                    tel.push(StageTelemetry {
+                        plugin_id: plugin_id.clone(),
+                        stage: "Preprocess".to_string(),
+                        status: "success".to_string(),
+                        duration_ms: *duration_ms,
+                        bytes_out: 0,
+                        triples_out: 0,
+                        error: None,
+                    });
+                }
                 for (plugin_id, (duration_ms, triples)) in &stage_durations.by_producer {
                     tel.push(StageTelemetry {
                         plugin_id: plugin_id.clone(),
@@ -874,232 +891,8 @@ fn turtle_to_sink(
         );
     }
 
-    let mut summaries = Vec::new();
-    let chan_cap = if options.low_memory_mode { 4 } else { 16 };
-    let instance_base = options.base_uri.clone();
-    let mut produce_durations: HashMap<&'static str, u64> = HashMap::new();
-
-    let model = std::sync::Arc::new(model);
-
-    let (lbd_sender, lbd_receiver) = crossbeam::channel::bounded(chan_cap);
-    let (ifcowl_sender, ifcowl_receiver) = if settings.emit_ifcowl {
-        let (tx, rx) = crossbeam::channel::bounded(chan_cap);
-        (Some(tx), Some(rx))
-    } else {
-        (None, None)
-    };
-    let options_lbd = options.clone();
-
-    // Spawn LBD+IfcOWL inside rayon::spawn (sequential on wasm32, parallel on native)
-    let lbd_stage_tx = stage_tx.clone();
-    let ifcowl_stage_tx = stage_tx.clone();
-    let model_prod = model.clone();
-    let emit_bot_turtle = settings.emit_bot;
-    let emit_beo_turtle = settings.emit_beo;
-    let emit_props_opm_turtle = settings.emit_props_opm;
-    let emit_omg_fog_turtle = settings.emit_omg_fog;
-    rayon::spawn(move || {
-        // 1. IfcOWL
-        if let Some(ifcowl_sender) = ifcowl_sender {
-            let base = lbd_converter::normalize_base_uri(&options_lbd.base_uri);
-            let t0 = now_ms();
-            let result = lbd_converter::modules::ifcowl::stream_ifcowl(
-                &step,
-                &base,
-                step.header.schema,
-                &ifcowl_sender,
-                options_lbd.stream_batch_size,
-                options_lbd.ifcowl_max_workers,
-            );
-            let ms = now_ms() - t0;
-            drop(ifcowl_sender);
-            let _ = ifcowl_stage_tx.send(StageDoneEvent {
-                plugin_id: IFCOWL_PRODUCER_ID,
-                stage: "Produce",
-                duration_ms: ms,
-                triple_count: 0,
-            });
-            let _ = result;
-        }
-
-        // 2. Modular LBD producers (BOT / BEO / PROPS_OPM)
-        if emit_bot_turtle {
-            let t0 = now_ms();
-            let triples = lbd_converter::stream_bot(&model_prod, &options_lbd, &lbd_sender)
-                .unwrap_or(0);
-            let ms = now_ms() - t0;
-            let _ = lbd_stage_tx.send(StageDoneEvent {
-                plugin_id: BOT_PRODUCER_ID,
-                stage: "Produce",
-                duration_ms: ms,
-                triple_count: triples,
-            });
-        }
-        if emit_beo_turtle {
-            let t0 = now_ms();
-            let triples = lbd_converter::stream_beo(&model_prod, &options_lbd, &lbd_sender)
-                .unwrap_or(0);
-            let ms = now_ms() - t0;
-            let _ = lbd_stage_tx.send(StageDoneEvent {
-                plugin_id: BEO_PRODUCER_ID,
-                stage: "Produce",
-                duration_ms: ms,
-                triple_count: triples,
-            });
-        }
-        if emit_props_opm_turtle {
-            let t0 = now_ms();
-            let triples =
-                lbd_converter::stream_props_opm(&model_prod, &options_lbd, &lbd_sender)
-                    .unwrap_or(0);
-            let ms = now_ms() - t0;
-            let _ = lbd_stage_tx.send(StageDoneEvent {
-                plugin_id: PROPS_OPM_PRODUCER_ID,
-                stage: "Produce",
-                duration_ms: ms,
-                triple_count: triples,
-            });
-        }
-        if emit_omg_fog_turtle {
-            let t0 = now_ms();
-            let triples = lbd_converter::stream_omg_fog(&model_prod, &options_lbd, &lbd_sender)
-                .unwrap_or(0);
-            let ms = now_ms() - t0;
-            let _ = lbd_stage_tx.send(StageDoneEvent {
-                plugin_id: OMG_FOG_PRODUCER_ID,
-                stage: "Produce",
-                duration_ms: ms,
-                triple_count: triples,
-            });
-        }
-        drop(lbd_sender);
-    });
-
-    // Triple count tracking (counted during serialization)
-    let mut ifcowl_triple_count: u64 = 0;
-
-    // --- Serialize IfcOWL (separate file) ---
-    let mut ifcowl_writer = None;
-    if let Some(ifcowl_rx) = ifcowl_receiver {
-        let mut w = SinkChunkWriter::new(
-            sink,
-            format!("{}_ifcowl.ttl", settings.output_stem),
-            "text/turtle;charset=utf-8",
-            "ifcowl",
-            sink_config.chunk_size,
-            sink_config.max_pending_bytes,
-        )?;
-        if !options.low_memory_mode {
-            write_turtle_prefixes_for_stream(&mut w, Some(&instance_base))?;
-        }
-        emit_stage_event(
-            sink,
-            TURTLE_SERIALIZER_ID,
-            "Serialize",
-            "running",
-            0,
-            0,
-            0,
-            None,
-        )?;
-        let ser_t0 = now_ms();
-        for batch in ifcowl_rx {
-            ifcowl_triple_count += batch.len() as u64;
-            if options.low_memory_mode {
-                serialize_turtle_batch_raw_to_writer(&batch, &mut w)?
-            } else {
-                serialize_turtle_batch_to_writer(&batch, &mut w, Some(&instance_base))?
-            }
-        }
-        let _ifcowl_ser_ms = now_ms() - ser_t0;
-        ifcowl_writer = Some(w);
-    }
-
-    // --- Serialize LBD + Topology into same .ttl file ---
-    let mut lbd_writer = SinkChunkWriter::new(
-        sink,
-        format!("{}.ttl", settings.output_stem),
-        "text/turtle;charset=utf-8",
-        "lbd",
-        sink_config.chunk_size,
-        sink_config.max_pending_bytes,
-    )?;
-    if !options.low_memory_mode {
-        write_turtle_prefixes_for_stream(&mut lbd_writer, Some(&instance_base))?;
-    }
-
-    emit_stage_event(
-        sink,
-        TURTLE_SERIALIZER_ID,
-        "Serialize",
-        "running",
-        0,
-        0,
-        0,
-        None,
-    )?;
-    let serialize_t0 = now_ms();
-
-    for batch in lbd_receiver {
-        if options.low_memory_mode {
-            serialize_turtle_batch_raw_to_writer(&batch, &mut lbd_writer)?
-        } else {
-            serialize_turtle_batch_to_writer(&batch, &mut lbd_writer, Some(&instance_base))?
-        }
-    }
-    let serialize_ms = now_ms() - serialize_t0;
-
-    // Drain stage events — emit "success" with real triple counts
-    while let Ok(evt) = stage_rx.try_recv() {
-        let triples = if evt.triple_count > 0 {
-            evt.triple_count
-        } else if evt.plugin_id == IFCOWL_PRODUCER_ID {
-            ifcowl_triple_count
-        } else {
-            0
-        };
-        produce_durations.insert(evt.plugin_id, evt.duration_ms);
-        emit_stage_event(
-            sink,
-            evt.plugin_id,
-            evt.stage,
-            "success",
-            evt.duration_ms,
-            0,
-            triples,
-            None,
-        )?;
-    }
-
-    // --- Export ---
-    emit_stage_event(sink, FILE_EXPORT_ID, "Export", "running", 0, 0, 0, None)?;
-    let export_t0 = now_ms();
-    let (lbd_summary, lbd_peak, lbd_chunk_size) = lbd_writer.finish()?;
-    summaries.push(lbd_summary);
-    let mut peak = lbd_peak;
-    let mut chunk_size = lbd_chunk_size;
-    if let Some(w) = ifcowl_writer {
-        let (s, p, c) = w.finish()?;
-        summaries.push(s);
-        peak = peak.max(p);
-        chunk_size = chunk_size.max(c);
-    }
-    let export_ms = now_ms() - export_t0;
-
-    let mut stage_durations = StageDurations::new();
-    stage_durations.serialize_ms = serialize_ms;
-    stage_durations.export_ms = export_ms;
-    for (plugin_id, ms) in produce_durations {
-        let triples = if plugin_id == IFCOWL_PRODUCER_ID {
-            ifcowl_triple_count
-        } else {
-            0
-        };
-        stage_durations
-            .by_producer
-            .insert(plugin_id.to_string(), (ms, triples));
-    }
-    Ok((summaries, peak, chunk_size, stage_durations))
+    // TurtleLayout has only Joined and Separate variants; both are handled above.
+    unreachable!("all TurtleLayout variants handled")
 }
 
 /// Convert a `Receiver<TaggedBatch>` into a raw-triples receiver by spawning
@@ -1242,13 +1035,21 @@ fn turtle_to_sink_joined(
         step_arc.clone(),
         chan_cap,
     );
-    let preprocess_ids: Vec<String> = registry
-        .manifests_for_stage(PipelineStage::Preprocess)
-        .into_iter()
-        .map(|m| m.id.to_string())
-        .collect();
+    let preprocess_ids: Vec<String> = {
+        let mut ids = vec![CLEANUP_PREPROCESS_ID.to_string()];
+        if settings.emit_bsdd { ids.push(BSDD_MATCH_PREPROCESS_ID.to_string()); }
+        ids
+    };
+    for id in &preprocess_ids {
+        emit_stage_event(sink, id, "Preprocess", "running", 0, 0, 0, None)?;
+    }
+    let pre_t0 = now_ms();
     spawn_preprocessors(&preprocess_ids, &registry, &mut ctx)
         .map_err(|e| lbd_serializer::SerializerError::Io(std::io::Error::other(e)))?;
+    let pre_ms = now_ms() - pre_t0;
+    for id in &preprocess_ids {
+        emit_stage_event(sink, id, "Preprocess", "success", pre_ms, 0, 0, None)?;
+    }
     let ctx = std::sync::Arc::new(ctx);
 
     // The context uses options without topology-disable (topology runs separately via
@@ -1346,14 +1147,21 @@ fn turtle_to_sink_joined(
     let (summary, peak, chunk_size) = writer.finish()?;
     let export_ms = now_ms() - export_t0;
 
+    let mut summaries = vec![summary];
+    if settings.emit_log {
+        emit_log_sidecar(sink, &ctx, sink_config, &mut summaries)?;
+    }
     let mut stage_durations = StageDurations::new();
     stage_durations.serialize_ms = serialize_ms;
     stage_durations.export_ms = export_ms;
+    for id in &preprocess_ids {
+        stage_durations.by_preprocess.push((id.clone(), pre_ms));
+    }
     for (plugin_id, ms) in produce_durations {
         let triples = produce_triples.get(plugin_id).copied().unwrap_or(0);
         stage_durations.by_producer.insert(plugin_id.to_string(), (ms, triples));
     }
-    Ok((vec![summary], peak, chunk_size, stage_durations))
+    Ok((summaries, peak, chunk_size, stage_durations))
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1388,13 +1196,21 @@ fn turtle_to_sink_separate(
         step_arc.clone(),
         chan_cap,
     );
-    let preprocess_ids: Vec<String> = registry
-        .manifests_for_stage(PipelineStage::Preprocess)
-        .into_iter()
-        .map(|m| m.id.to_string())
-        .collect();
+    let preprocess_ids: Vec<String> = {
+        let mut ids = vec![CLEANUP_PREPROCESS_ID.to_string()];
+        if settings.emit_bsdd { ids.push(BSDD_MATCH_PREPROCESS_ID.to_string()); }
+        ids
+    };
+    for id in &preprocess_ids {
+        emit_stage_event(sink, id, "Preprocess", "running", 0, 0, 0, None)?;
+    }
+    let pre_t0 = now_ms();
     spawn_preprocessors(&preprocess_ids, &registry, &mut ctx)
         .map_err(|e| lbd_serializer::SerializerError::Io(std::io::Error::other(e)))?;
+    let pre_ms = now_ms() - pre_t0;
+    for id in &preprocess_ids {
+        emit_stage_event(sink, id, "Preprocess", "success", pre_ms, 0, 0, None)?;
+    }
     let ctx = std::sync::Arc::new(ctx);
 
     let producer_ids = active_producer_ids_from_settings(settings);
@@ -1461,9 +1277,15 @@ fn turtle_to_sink_separate(
     let chunk_size = sink_config.chunk_size;
     let export_ms = now_ms() - export_t0;
 
+    if settings.emit_log {
+        emit_log_sidecar(sink, &ctx, sink_config, &mut summaries)?;
+    }
     let mut stage_durations = StageDurations::new();
     stage_durations.serialize_ms = serialize_ms;
     stage_durations.export_ms = export_ms;
+    for id in &preprocess_ids {
+        stage_durations.by_preprocess.push((id.clone(), pre_ms));
+    }
     for (plugin_id, ms) in produce_durations {
         let triples = produce_triples.get(plugin_id).copied().unwrap_or(0);
         stage_durations
@@ -1567,13 +1389,21 @@ fn nquads_to_sink(
         step_arc.clone(),
         chan_cap,
     );
-    let preprocess_ids: Vec<String> = registry
-        .manifests_for_stage(PipelineStage::Preprocess)
-        .into_iter()
-        .map(|m| m.id.to_string())
-        .collect();
+    let preprocess_ids: Vec<String> = {
+        let mut ids = vec![CLEANUP_PREPROCESS_ID.to_string()];
+        if settings.emit_bsdd { ids.push(BSDD_MATCH_PREPROCESS_ID.to_string()); }
+        ids
+    };
+    for id in &preprocess_ids {
+        emit_stage_event(sink, id, "Preprocess", "running", 0, 0, 0, None)?;
+    }
+    let pre_t0 = now_ms();
     spawn_preprocessors(&preprocess_ids, &registry, &mut ctx)
         .map_err(|e| lbd_serializer::SerializerError::Io(std::io::Error::other(e)))?;
+    let pre_ms = now_ms() - pre_t0;
+    for id in &preprocess_ids {
+        emit_stage_event(sink, id, "Preprocess", "success", pre_ms, 0, 0, None)?;
+    }
     let ctx = std::sync::Arc::new(ctx);
 
     let producer_ids = active_producer_ids_from_settings(settings);
@@ -1636,9 +1466,15 @@ fn nquads_to_sink(
         let export_t0 = now_ms();
         let export_ms = now_ms() - export_t0;
 
+        if settings.emit_log {
+            emit_log_sidecar(sink, &ctx, sink_config, &mut summaries)?;
+        }
         let mut sd = StageDurations::new();
         sd.serialize_ms = serialize_ms;
         sd.export_ms = export_ms;
+        for id in &preprocess_ids {
+            sd.by_preprocess.push((id.clone(), pre_ms));
+        }
         for (plugin_id, ms) in produce_durations {
             let triples = produce_triples.get(plugin_id).copied().unwrap_or(0);
             sd.by_producer.insert(plugin_id.to_string(), (ms, triples));
@@ -1684,15 +1520,62 @@ fn nquads_to_sink(
         let export_ms = now_ms() - export_t0;
         summaries.push(summary);
 
+        if settings.emit_log {
+            emit_log_sidecar(sink, &ctx, sink_config, &mut summaries)?;
+        }
         let mut sd = StageDurations::new();
         sd.serialize_ms = serialize_ms;
         sd.export_ms = export_ms;
+        for id in &preprocess_ids {
+            sd.by_preprocess.push((id.clone(), pre_ms));
+        }
         for (plugin_id, ms) in produce_durations {
             let triples = produce_triples.get(plugin_id).copied().unwrap_or(0);
             sd.by_producer.insert(plugin_id.to_string(), (ms, triples));
         }
         Ok((summaries, peak, chunk_size, sd))
     }
+}
+
+/// Serialize per-module log JSON sidecars from `PipelineLogBundle` in context.
+/// Writes one `{module_id}.log.json` file per module through the JS sink.
+#[cfg(target_arch = "wasm32")]
+fn emit_log_sidecar(
+    sink: &js_sys::Function,
+    ctx: &std::sync::Arc<PipelineContext>,
+    sink_config: &SinkConfig,
+    summaries: &mut Vec<OutputFileSummary>,
+) -> Result<(), lbd_serializer::SerializerError> {
+    use std::io::Write as _;
+    let bundle = match ctx.get::<PipelineLogBundle>() {
+        Some(b) => (*b).clone(),
+        None => return Ok(()),
+    };
+    if bundle.modules.is_empty() {
+        return Ok(());
+    }
+    let mut module_ids: Vec<&str> = bundle.modules.keys().map(String::as_str).collect();
+    module_ids.sort_unstable();
+    for module_id in module_ids {
+        let stats = &bundle.modules[module_id];
+        let json = serde_json::to_vec_pretty(stats).unwrap_or_default();
+        if json.is_empty() {
+            continue;
+        }
+        let filename = format!("{module_id}.log.json");
+        let mut w = SinkChunkWriter::new(
+            sink,
+            filename,
+            "application/json",
+            "log",
+            json.len().max(sink_config.chunk_size),
+            json.len().max(sink_config.chunk_size),
+        )?;
+        w.write_all(&json).map_err(lbd_serializer::SerializerError::Io)?;
+        let (summary, _, _) = w.finish()?;
+        summaries.push(summary);
+    }
+    Ok(())
 }
 
 // ===========================================================================

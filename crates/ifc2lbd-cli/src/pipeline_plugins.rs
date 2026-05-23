@@ -1,10 +1,8 @@
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::PathBuf;
-use std::thread;
 
-use anyhow::Context;
-use crossbeam::channel::{Receiver, Sender};
+use crossbeam::channel::Sender;
 use ifc_model::IfcModel;
 use ifc_step::StepFile;
 use lbd_converter::{stream_beo, stream_bot, stream_bsdd_with_cache, stream_omg_fog, stream_props_opm, BsddMatchCache, ConvertOptions};
@@ -13,12 +11,11 @@ use lbd_pipeline::{
     BatchKind, DerivedFile, ExportError, ExportFileSummary, ExportPlugin, ExportSession,
     FailurePolicy, ParallelismMode, PipelineContext, PipelinePlugin, PipelineStage, PluginManifest,
     PipelineLogBundle, PluginRegistry, ProducerError, ProducerPlugin, SerializerPlugin, TaggedBatch, BEO_PRODUCER_ID,
-    BOT_PRODUCER_ID, BSDD_PRODUCER_ID, FILE_EXPORT_ID, GRAFEO_EXPORT_ID, IFCOWL_PRODUCER_ID,
+    BOT_PRODUCER_ID, BSDD_PRODUCER_ID, FILE_EXPORT_ID, IFCOWL_PRODUCER_ID,
     LOG_EXPORT_ID, NQUADS_CHUNKED_SERIALIZER_ID, NQUADS_SERIALIZER_ID, OMG_FOG_PRODUCER_ID,
     PROPS_OPM_PRODUCER_ID, STDOUT_EXPORT_ID, TURTLE_SERIALIZER_ID,
 };
 use plugin_property_preprocess::{BsddMatchPreprocessPlugin, CleanupPreprocessPlugin};
-use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
 // OutputDir — context key for the export destination directory
@@ -72,7 +69,6 @@ pub fn built_in_registry() -> PluginRegistry {
     registry.register_export(FileExportPlugin).unwrap();
     registry.register_export(LogExportPlugin).unwrap();
     registry.register_export(StdoutExportPlugin).unwrap();
-    registry.register_export(GrafeoExportPlugin).unwrap();
     registry
 }
 
@@ -88,7 +84,6 @@ struct NquadsChunkedSerializerPlugin;
 struct FileExportPlugin;
 struct LogExportPlugin;
 struct StdoutExportPlugin;
-struct GrafeoExportPlugin;
 
 // ---------------------------------------------------------------------------
 // Producer plugins
@@ -458,7 +453,7 @@ impl PipelinePlugin for FileExportPlugin {
             inputs: vec!["turtle-bytes", "nquads-bytes", "nquads-chunks"],
             outputs: vec!["filesystem"],
             requires: vec![],
-            conflicts_with: vec![STDOUT_EXPORT_ID, GRAFEO_EXPORT_ID],
+            conflicts_with: vec![STDOUT_EXPORT_ID],
             failure_policy: FailurePolicy::Required,
             parallelism: ParallelismMode::Serial,
             wasm_compatible: false,
@@ -546,7 +541,7 @@ impl PipelinePlugin for LogExportPlugin {
             inputs: vec!["turtle-bytes", "nquads-bytes", "nquads-chunks"],
             outputs: vec!["filesystem", "log-sidecar"],
             requires: vec![],
-            conflicts_with: vec![FILE_EXPORT_ID, STDOUT_EXPORT_ID, GRAFEO_EXPORT_ID],
+            conflicts_with: vec![STDOUT_EXPORT_ID],
             failure_policy: FailurePolicy::Required,
             parallelism: ParallelismMode::Serial,
             wasm_compatible: false,
@@ -623,17 +618,23 @@ impl ExportSession for CliLogExportSession {
                 bytes,
             });
         }
-        let json_path = self.output_dir.join("conversion-log.json");
-        let json = serde_json::to_vec_pretty(&self.logs)
-            .map_err(|e| ExportError::Export(format!("cannot serialize conversion-log.json: {e}")))?;
-        std::fs::write(&json_path, &json)
-            .map_err(|e| ExportError::Export(format!("cannot write {}: {e}", json_path.display())))?;
-        summaries.push(ExportFileSummary {
-            filename: "conversion-log.json".to_string(),
-            mime_type: "application/json".to_string(),
-            role: "log".to_string(),
-            bytes: json.len() as u64,
-        });
+        let mut module_ids: Vec<&str> = self.logs.modules.keys().map(String::as_str).collect();
+        module_ids.sort_unstable();
+        for module_id in module_ids {
+            let stats = &self.logs.modules[module_id];
+            let filename = format!("{module_id}.log.json");
+            let json = serde_json::to_vec_pretty(stats)
+                .map_err(|e| ExportError::Export(format!("cannot serialize {filename}: {e}")))?;
+            let path = self.output_dir.join(&filename);
+            std::fs::write(&path, &json)
+                .map_err(|e| ExportError::Export(format!("cannot write {}: {e}", path.display())))?;
+            summaries.push(ExportFileSummary {
+                filename,
+                mime_type: "application/json".to_string(),
+                role: "log".to_string(),
+                bytes: json.len() as u64,
+            });
+        }
         Ok(summaries)
     }
 }
@@ -650,7 +651,7 @@ impl PipelinePlugin for StdoutExportPlugin {
             inputs: vec!["turtle-bytes", "nquads-bytes"],
             outputs: vec!["stdout"],
             requires: vec![],
-            conflicts_with: vec![FILE_EXPORT_ID, GRAFEO_EXPORT_ID],
+            conflicts_with: vec![FILE_EXPORT_ID],
             failure_policy: FailurePolicy::Required,
             parallelism: ParallelismMode::Serial,
             wasm_compatible: false,
@@ -729,280 +730,6 @@ impl Write for CountingStdoutWriter {
     }
 }
 
-// --- GrafeoExportPlugin -----------------------------------------------------
-
-const DIRECT_STREAM_VERSION: u8 = 1;
-
-#[derive(Debug, Serialize, Deserialize)]
-struct DirectStreamFrame {
-    version: u8,
-    graph: String,
-    triples: Vec<DirectStreamTriple>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct DirectStreamTriple {
-    subject: DirectStreamTerm,
-    predicate: DirectStreamTerm,
-    object: DirectStreamTerm,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-enum DirectStreamTerm {
-    Iri(String),
-    BlankNode(String),
-    Literal(String),
-    TypedLiteral { value: String, datatype: String },
-    LangLiteral { value: String, lang: String },
-}
-
-impl PipelinePlugin for GrafeoExportPlugin {
-    fn manifest(&self) -> PluginManifest {
-        PluginManifest {
-            id: GRAFEO_EXPORT_ID,
-            display_name: "Built-in Grafeo exporter",
-            stage: PipelineStage::Export,
-            description: "Frames graph batches for direct Grafeo ingestion.",
-            inputs: vec!["quads", "triple-batches"],
-            outputs: vec!["grafeo-stream"],
-            requires: vec![NQUADS_SERIALIZER_ID],
-            conflicts_with: vec![FILE_EXPORT_ID, STDOUT_EXPORT_ID],
-            failure_policy: FailurePolicy::Required,
-            parallelism: ParallelismMode::ParallelByPartition,
-            wasm_compatible: false,
-            named_graph_slug: None,
-            needs_full_graph: false,
-        }
-    }
-}
-
-impl ExportPlugin for GrafeoExportPlugin {
-    fn start_session(
-        &self,
-        ctx: &PipelineContext,
-    ) -> Result<Box<dyn ExportSession>, ExportError> {
-        let output_dir = ctx
-            .get::<OutputDir>()
-            .map(|d| d.0.clone())
-            .unwrap_or_else(|| PathBuf::from("."));
-        Ok(Box::new(GrafeoExportSession {
-            output_dir,
-            bytes_written: 0,
-        }))
-    }
-}
-
-/// Grafeo export session.
-///
-/// Grafeo uses a binary-framed protocol (bincode-encoded `DirectStreamFrame`
-/// structs) rather than a plain byte stream. The `open_sink()` method returns
-/// a `GrafeoFrameWriter` that accumulates triples and flushes them as Grafeo
-/// frames.
-///
-/// For the bespoke pre-existing Grafeo path from `main.rs` that uses producer
-/// channels directly, see `stream_grafeo_batches_to_writer()` below.
-struct GrafeoExportSession {
-    output_dir: PathBuf,
-    bytes_written: u64,
-}
-
-impl ExportSession for GrafeoExportSession {
-    fn open_sink(
-        &mut self,
-        filename: &str,
-        _mime_type: &str,
-        _role: &str,
-    ) -> Result<Box<dyn Write + Send>, ExportError> {
-        let path = self.output_dir.join(filename);
-        let file = File::create(&path)
-            .map_err(|e| ExportError::Export(format!("cannot create {}: {e}", path.display())))?;
-        Ok(Box::new(GrafeoFrameWriter::new(BufWriter::new(file))))
-    }
-
-    fn accept_derived_file(&mut self, file: DerivedFile) -> Result<(), ExportError> {
-        let path = self.output_dir.join(&file.filename);
-        std::fs::write(&path, &file.bytes).map_err(|e| {
-            ExportError::Export(format!("cannot write {}: {e}", path.display()))
-        })?;
-        self.bytes_written += file.bytes.len() as u64;
-        Ok(())
-    }
-
-    fn finalize(self: Box<Self>) -> Result<Vec<ExportFileSummary>, ExportError> {
-        Ok(vec![ExportFileSummary {
-            filename: "grafeo-stream".to_string(),
-            mime_type: "application/octet-stream".to_string(),
-            role: "grafeo".to_string(),
-            bytes: self.bytes_written,
-        }])
-    }
-}
-
-/// A `Write` implementation that buffers raw N-Quads lines and encodes them as
-/// Grafeo binary frames. Each line is a complete N-Quad; when the buffer
-/// reaches `FRAME_LINE_LIMIT`, a frame is flushed.
-struct GrafeoFrameWriter<W: Write> {
-    inner: W,
-    line_buf: Vec<u8>,
-}
-
-const GRAFEO_FRAME_BYTES: usize = 256 * 1024;
-
-impl<W: Write + Send> GrafeoFrameWriter<W> {
-    fn new(inner: W) -> Self {
-        Self {
-            inner,
-            line_buf: Vec::with_capacity(GRAFEO_FRAME_BYTES),
-        }
-    }
-
-    fn flush_frame(&mut self) -> io::Result<()> {
-        if self.line_buf.is_empty() {
-            return Ok(());
-        }
-        // Write raw bytes; callers handle framing at the grafeo protocol level.
-        self.inner.write_all(&self.line_buf)?;
-        self.line_buf.clear();
-        Ok(())
-    }
-}
-
-impl<W: Write + Send> Write for GrafeoFrameWriter<W> {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.line_buf.extend_from_slice(buf);
-        if self.line_buf.len() >= GRAFEO_FRAME_BYTES {
-            self.flush_frame()?;
-        }
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.flush_frame()?;
-        self.inner.flush()
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Grafeo batch-streaming helper (bespoke path used by main.rs)
-// ---------------------------------------------------------------------------
-
-/// Stream LBD/IfcOWL/topology triple batches directly into a Grafeo-compatible
-/// binary-framed writer.
-///
-/// This function implements the pre-existing Grafeo streaming path used by
-/// `main.rs`. It operates on raw producer-channel receivers rather than the
-/// `ExportSession` API, because the Grafeo protocol requires per-graph framing
-/// that cannot be expressed through a generic `Write` sink.
-///
-/// New exporters that target Grafeo should implement `ExportPlugin` and use
-/// `GrafeoExportSession::open_sink()` for standard output, but may also use
-/// this helper to stream directly from producer channels when needed.
-pub fn stream_grafeo_batches_to_writer<W: Write>(
-    lbd_receiver: Receiver<Vec<lbd_ontology::Triple>>,
-    ifcowl_receiver: Option<Receiver<Vec<lbd_ontology::Triple>>>,
-    topology_receiver: Option<Receiver<Vec<lbd_ontology::Triple>>>,
-    mut writer: W,
-    lbd_graph_iri: &str,
-    ifcowl_graph_iri: &str,
-    topology_graph_iri: &str,
-) -> anyhow::Result<()> {
-    let (merged_sender, merged_receiver) =
-        crossbeam::channel::unbounded::<(String, Vec<lbd_ontology::Triple>)>();
-
-    let lbd_graph = lbd_graph_iri.to_string();
-    let lbd_sender = merged_sender.clone();
-    let lbd_forwarder = thread::spawn(move || {
-        for batch in lbd_receiver {
-            if lbd_sender.send((lbd_graph.clone(), batch)).is_err() {
-                break;
-            }
-        }
-    });
-
-    let ifcowl_forwarder = ifcowl_receiver.map(|receiver| {
-        let ifcowl_graph = ifcowl_graph_iri.to_string();
-        let ifcowl_sender = merged_sender.clone();
-        thread::spawn(move || {
-            for batch in receiver {
-                if ifcowl_sender.send((ifcowl_graph.clone(), batch)).is_err() {
-                    break;
-                }
-            }
-        })
-    });
-
-    let topology_forwarder = topology_receiver.map(|receiver| {
-        let graph = topology_graph_iri.to_string();
-        let sender = merged_sender.clone();
-        thread::spawn(move || {
-            for batch in receiver {
-                if sender.send((graph.clone(), batch)).is_err() {
-                    break;
-                }
-            }
-        })
-    });
-
-    drop(merged_sender);
-
-    for (graph, batch) in merged_receiver {
-        let frame = DirectStreamFrame {
-            version: DIRECT_STREAM_VERSION,
-            graph,
-            triples: batch
-                .into_iter()
-                .map(direct_stream_triple_from_lbd)
-                .collect(),
-        };
-        bincode::serde::encode_into_std_write(&frame, &mut writer, bincode::config::standard())
-            .context("failed to encode Grafeo direct stream frame")?;
-        writer
-            .flush()
-            .context("failed to flush Grafeo direct stream writer")?;
-    }
-
-    lbd_forwarder
-        .join()
-        .map_err(|_| anyhow::anyhow!("LBD Grafeo stream forwarder panicked"))?;
-    if let Some(handle) = ifcowl_forwarder {
-        handle
-            .join()
-            .map_err(|_| anyhow::anyhow!("IfcOWL Grafeo stream forwarder panicked"))?;
-    }
-    if let Some(handle) = topology_forwarder {
-        handle
-            .join()
-            .map_err(|_| anyhow::anyhow!("Topology Grafeo stream forwarder panicked"))?;
-    }
-    Ok(())
-}
-
-fn direct_stream_triple_from_lbd(triple: lbd_ontology::Triple) -> DirectStreamTriple {
-    DirectStreamTriple {
-        subject: direct_stream_term_from_iri_like(triple.subject),
-        predicate: direct_stream_term_from_iri_like(triple.predicate),
-        object: direct_stream_term_from_lbd_object(triple.object),
-    }
-}
-
-fn direct_stream_term_from_iri_like(value: String) -> DirectStreamTerm {
-    if let Some(id) = value.strip_prefix("_:") {
-        DirectStreamTerm::BlankNode(id.to_string())
-    } else {
-        DirectStreamTerm::Iri(value)
-    }
-}
-
-fn direct_stream_term_from_lbd_object(object: lbd_ontology::Object) -> DirectStreamTerm {
-    match object {
-        lbd_ontology::Object::Iri(value) => direct_stream_term_from_iri_like(value),
-        lbd_ontology::Object::Literal(value) => DirectStreamTerm::Literal(value),
-        lbd_ontology::Object::TypedLiteral { value, datatype } => {
-            DirectStreamTerm::TypedLiteral { value, datatype }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use lbd_pipeline::PipelineStage;
@@ -1012,14 +739,11 @@ mod tests {
     #[test]
     fn built_in_registry_exposes_expected_stage_counts() {
         let registry = built_in_registry();
-        assert_eq!(
-            registry.manifests_for_stage(PipelineStage::Produce).len(),
-            5
-        );
-        assert_eq!(
-            registry.manifests_for_stage(PipelineStage::Serialize).len(),
-            3
-        );
+        // Bot, Beo, Bsdd, PropsOpm, OmgFog, Ifcowl
+        assert_eq!(registry.manifests_for_stage(PipelineStage::Produce).len(), 6);
+        // Turtle, NQuads, NQuadsChunked
+        assert_eq!(registry.manifests_for_stage(PipelineStage::Serialize).len(), 3);
+        // File, Log, Stdout
         assert_eq!(registry.manifests_for_stage(PipelineStage::Export).len(), 3);
     }
 }

@@ -13,6 +13,7 @@ use lbd_ontology::{
     XSD,
 };
 use serde::Deserialize;
+use serde_json::json;
 use strsim::jaro_winkler;
 use tracing::info;
 
@@ -35,6 +36,58 @@ static BSDD_MATCHING: OnceLock<Result<BsddMatchingConfig, String>> = OnceLock::n
 #[derive(Clone, Debug, Default)]
 pub struct BsddMatchCache {
     by_key: HashMap<String, BsddPreparedMatch>,
+}
+
+impl BsddMatchCache {
+    /// Returns a JSON summary of match statistics for the log exporter.
+    pub fn stats(&self) -> serde_json::Value {
+        let mut matched_exact: usize = 0;
+        let mut matched_fuzzy: usize = 0;
+        let mut normalized: usize = 0;
+        let mut ambiguous: usize = 0;
+        let mut unmapped: usize = 0;
+        let mut fuzzy_scores: Vec<f64> = Vec::new();
+
+        for m in self.by_key.values() {
+            match m.status {
+                MatchStatus::Matched => {
+                    if m.method == "fuzzy" {
+                        matched_fuzzy += 1;
+                        if let Some(s) = m.confidence {
+                            fuzzy_scores.push(s);
+                        }
+                    } else {
+                        matched_exact += 1;
+                    }
+                }
+                MatchStatus::Normalized => normalized += 1,
+                MatchStatus::Ambiguous => ambiguous += 1,
+                MatchStatus::Unmapped => unmapped += 1,
+            }
+        }
+
+        let total_matched = matched_exact + matched_fuzzy + normalized;
+        let fuzzy_avg = if fuzzy_scores.is_empty() {
+            None
+        } else {
+            Some(fuzzy_scores.iter().sum::<f64>() / fuzzy_scores.len() as f64)
+        };
+        let fuzzy_min = fuzzy_scores.iter().cloned().reduce(f64::min);
+        let fuzzy_max = fuzzy_scores.iter().cloned().reduce(f64::max);
+
+        json!({
+            "total_unique_keys": self.by_key.len(),
+            "total_matched": total_matched,
+            "matched_exact": matched_exact,
+            "matched_fuzzy": matched_fuzzy,
+            "normalized": normalized,
+            "ambiguous": ambiguous,
+            "unmapped": unmapped,
+            "fuzzy_confidence_avg": fuzzy_avg,
+            "fuzzy_confidence_min": fuzzy_min,
+            "fuzzy_confidence_max": fuzzy_max,
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -627,7 +680,6 @@ pub fn stream_bsdd_with_cache(
     let mut triples = 0_u64;
     let mut property_counter = 0_u64;
     let mut unmatched_histogram: HashMap<String, u64> = HashMap::new();
-    let mut seen_mapped: HashSet<String> = HashSet::new();
     // Standalone typing: elements
     for element in sorted_values(&model.elements) {
         if let Some(class_code) = resolve_bsdd_class_for_element(index, element.entity_name.as_str()) {
@@ -752,7 +804,6 @@ pub fn stream_bsdd_with_cache(
                         matching,
                         match_cache,
                         &mut unmatched_histogram,
-                        &mut seen_mapped,
                         &mut property_counter,
                         &mut batch,
                         sender,
@@ -778,7 +829,6 @@ pub fn stream_bsdd_with_cache(
                             matching,
                             match_cache,
                             &mut unmatched_histogram,
-                            &mut seen_mapped,
                             &mut property_counter,
                             &mut batch,
                             sender,
@@ -822,7 +872,6 @@ fn emit_property(
     matching: &BsddMatchingConfig,
     match_cache: Option<&BsddMatchCache>,
     unmatched_histogram: &mut HashMap<String, u64>,
-    seen_mapped: &mut HashSet<String>,
     property_counter: &mut u64,
     batch: &mut Vec<Triple>,
     sender: &Sender<Vec<Triple>>,
@@ -835,18 +884,6 @@ fn emit_property(
     } else {
         index.resolve_property(schema, class_name_like, pset_name, prop_name, matching)
     };
-    if let Some(code) = match_result.property_code.as_deref() {
-        let dedup_key = format!(
-            "{}|{}|{}|{}",
-            subject,
-            code,
-            pset_name,
-            object_signature(&value)
-        );
-        if !seen_mapped.insert(dedup_key) {
-            return Ok(());
-        }
-    }
     if matches!(match_result.status, MatchStatus::Unmapped) {
         let key = format!("{pset_name}|{prop_name}");
         *unmatched_histogram.entry(key).or_insert(0) += 1;
@@ -1009,14 +1046,6 @@ fn sanitize(value: &str) -> String {
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .collect()
-}
-
-fn object_signature(value: &Object) -> String {
-    match value {
-        Object::Iri(iri) => format!("iri:{iri}"),
-        Object::Literal(v) => format!("lit:{v}"),
-        Object::TypedLiteral { value, datatype } => format!("typed:{value}^^{datatype}"),
-    }
 }
 
 fn push(

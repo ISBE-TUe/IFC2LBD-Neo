@@ -567,7 +567,7 @@ impl PipelinePlugin for LogExportPlugin {
             inputs: vec!["turtle-bytes", "nquads-bytes"],
             outputs: vec!["browser-files", "log-sidecar"],
             requires: vec![],
-            conflicts_with: vec![FILE_EXPORT_ID],
+            conflicts_with: vec![],
             failure_policy: FailurePolicy::Required,
             parallelism: ParallelismMode::Serial,
             wasm_compatible: true,
@@ -688,14 +688,15 @@ impl ExportSession for WasmLogExportSession {
     fn finalize(self: Box<Self>) -> Result<Vec<ExportFileSummary>, ExportError> {
         let mut summaries = self.derived;
         let mut guard = self.buffers.lock().unwrap();
-        let json = serde_json::to_vec_pretty(&self.logs)
-            .map_err(|e| ExportError::Export(format!("cannot serialize conversion-log.json: {e}")))?;
-        guard.push((
-            "conversion-log.json".to_string(),
-            "application/json".to_string(),
-            "log".to_string(),
-            json,
-        ));
+        let mut module_ids: Vec<&str> = self.logs.modules.keys().map(String::as_str).collect();
+        module_ids.sort_unstable();
+        for module_id in module_ids {
+            let stats = &self.logs.modules[module_id];
+            let filename = format!("{module_id}.log.json");
+            let json = serde_json::to_vec_pretty(stats)
+                .map_err(|e| ExportError::Export(format!("cannot serialize {filename}: {e}")))?;
+            guard.push((filename, "application/json".to_string(), "log".to_string(), json));
+        }
         for (filename, mime_type, role, bytes) in guard.iter() {
             summaries.push(ExportFileSummary {
                 filename: filename.clone(),

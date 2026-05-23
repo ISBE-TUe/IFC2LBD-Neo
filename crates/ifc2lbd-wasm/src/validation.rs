@@ -171,6 +171,7 @@ pub(crate) fn resolve_execution_settings(
         emit_props_opm: active.contains(PROPS_OPM_PRODUCER_ID),
         emit_omg_fog: active.contains(OMG_FOG_PRODUCER_ID),
         emit_ifcowl: active.contains(IFCOWL_PRODUCER_ID),
+        emit_log: active.contains(LOG_EXPORT_ID),
         nquads: NquadsModuleOptions {
             chunking: nquads_chunking,
             chunk_size_lines,

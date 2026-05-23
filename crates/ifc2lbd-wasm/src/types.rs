@@ -213,6 +213,7 @@ pub struct ExecutionSettings {
     pub emit_omg_fog: bool,
     // Other producer flags
     pub emit_ifcowl: bool,
+    pub emit_log: bool,
     pub nquads: NquadsModuleOptions,
     pub output_stem: String,
     pub turtle_grouping: TurtleGrouping,

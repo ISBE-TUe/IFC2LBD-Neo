@@ -175,7 +175,6 @@ The CLI (`ifc2lbd-cli`) and WASM (`ifc2lbd-wasm`) runners must expose equivalent
 
 ## 13. Further reading
 
-- Plugin authoring guide: `docs/current/plugin-authoring-and-activation.md`
-- Pipeline architecture: `docs/current/converter-pipeline.md`
-- WASM vs CLI differences: `docs/current/wasm-vs-cli-comparison.md`
+- Plugin authoring guide: `docs/plugin-authoring-and-activation.md`
+- Pipeline architecture: `docs/converter-pipeline.md`
 - Topology plugin example: `crates/plugin-topology-full/`
