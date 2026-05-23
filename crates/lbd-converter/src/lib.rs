@@ -532,12 +532,7 @@ where
     F: FnMut(Triple) -> Result<(), E>,
 {
     let unit_by_type = build_unit_type_map(model);
-    #[cfg(not(target_arch = "wasm32"))]
-    let generated_at = OffsetDateTime::now_utc()
-        .format(&Rfc3339)
-        .expect("RFC3339 formatting should always succeed");
-    #[cfg(target_arch = "wasm32")]
-    let generated_at = "1970-01-01T00:00:00Z".to_string();
+    let generated_at = current_generated_at_rfc3339();
     let mut declared_object_properties = HashSet::new();
     let mut declared_property_comments = HashSet::new();
     let mut property_state_counter = 0_u64;
@@ -1058,6 +1053,21 @@ fn adjacent_elements_by_space(model: &IfcModel) -> HashMap<EntityId, Vec<EntityI
 
 pub fn normalize_base_uri(base_uri: &str) -> String {
     base_uri.trim_end_matches('/').to_string()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn current_generated_at_rfc3339() -> String {
+    OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .expect("RFC3339 formatting should always succeed")
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn current_generated_at_rfc3339() -> String {
+    js_sys::Date::new_0()
+        .to_iso_string()
+        .as_string()
+        .unwrap_or_else(|| "1970-01-01T00:00:00.000Z".to_string())
 }
 
 fn ifcowl_namespace(schema: StepSchema) -> String {
@@ -1642,25 +1652,7 @@ fn emit_property_declaration<E, F>(
 where
     F: FnMut(Triple) -> Result<(), E>,
 {
-    let predicate = props_property(predicate_local);
-    if declared.insert(predicate.clone()) {
-        emit(Triple {
-            subject: predicate.clone(),
-            predicate: rdf_type(),
-            object: Object::Iri(owl_object_property()),
-        })?;
-    }
-    let comment = format!(
-        "IFC property set {} property {predicate_local}",
-        java_ifc_escape_text(set_name)
-    );
-    if declared_comments.insert((predicate.clone(), comment.clone())) {
-        emit(Triple {
-            subject: predicate,
-            predicate: rdfs_comment(),
-            object: Object::Literal(comment),
-        })?;
-    }
+    let _ = (declared, declared_comments, predicate_local, set_name, emit);
     Ok(())
 }
 
@@ -2341,7 +2333,7 @@ pub(crate) fn spatial_class(spatial_type: SpatialType) -> String {
 }
 
 fn lbd_local_name(prefix: &str, guid: &str) -> String {
-    let suffix = canonical_guid_token(guid);
+    let suffix = prefix_safe_guid_token(guid);
     format!("{prefix}_{suffix}")
 }
 
@@ -2376,17 +2368,17 @@ fn property_resource_iri(base: &str, predicate_local: &str, guid: &str, set_scop
 }
 
 pub(crate) fn property_set_resource_iri(base: &str, guid: &str) -> String {
-    let suffix = canonical_guid_token(guid);
+    let suffix = prefix_safe_guid_token(guid);
     format!("{base}/propertyset_{suffix}")
 }
 
 fn quantity_set_resource_iri(base: &str, guid: &str) -> String {
-    let suffix = canonical_guid_token(guid);
+    let suffix = prefix_safe_guid_token(guid);
     format!("{base}/quantityset_{suffix}")
 }
 
 pub(crate) fn geometry_resource_iri(base: &str, guid: &str) -> String {
-    let suffix = canonical_guid_token(guid);
+    let suffix = prefix_safe_guid_token(guid);
     format!("{base}/geometry_{suffix}")
 }
 
@@ -2395,6 +2387,17 @@ fn canonical_guid_token(raw: &str) -> String {
         return raw.to_string();
     }
     compress_uuid_string(raw).unwrap_or_else(|| raw.to_string())
+}
+
+fn prefix_safe_guid_token(raw: &str) -> String {
+    canonical_guid_token(raw)
+        .chars()
+        .map(|ch| match ch {
+            '$' => '_',
+            _ if ch.is_ascii_alphanumeric() || ch == '_' => ch,
+            _ => '_',
+        })
+        .collect()
 }
 
 fn bbox_wkt_polyhedral_surface(bbox: &BoundingBox) -> String {
@@ -2666,7 +2669,8 @@ fn enumerated_value_objects(property: &PropertyEnumeratedValue) -> Vec<Object> {
         .values
         .iter()
         .filter_map(|v| {
-            let trimmed = v.trim();
+            let decoded = decode_ifc_unicode(v);
+            let trimmed = decoded.trim();
             if trimmed.is_empty() {
                 None
             } else {
@@ -2679,7 +2683,8 @@ fn enumerated_value_objects(property: &PropertyEnumeratedValue) -> Vec<Object> {
 fn quantity_value_object(value: Option<&StepValue>) -> Option<Object> {
     match value? {
         StepValue::String(value) => {
-            let trimmed = value.trim();
+            let decoded = decode_ifc_unicode(value);
+            let trimmed = decoded.trim();
             if trimmed.is_empty() || trimmed == "-1.#IND" {
                 None
             } else {
@@ -2699,7 +2704,8 @@ fn quantity_value_object(value: Option<&StepValue>) -> Option<Object> {
             datatype: format!("{XSD}boolean"),
         }),
         StepValue::Enum(value) => {
-            let trimmed = value.trim();
+            let decoded = decode_ifc_unicode(value);
+            let trimmed = decoded.trim();
             if trimmed.is_empty() || trimmed == "-1.#IND" {
                 None
             } else {
@@ -2738,7 +2744,7 @@ fn canonicalize_decimal(value: f64) -> String {
     }
 }
 
-fn build_unit_type_map(model: &IfcModel) -> HashMap<String, String> {
+pub(crate) fn build_unit_type_map(model: &IfcModel) -> HashMap<String, String> {
     let mut map = HashMap::new();
     for assignment in model.unit_assignments.values() {
         for unit_id in &assignment.units {
@@ -2793,7 +2799,7 @@ fn map_conversion_unit(name: &str) -> Option<String> {
     }
 }
 
-fn resolve_property_unit(
+pub(crate) fn resolve_property_unit(
     property: &PropertySingleValue,
     unit_by_type: &HashMap<String, String>,
     model: &IfcModel,
@@ -2818,7 +2824,7 @@ fn resolve_property_unit(
     }
 }
 
-fn resolve_quantity_unit(
+pub(crate) fn resolve_quantity_unit(
     entity_name: &str,
     unit_by_type: &HashMap<String, String>,
 ) -> Option<String> {
@@ -2934,6 +2940,11 @@ mod tests {
     fn test_canonical_guid_token_compresses_expanded_uuid() {
         let expanded = "7b7032cc-b822-417b-9aea-642906a29bd5";
         assert_eq!(canonical_guid_token(expanded), "1xS3BCk291UvhgP2a6eflL");
+    }
+
+    #[test]
+    fn test_prefix_safe_guid_token_rewrites_ifc_special_chars() {
+        assert_eq!(prefix_safe_guid_token("2O2Fr$t4X7Zf8NOew3FNtn"), "2O2Fr_t4X7Zf8NOew3FNtn");
     }
 
     #[test]

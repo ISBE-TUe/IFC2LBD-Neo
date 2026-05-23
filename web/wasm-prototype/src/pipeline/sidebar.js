@@ -120,12 +120,13 @@ function optionControl(pluginId, key) {
   const current = moduleOptions[pluginId]?.[key] || "";
 
   if (key === "grouping") {
+    const groupingVal = current || "streaming";
     return `
       <div class="detail-row">
         <span class="detail-label">${key}</span>
         <select data-option-key="${key}" class="detail-select">
-          <option value="sorted" ${current === "sorted" ? "selected" : ""}>Sorted (grouped)</option>
-          <option value="streaming" ${current === "streaming" ? "selected" : ""}>Streaming</option>
+          <option value="streaming" ${groupingVal === "streaming" ? "selected" : ""}>Streaming</option>
+          <option value="sorted" ${groupingVal === "sorted" ? "selected" : ""}>Sorted (grouped)</option>
         </select>
       </div>`;
   }

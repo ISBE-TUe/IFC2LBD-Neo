@@ -755,7 +755,7 @@ fn resolve_execution_settings(
     let turtle_grouping = match turtle_entries
         .and_then(|e| e.get("grouping"))
         .map(String::as_str)
-        .unwrap_or("sorted")
+        .unwrap_or("streaming")
     {
         "sorted" => TurtleGrouping::Sorted,
         "streaming" => TurtleGrouping::Streaming,
@@ -1153,7 +1153,7 @@ mod tests {
                 chunk_min_count: 1,
                 chunk_core_count: None,
             },
-            turtle_grouping: TurtleGrouping::Sorted,
+            turtle_grouping: TurtleGrouping::Streaming,
         }
     }
 }

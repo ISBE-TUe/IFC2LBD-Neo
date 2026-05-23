@@ -136,7 +136,7 @@ pub(crate) fn resolve_execution_settings(
     let turtle_grouping = match turtle_entries
         .and_then(|m| m.get("grouping"))
         .map(String::as_str)
-        .unwrap_or("sorted")
+        .unwrap_or("streaming")
     {
         "sorted" => TurtleGrouping::Sorted,
         "streaming" => TurtleGrouping::Streaming,

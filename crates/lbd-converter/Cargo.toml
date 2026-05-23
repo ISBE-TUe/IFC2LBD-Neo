@@ -27,3 +27,4 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 flate2 = { workspace = true }
 strsim = { workspace = true }
+js-sys = { workspace = true }
