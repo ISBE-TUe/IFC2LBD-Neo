@@ -1,0 +1,12 @@
+[package]
+name = "plugin-template-preprocess"
+description = "Template: minimal preprocess plugin for IFC2LBD-Neo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+lbd-pipeline = { path = "../lbd-pipeline" }
+# Add ifc-model if your preprocessor needs to inspect or modify the IFC model:
+# ifc-model = { workspace = true }

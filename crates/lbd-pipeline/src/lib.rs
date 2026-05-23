@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use crossbeam::channel::{Receiver, Sender};
+use crossbeam::channel::Sender;
 use lbd_ontology::Triple;
 use serde::{Deserialize, Serialize};
 
@@ -63,16 +63,38 @@ impl Default for ResourceLimits {
     }
 }
 
+/// A sidecar file emitted by a producer plugin alongside its triple stream.
+///
+/// Producers that generate non-triple binary artefacts (e.g. geometry `.frag`
+/// files) send them through `ctx.sidecar_tx`. The pipeline orchestrator drains
+/// this channel after all producers finish and routes the files to the active
+/// export plugin's session via `ExportSession::accept_derived_file()`.
+#[derive(Clone, Debug)]
+pub struct DerivedFile {
+    /// Suggested filename for the artefact (e.g. `"model.frag"`).
+    pub filename: String,
+    /// MIME type string (e.g. `"application/octet-stream"`).
+    pub mime_type: &'static str,
+    /// Raw bytes of the artefact.
+    pub bytes: Vec<u8>,
+}
+
 /// Shared context passed to every plugin at execution time.
 ///
-/// Carries resource limits and optional typed data that producers need
-/// (e.g. StepFile, IfcModel, ConvertOptions). The typed data is stored
-/// as `Arc<dyn Any + Send + Sync>` and accessed via `get::<T>()`.
+/// Carries resource limits, optional typed data that producers need
+/// (e.g. `StepFile`, `IfcModel`, `ConvertOptions`), and an optional sidecar
+/// channel for producers that emit non-triple binary artefacts.
+///
+/// Typed data is stored as `Arc<dyn Any + Send + Sync>` and accessed via
+/// `get::<T>()` or replaced in-place via `replace::<T>()` (for preprocessors).
 #[derive(Clone)]
 pub struct PipelineContext {
     pub resource_limits: ResourceLimits,
     /// Optional typed data: `Arc<StepFile>`, `Arc<IfcModel>`, `ConvertOptions`, etc.
     data: Vec<Arc<dyn std::any::Any + Send + Sync>>,
+    /// If set, producers may send sidecar artefacts (geometry files, etc.) here.
+    /// The orchestrator drains this after all producers finish.
+    pub sidecar_tx: Option<Sender<DerivedFile>>,
 }
 
 impl PipelineContext {
@@ -80,11 +102,24 @@ impl PipelineContext {
         Self {
             resource_limits: limits,
             data: Vec::new(),
+            sidecar_tx: None,
         }
     }
 
     /// Insert a typed value into the context.
     pub fn insert<T: 'static + Send + Sync>(&mut self, value: Arc<T>) {
+        self.data
+            .push(value as Arc<dyn std::any::Any + Send + Sync>);
+    }
+
+    /// Replace any existing value of type `T` with `value`.
+    ///
+    /// Used by preprocessors to update context data (e.g. a modified `IfcModel`)
+    /// before the produce stage runs. If no existing `T` is found, this behaves
+    /// identically to `insert`.
+    pub fn replace<T: 'static + Send + Sync>(&mut self, value: Arc<T>) {
+        self.data
+            .retain(|item| item.downcast_ref::<T>().is_none());
         self.data
             .push(value as Arc<dyn std::any::Any + Send + Sync>);
     }
@@ -159,6 +194,20 @@ pub enum ProducerError {
     Conversion(String),
 }
 
+/// Error from a preprocess plugin.
+#[derive(Debug, thiserror::Error)]
+pub enum PreprocessError {
+    #[error("preprocessing failed: {0}")]
+    Preprocessing(String),
+}
+
+/// Error from a postprocess plugin.
+#[derive(Debug, thiserror::Error)]
+pub enum PostprocessError {
+    #[error("postprocessing failed: {0}")]
+    Postprocessing(String),
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum SerializerError {
     #[error("I/O error: {0}")]
@@ -182,13 +231,19 @@ pub struct SerializeStats {
     pub triples_written: u64,
 }
 
+/// Pipeline stages in execution order.
+///
+/// The numeric order reflects the actual execution sequence:
+/// Import → Preprocess → Produce → Postprocess → Serialize → Export
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum PipelineStage {
     Import,
     Preprocess,
     Produce,
-    Serialize,
+    /// Runs after all producers finish, before serialization.
+    /// Receives the full collected triple set when `needs_full_graph` is true.
     Postprocess,
+    Serialize,
     Export,
 }
 
@@ -220,21 +275,44 @@ pub struct PluginManifest {
     pub parallelism: ParallelismMode,
     pub wasm_compatible: bool,
     /// URL slug appended to `base_uri` to form this module's named-graph IRI.
-    /// `None` for non-producer modules (serializers, exporters).
+    /// `None` for non-producer modules (serializers, exporters, etc.).
     #[serde(default)]
     pub named_graph_slug: Option<&'static str>,
+    /// Whether a postprocess plugin requires the full accumulated triple graph
+    /// before it can run. When `true`, the orchestrator buffers all `TaggedBatch`
+    /// items from every producer before calling `postprocess()`. When `false`,
+    /// only the batches produced so far are passed (streaming-friendly).
+    ///
+    /// Ignored for non-postprocess plugins.
+    #[serde(default)]
+    pub needs_full_graph: bool,
 }
 
 pub trait PipelinePlugin: Send + Sync {
     fn manifest(&self) -> PluginManifest;
 }
 
-pub trait PreprocessPlugin: PipelinePlugin {}
+/// A preprocess plugin that transforms the pipeline context before production.
+///
+/// Typical uses: compute missing quantity sets, validate the IFC model,
+/// augment geometry data. The plugin reads typed data from `ctx` (e.g.
+/// `Arc<IfcModel>`), produces a modified version, and writes it back via
+/// `ctx.replace::<IfcModel>(Arc::new(modified_model))`.
+pub trait PreprocessPlugin: PipelinePlugin {
+    /// Apply in-place transformations to the pipeline context.
+    ///
+    /// Called sequentially for each active preprocess plugin before producers run.
+    fn preprocess(&self, ctx: &mut PipelineContext) -> Result<(), PreprocessError>;
+}
 
 /// A producer plugin that emits triples in bounded streaming batches.
 ///
 /// Implementations send batches through `sender`; backpressure is natural —
 /// if the channel is full, `send` blocks.
+///
+/// Producers that also generate non-triple sidecar artefacts (e.g. geometry
+/// `.frag` files) may send them via `ctx.sidecar_tx` at any point during
+/// `produce()`.
 pub trait ProducerPlugin: PipelinePlugin {
     /// Produce triples in bounded batches, sending them through `sender`.
     fn produce(
@@ -244,29 +322,83 @@ pub trait ProducerPlugin: PipelinePlugin {
     ) -> Result<(), ProducerError>;
 }
 
-/// A serializer plugin that consumes triple batches from a channel and writes
-/// them to a `Write` sink.
-pub trait SerializerPlugin: PipelinePlugin {
-    /// Serialize tagged batches from `receiver` into `writer`.
-    fn serialize(
+/// A postprocess plugin that inspects or modifies the accumulated triple set
+/// before serialization.
+///
+/// Typical uses: SHACL validation, OWL inference, cross-producer triple
+/// insertion (e.g. linking geometry artefacts to graph nodes). When
+/// `needs_full_graph` is `true` in the manifest, the orchestrator buffers all
+/// produced batches before calling this plugin.
+pub trait PostprocessPlugin: PipelinePlugin {
+    /// Transform or validate the accumulated triple batches.
+    ///
+    /// `batches` contains every `TaggedBatch` emitted by all producers.
+    /// Implementations may add, remove, or rewrite triples in place.
+    fn postprocess(
         &self,
         ctx: &PipelineContext,
-        receiver: Receiver<TaggedBatch>,
-        writer: &mut dyn std::io::Write,
-    ) -> Result<SerializeStats, SerializerError>;
+        batches: &mut Vec<TaggedBatch>,
+    ) -> Result<(), PostprocessError>;
 }
 
-/// An export plugin that handles the final output of serialized bytes.
+/// A serializer plugin registered for manifest/conflict resolution.
+///
+/// Serializer implementations live in the pipeline runners (CLI `main.rs` and
+/// WASM `runner.rs`), not in the trait. This trait exists so serializers can be
+/// discovered, conflict-checked, and plan-resolved through the same plugin
+/// registry as all other stages.
+pub trait SerializerPlugin: PipelinePlugin {}
+
+/// A live export session opened for one conversion run.
+///
+/// The orchestrator:
+/// 1. Calls `start_session()` on the active `ExportPlugin` before serialization.
+/// 2. Calls `open_sink()` for each named output stream (the serializer writes to it).
+/// 3. Calls `accept_derived_file()` for every sidecar file emitted by producers.
+/// 4. Calls `finalize()` after all sinks are flushed and all sidecars delivered.
+pub trait ExportSession: Send {
+    /// Open a named output sink (file path, stdout, TCP stream, memory buffer, etc.).
+    ///
+    /// `filename` is the suggested file name (e.g. `"out.ttl"` or `"model.nq"`).
+    /// The returned `Write` is used by the serializer; the caller flushes and
+    /// drops it before calling `finalize()`.
+    fn open_sink(
+        &mut self,
+        filename: &str,
+        mime_type: &str,
+        role: &str,
+    ) -> Result<Box<dyn std::io::Write + Send>, ExportError>;
+
+    /// Accept a sidecar artefact emitted by a producer plugin.
+    ///
+    /// May be called zero or more times before `finalize()`.
+    fn accept_derived_file(&mut self, file: DerivedFile) -> Result<(), ExportError>;
+
+    /// Finalise the export. Called once after all sinks are flushed and all
+    /// derived files accepted. Returns summaries of every exported artefact.
+    fn finalize(self: Box<Self>) -> Result<Vec<ExportFileSummary>, ExportError>;
+}
+
+/// An export plugin that delivers serialized output to its final destination.
+///
+/// Implementations differ by target:
+/// - `neo-file-export` — write files to the local file system (CLI) or
+///   buffer in memory for browser download (WASM).
+/// - `neo-stdout-export` — write to stdout.
+/// - `neo-grafeo-export` — stream RDF batches directly into Grafeo.
+/// - Custom — upload to blob storage, POST to a REST API, etc.
 pub trait ExportPlugin: PipelinePlugin {
-    /// Export in-memory byte buffers. Returns summaries of exported files.
-    fn export_in_memory(
+    /// Create a fresh export session for one conversion run.
+    ///
+    /// Called by the orchestrator before serialization begins. The session
+    /// owns all mutable state for the current conversion.
+    fn start_session(
         &self,
         ctx: &PipelineContext,
-        files: Vec<ExportedFile>,
-    ) -> Result<Vec<ExportFileSummary>, ExportError>;
+    ) -> Result<Box<dyn ExportSession>, ExportError>;
 }
 
-/// A file produced by the pipeline, ready for export.
+/// A file produced by the pipeline, ready for export (WASM in-memory path).
 #[derive(Clone, Debug)]
 pub struct ExportedFile {
     pub filename: String,
@@ -275,7 +407,7 @@ pub struct ExportedFile {
     pub bytes: Vec<u8>,
 }
 
-/// Summary of an exported file (bytes only, no payload).
+/// Summary of an exported file (metadata only, no payload).
 #[derive(Clone, Debug)]
 pub struct ExportFileSummary {
     pub filename: String,
@@ -288,6 +420,7 @@ pub struct ExportFileSummary {
 pub enum RegisteredPlugin {
     Preprocess(Arc<dyn PreprocessPlugin>),
     Producer(Arc<dyn ProducerPlugin>),
+    Postprocess(Arc<dyn PostprocessPlugin>),
     Serializer(Arc<dyn SerializerPlugin>),
     Export(Arc<dyn ExportPlugin>),
 }
@@ -297,6 +430,7 @@ impl RegisteredPlugin {
         match self {
             Self::Preprocess(plugin) => plugin.manifest(),
             Self::Producer(plugin) => plugin.manifest(),
+            Self::Postprocess(plugin) => plugin.manifest(),
             Self::Serializer(plugin) => plugin.manifest(),
             Self::Export(plugin) => plugin.manifest(),
         }
@@ -352,6 +486,13 @@ impl PluginRegistry {
         self.register(RegisteredPlugin::Producer(Arc::new(plugin)))
     }
 
+    pub fn register_postprocess<P>(&mut self, plugin: P) -> Result<(), RegistryError>
+    where
+        P: PostprocessPlugin + 'static,
+    {
+        self.register(RegisteredPlugin::Postprocess(Arc::new(plugin)))
+    }
+
     pub fn register_serializer<P>(&mut self, plugin: P) -> Result<(), RegistryError>
     where
         P: SerializerPlugin + 'static,
@@ -388,11 +529,25 @@ impl PluginRegistry {
     }
 
     /// Look up a registered producer plugin by module ID.
-    ///
-    /// Returns `None` if the ID is unknown or if the plugin is not a producer.
     pub fn producer(&self, id: &str) -> Option<Arc<dyn ProducerPlugin>> {
         match self.plugins.get(id)? {
             RegisteredPlugin::Producer(p) => Some(p.clone()),
+            _ => None,
+        }
+    }
+
+    /// Look up a registered postprocess plugin by module ID.
+    pub fn postprocessor(&self, id: &str) -> Option<Arc<dyn PostprocessPlugin>> {
+        match self.plugins.get(id)? {
+            RegisteredPlugin::Postprocess(p) => Some(p.clone()),
+            _ => None,
+        }
+    }
+
+    /// Look up a registered export plugin by module ID.
+    pub fn exporter(&self, id: &str) -> Option<Arc<dyn ExportPlugin>> {
+        match self.plugins.get(id)? {
+            RegisteredPlugin::Export(p) => Some(p.clone()),
             _ => None,
         }
     }
@@ -487,10 +642,34 @@ impl PluginRegistry {
 }
 
 // ---------------------------------------------------------------------------
+// spawn_preprocessors — run preprocess plugins sequentially
+// ---------------------------------------------------------------------------
+
+/// Run all active preprocess plugins sequentially before production begins.
+///
+/// Returns the first error encountered, leaving the context in the state it
+/// was in at the point of failure.
+pub fn spawn_preprocessors(
+    active_ids: &[String],
+    registry: &PluginRegistry,
+    ctx: &mut PipelineContext,
+) -> Result<(), PreprocessError> {
+    for id in active_ids {
+        let plugin = match registry.plugin(id) {
+            Some(RegisteredPlugin::Preprocess(p)) => p.clone(),
+            _ => continue,
+        };
+        plugin.preprocess(ctx)?;
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // spawn_producers — generic helper for running producer plugins in parallel
 // ---------------------------------------------------------------------------
 
-type ProducerQueue = Arc<Mutex<VecDeque<(Arc<dyn ProducerPlugin>, crossbeam::channel::Sender<TaggedBatch>)>>>;
+type ProducerQueue =
+    Arc<Mutex<VecDeque<(Arc<dyn ProducerPlugin>, crossbeam::channel::Sender<TaggedBatch>)>>>;
 
 /// Pops the next producer from the shared queue and spawns it as a rayon task.
 /// When that producer finishes it calls itself recursively, forming a chain that
@@ -559,6 +738,30 @@ pub fn spawn_producers(
     receivers
 }
 
+// ---------------------------------------------------------------------------
+// spawn_postprocessors — run postprocess plugins sequentially
+// ---------------------------------------------------------------------------
+
+/// Run all active postprocess plugins sequentially after production finishes.
+///
+/// `batches` must contain the full collected set of `TaggedBatch` items from
+/// all producers. Each plugin may mutate the batch list in place.
+pub fn spawn_postprocessors(
+    active_ids: &[String],
+    registry: &PluginRegistry,
+    ctx: &PipelineContext,
+    batches: &mut Vec<TaggedBatch>,
+) -> Result<(), PostprocessError> {
+    for id in active_ids {
+        let plugin = match registry.plugin(id) {
+            Some(RegisteredPlugin::Postprocess(p)) => p.clone(),
+            _ => continue,
+        };
+        plugin.postprocess(ctx, batches)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -580,6 +783,7 @@ mod tests {
                 parallelism: ParallelismMode::ParallelByBatch,
                 wasm_compatible: true,
                 named_graph_slug: Some("test"),
+                needs_full_graph: false,
             }
         }
     }
@@ -630,6 +834,7 @@ mod tests {
                 parallelism: ParallelismMode::Serial,
                 wasm_compatible: true,
                 named_graph_slug: None,
+                needs_full_graph: false,
             }
         }
     }
@@ -659,6 +864,7 @@ mod tests {
                 parallelism: ParallelismMode::Serial,
                 wasm_compatible: true,
                 named_graph_slug: None,
+                needs_full_graph: false,
             }
         }
     }
@@ -684,5 +890,20 @@ mod tests {
             plan.enabled_ids,
             vec!["dep".to_string(), "needs-dep".to_string()]
         );
+    }
+
+    #[test]
+    fn pipeline_context_replace_updates_existing() {
+        let mut ctx = PipelineContext::new(ResourceLimits::default());
+        ctx.insert(Arc::new(42u32));
+        ctx.replace(Arc::new(99u32));
+        assert_eq!(*ctx.get::<u32>().unwrap(), 99);
+    }
+
+    #[test]
+    fn pipeline_stage_ordering_correct() {
+        assert!((PipelineStage::Produce as u8) < (PipelineStage::Postprocess as u8));
+        assert!((PipelineStage::Postprocess as u8) < (PipelineStage::Serialize as u8));
+        assert!((PipelineStage::Serialize as u8) < (PipelineStage::Export as u8));
     }
 }

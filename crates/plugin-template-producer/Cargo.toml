@@ -1,0 +1,16 @@
+[package]
+name = "plugin-template-producer"
+description = "Template: minimal producer plugin for IFC2LBD-Neo (with sidecar file support)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+crossbeam = { workspace = true }
+lbd-pipeline = { path = "../lbd-pipeline" }
+lbd-ontology = { path = "../lbd-ontology" }
+# Add ifc-model for real IFC data access:
+# ifc-model = { workspace = true }
+# Add lbd-converter for shared streaming helpers:
+# lbd-converter = { path = "../lbd-converter" }

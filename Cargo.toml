@@ -12,6 +12,10 @@ members = [
     "crates/lbd-geometry-kernel",
     "crates/lbd-serializer",
     "crates/plugin-topology-full",
+    "crates/plugin-template-preprocess",
+    "crates/plugin-template-producer",
+    "crates/plugin-template-postprocess",
+    "crates/plugin-template-export",
     "crates/ifc2lbd-cli",
     "crates/ifc2lbd-wasm",
     # "crates/ifc2lbd-python",  # enable when PyO3 bindings are needed

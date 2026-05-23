@@ -1,21 +1,17 @@
 use std::io::Write;
+use std::sync::{Arc, Mutex};
 
-use crossbeam::channel::{Receiver, Sender};
+use crossbeam::channel::Sender;
 use ifc_model::IfcModel;
 use ifc_step::StepFile;
 use lbd_converter::{stream_beo, stream_bot, stream_omg_fog, stream_props_opm, ConvertOptions};
 use lbd_ontology::Triple;
 use lbd_pipeline::{
-    BatchKind, BEO_PRODUCER_ID, BOT_PRODUCER_ID, ExportError, ExportFileSummary, ExportPlugin,
-    ExportedFile, FailurePolicy, FILE_EXPORT_ID, IFCOWL_PRODUCER_ID,
-    NQUADS_CHUNKED_SERIALIZER_ID, NQUADS_SERIALIZER_ID, OMG_FOG_PRODUCER_ID, ParallelismMode,
-    PipelineContext, PipelinePlugin, PipelineStage, PluginManifest, PluginRegistry, ProducerError,
-    ProducerPlugin, PROPS_OPM_PRODUCER_ID, SerializeStats, SerializerError, SerializerPlugin,
-    TaggedBatch, TURTLE_SERIALIZER_ID,
-};
-use lbd_serializer::{
-    serialize_nquads_batches_to_writer, serialize_turtle_batch_raw_to_writer,
-    write_turtle_prefixes_for_stream,
+    BatchKind, DerivedFile, ExportError, ExportFileSummary, ExportPlugin, ExportSession,
+    FailurePolicy, FILE_EXPORT_ID, IFCOWL_PRODUCER_ID, NQUADS_CHUNKED_SERIALIZER_ID,
+    NQUADS_SERIALIZER_ID, OMG_FOG_PRODUCER_ID, ParallelismMode, PipelineContext, PipelinePlugin,
+    PipelineStage, PluginManifest, PluginRegistry, ProducerError, ProducerPlugin, SerializerPlugin,
+    TaggedBatch, BEO_PRODUCER_ID, BOT_PRODUCER_ID, PROPS_OPM_PRODUCER_ID, TURTLE_SERIALIZER_ID,
 };
 use wasm_bindgen::prelude::*;
 
@@ -66,16 +62,10 @@ pub(crate) fn browser_registry() -> PluginRegistry {
     registry.register_producer(OmgFogProducerPlugin).unwrap();
     // Other producers
     registry.register_producer(IfcowlProducerPlugin).unwrap();
-    // Serializers
-    registry
-        .register_serializer(TurtleSerializerPlugin)
-        .unwrap();
-    registry
-        .register_serializer(NquadsSerializerPlugin)
-        .unwrap();
-    registry
-        .register_serializer(NquadsChunkedSerializerPlugin)
-        .unwrap();
+    // Serializers (registration only; serialization happens in runner.rs)
+    registry.register_serializer(TurtleSerializerPlugin).unwrap();
+    registry.register_serializer(NquadsSerializerPlugin).unwrap();
+    registry.register_serializer(NquadsChunkedSerializerPlugin).unwrap();
     // Export
     registry.register_export(FileExportPlugin).unwrap();
     registry
@@ -84,13 +74,6 @@ pub(crate) fn browser_registry() -> PluginRegistry {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-fn map_ser_err(e: lbd_serializer::SerializerError) -> SerializerError {
-    match e {
-        lbd_serializer::SerializerError::Io(io) => SerializerError::Io(io),
-        lbd_serializer::SerializerError::Utf8(e) => SerializerError::Serialization(e.to_string()),
-    }
-}
 
 /// Spawn a task that forwards raw-triple batches as tagged batches.
 fn forward_as_tagged(
@@ -108,6 +91,10 @@ fn forward_as_tagged(
             }
         }
     });
+}
+
+pub(crate) fn js_err<E: ToString>(error: E) -> JsValue {
+    JsValue::from_str(&error.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -131,6 +118,7 @@ impl PipelinePlugin for BotProducerPlugin {
             parallelism: ParallelismMode::ParallelByBatch,
             wasm_compatible: true,
             named_graph_slug: Some("bot"),
+            needs_full_graph: false,
         }
     }
 }
@@ -152,10 +140,8 @@ impl ProducerPlugin for BotProducerPlugin {
 
         let (raw_sender, raw_receiver) =
             crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
-        let graph_iri = BatchKind::new(format!(
-            "{}bot",
-            options.base_uri.trim_end_matches('/')
-        ));
+        let graph_iri =
+            BatchKind::new(format!("{}bot", options.base_uri.trim_end_matches('/')));
         forward_as_tagged(raw_receiver, graph_iri, sender.clone());
 
         stream_bot(&model, &options, &raw_sender)
@@ -185,6 +171,7 @@ impl PipelinePlugin for BeoProducerPlugin {
             parallelism: ParallelismMode::ParallelByBatch,
             wasm_compatible: true,
             named_graph_slug: Some("beo"),
+            needs_full_graph: false,
         }
     }
 }
@@ -206,10 +193,8 @@ impl ProducerPlugin for BeoProducerPlugin {
 
         let (raw_sender, raw_receiver) =
             crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
-        let graph_iri = BatchKind::new(format!(
-            "{}beo",
-            options.base_uri.trim_end_matches('/')
-        ));
+        let graph_iri =
+            BatchKind::new(format!("{}beo", options.base_uri.trim_end_matches('/')));
         forward_as_tagged(raw_receiver, graph_iri, sender.clone());
 
         stream_beo(&model, &options, &raw_sender)
@@ -239,6 +224,7 @@ impl PipelinePlugin for PropsOpmProducerPlugin {
             parallelism: ParallelismMode::ParallelByBatch,
             wasm_compatible: true,
             named_graph_slug: Some("props"),
+            needs_full_graph: false,
         }
     }
 }
@@ -262,10 +248,8 @@ impl ProducerPlugin for PropsOpmProducerPlugin {
 
         let (raw_sender, raw_receiver) =
             crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
-        let graph_iri = BatchKind::new(format!(
-            "{}props",
-            options.base_uri.trim_end_matches('/')
-        ));
+        let graph_iri =
+            BatchKind::new(format!("{}props", options.base_uri.trim_end_matches('/')));
         forward_as_tagged(raw_receiver, graph_iri, sender.clone());
 
         stream_props_opm(&model, &options, &raw_sender)
@@ -295,6 +279,7 @@ impl PipelinePlugin for OmgFogProducerPlugin {
             parallelism: ParallelismMode::ParallelByBatch,
             wasm_compatible: true,
             named_graph_slug: Some("omg"),
+            needs_full_graph: false,
         }
     }
 }
@@ -318,10 +303,8 @@ impl ProducerPlugin for OmgFogProducerPlugin {
 
         let (raw_sender, raw_receiver) =
             crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
-        let graph_iri = BatchKind::new(format!(
-            "{}omg",
-            options.base_uri.trim_end_matches('/')
-        ));
+        let graph_iri =
+            BatchKind::new(format!("{}omg", options.base_uri.trim_end_matches('/')));
         forward_as_tagged(raw_receiver, graph_iri, sender.clone());
 
         stream_omg_fog(&model, &options, &raw_sender)
@@ -351,6 +334,7 @@ impl PipelinePlugin for IfcowlProducerPlugin {
             parallelism: ParallelismMode::ParallelByPartition,
             wasm_compatible: true,
             named_graph_slug: Some("ifcowl"),
+            needs_full_graph: false,
         }
     }
 }
@@ -385,9 +369,6 @@ impl ProducerPlugin for IfcowlProducerPlugin {
         ));
         forward_as_tagged(ifcowl_receiver, graph_iri, sender.clone());
 
-        // The IfcOWL producer also emits owl:sameAs links (to the alignment graph).
-        // Those are emitted as part of the LBD core-entities pass when emit_ifcowl_links=true.
-        // Here we only produce the IfcOWL entity triples.
         lbd_converter::modules::ifcowl::stream_ifcowl(
             &step,
             &lbd_converter::normalize_base_uri(&options.base_uri),
@@ -401,7 +382,7 @@ impl ProducerPlugin for IfcowlProducerPlugin {
 }
 
 // ---------------------------------------------------------------------------
-// Turtle Serializer
+// Serializer plugins — registration only; serialization happens in runner.rs
 // ---------------------------------------------------------------------------
 
 struct TurtleSerializerPlugin;
@@ -416,38 +397,17 @@ impl PipelinePlugin for TurtleSerializerPlugin {
             inputs: vec!["triples"],
             outputs: vec!["turtle-bytes"],
             requires: vec![],
-            conflicts_with: vec![],
+            conflicts_with: vec![NQUADS_SERIALIZER_ID, NQUADS_CHUNKED_SERIALIZER_ID],
             failure_policy: FailurePolicy::Optional,
             parallelism: ParallelismMode::Serial,
             wasm_compatible: true,
             named_graph_slug: None,
+            needs_full_graph: false,
         }
     }
 }
 
-impl SerializerPlugin for TurtleSerializerPlugin {
-    fn serialize(
-        &self,
-        _ctx: &PipelineContext,
-        receiver: Receiver<TaggedBatch>,
-        writer: &mut dyn Write,
-    ) -> Result<SerializeStats, SerializerError> {
-        let mut stats = SerializeStats::default();
-        let mut counting = CountingWriterWrap::new(writer);
-        write_turtle_prefixes_for_stream(&mut counting, None).map_err(map_ser_err)?;
-        for batch in receiver {
-            stats.triples_written += batch.triples.len() as u64;
-            serialize_turtle_batch_raw_to_writer(&batch.triples, &mut counting)
-                .map_err(map_ser_err)?;
-        }
-        stats.bytes_written = counting.bytes;
-        Ok(stats)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// N-Quads Serializer
-// ---------------------------------------------------------------------------
+impl SerializerPlugin for TurtleSerializerPlugin {}
 
 struct NquadsSerializerPlugin;
 
@@ -461,49 +421,17 @@ impl PipelinePlugin for NquadsSerializerPlugin {
             inputs: vec!["quads"],
             outputs: vec!["nquads-bytes"],
             requires: vec![],
-            conflicts_with: vec![],
+            conflicts_with: vec![TURTLE_SERIALIZER_ID, NQUADS_CHUNKED_SERIALIZER_ID],
             failure_policy: FailurePolicy::Optional,
             parallelism: ParallelismMode::ParallelByPartition,
             wasm_compatible: true,
             named_graph_slug: None,
+            needs_full_graph: false,
         }
     }
 }
 
-impl SerializerPlugin for NquadsSerializerPlugin {
-    fn serialize(
-        &self,
-        _ctx: &PipelineContext,
-        receiver: Receiver<TaggedBatch>,
-        writer: &mut dyn Write,
-    ) -> Result<SerializeStats, SerializerError> {
-        let mut stats = SerializeStats::default();
-        let mut counting = CountingWriterWrap::new(writer);
-        for batch in receiver {
-            stats.triples_written += batch.triples.len() as u64;
-            // The named-graph IRI comes directly from the batch's kind.
-            write_nquads_batch(&mut counting, &batch.triples, batch.kind.iri())?;
-        }
-        stats.bytes_written = counting.bytes;
-        Ok(stats)
-    }
-}
-
-fn write_nquads_batch<W: Write>(
-    writer: &mut W,
-    triples: &[lbd_ontology::Triple],
-    graph_iri: &str,
-) -> Result<(), SerializerError> {
-    let (tx, rx) = crossbeam::channel::bounded(1);
-    tx.send(triples.to_vec())
-        .map_err(|_| SerializerError::ChannelClosed)?;
-    drop(tx);
-    serialize_nquads_batches_to_writer(rx, writer, graph_iri).map_err(map_ser_err)
-}
-
-// ---------------------------------------------------------------------------
-// N-Quads Chunked Serializer
-// ---------------------------------------------------------------------------
+impl SerializerPlugin for NquadsSerializerPlugin {}
 
 struct NquadsChunkedSerializerPlugin;
 
@@ -517,35 +445,20 @@ impl PipelinePlugin for NquadsChunkedSerializerPlugin {
             inputs: vec!["quads"],
             outputs: vec!["nquads-bytes"],
             requires: vec![],
-            conflicts_with: vec![],
+            conflicts_with: vec![TURTLE_SERIALIZER_ID, NQUADS_SERIALIZER_ID],
             failure_policy: FailurePolicy::Optional,
             parallelism: ParallelismMode::ParallelByPartition,
             wasm_compatible: true,
             named_graph_slug: None,
+            needs_full_graph: false,
         }
     }
 }
 
-impl SerializerPlugin for NquadsChunkedSerializerPlugin {
-    fn serialize(
-        &self,
-        _ctx: &PipelineContext,
-        receiver: Receiver<TaggedBatch>,
-        writer: &mut dyn Write,
-    ) -> Result<SerializeStats, SerializerError> {
-        let mut stats = SerializeStats::default();
-        let mut counting = CountingWriterWrap::new(writer);
-        for batch in receiver {
-            stats.triples_written += batch.triples.len() as u64;
-            write_nquads_batch(&mut counting, &batch.triples, batch.kind.iri())?;
-        }
-        stats.bytes_written = counting.bytes;
-        Ok(stats)
-    }
-}
+impl SerializerPlugin for NquadsChunkedSerializerPlugin {}
 
 // ---------------------------------------------------------------------------
-// File Export
+// File Export — in-memory collector for browser download
 // ---------------------------------------------------------------------------
 
 struct FileExportPlugin;
@@ -556,7 +469,7 @@ impl PipelinePlugin for FileExportPlugin {
             id: FILE_EXPORT_ID,
             display_name: "File exporter",
             stage: PipelineStage::Export,
-            description: "Exports browser-downloadable artifacts from serializer output.",
+            description: "Collects serialized output and sidecar artefacts in memory for browser download.",
             inputs: vec!["turtle-bytes", "nquads-bytes"],
             outputs: vec!["browser-files"],
             requires: vec![],
@@ -565,55 +478,109 @@ impl PipelinePlugin for FileExportPlugin {
             parallelism: ParallelismMode::Serial,
             wasm_compatible: true,
             named_graph_slug: None,
+            needs_full_graph: false,
         }
     }
 }
 
 impl ExportPlugin for FileExportPlugin {
-    fn export_in_memory(
+    fn start_session(
         &self,
         _ctx: &PipelineContext,
-        files: Vec<ExportedFile>,
-    ) -> Result<Vec<ExportFileSummary>, ExportError> {
-        Ok(files
-            .into_iter()
-            .map(|f| ExportFileSummary {
-                filename: f.filename,
-                mime_type: f.mime_type,
-                role: f.role,
-                bytes: f.bytes.len() as u64,
-            })
-            .collect())
+    ) -> Result<Box<dyn ExportSession>, ExportError> {
+        Ok(Box::new(WasmFileExportSession {
+            buffers: Arc::new(Mutex::new(Vec::new())),
+            derived: Vec::new(),
+        }))
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-pub(crate) struct CountingWriterWrap<'a> {
-    inner: &'a mut dyn Write,
-    pub bytes: u64,
+/// In-memory export session for the browser environment.
+///
+/// `open_sink()` returns a writer that appends to an in-memory `Vec<u8>`.
+/// `finalize()` packages every collected buffer as an `ExportFileSummary`.
+struct WasmFileExportSession {
+    /// Shared storage: (filename, mime_type, role, bytes).
+    buffers: Arc<Mutex<Vec<(String, String, String, Vec<u8>)>>>,
+    derived: Vec<ExportFileSummary>,
 }
 
-impl<'a> CountingWriterWrap<'a> {
-    pub fn new(inner: &'a mut dyn Write) -> Self {
-        Self { inner, bytes: 0 }
+impl ExportSession for WasmFileExportSession {
+    fn open_sink(
+        &mut self,
+        filename: &str,
+        mime_type: &str,
+        role: &str,
+    ) -> Result<Box<dyn Write + Send>, ExportError> {
+        let buffers = Arc::clone(&self.buffers);
+        let filename = filename.to_string();
+        let mime_type = mime_type.to_string();
+        let role = role.to_string();
+        Ok(Box::new(WasmSinkWriter {
+            buffers,
+            filename,
+            mime_type,
+            role,
+            buf: Vec::new(),
+        }))
+    }
+
+    fn accept_derived_file(&mut self, file: DerivedFile) -> Result<(), ExportError> {
+        self.derived.push(ExportFileSummary {
+            filename: file.filename,
+            mime_type: file.mime_type.to_string(),
+            role: "derived".to_string(),
+            bytes: file.bytes.len() as u64,
+        });
+        Ok(())
+    }
+
+    fn finalize(self: Box<Self>) -> Result<Vec<ExportFileSummary>, ExportError> {
+        let mut summaries = self.derived;
+        let guard = self.buffers.lock().unwrap();
+        for (filename, mime_type, role, bytes) in guard.iter() {
+            summaries.push(ExportFileSummary {
+                filename: filename.clone(),
+                mime_type: mime_type.clone(),
+                role: role.clone(),
+                bytes: bytes.len() as u64,
+            });
+        }
+        Ok(summaries)
     }
 }
 
-impl Write for CountingWriterWrap<'_> {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let n = self.inner.write(buf)?;
-        self.bytes += n as u64;
-        Ok(n)
+/// A writer that accumulates bytes and on flush/drop registers the buffer in
+/// the shared `WasmFileExportSession`.
+struct WasmSinkWriter {
+    buffers: Arc<Mutex<Vec<(String, String, String, Vec<u8>)>>>,
+    filename: String,
+    mime_type: String,
+    role: String,
+    buf: Vec<u8>,
+}
+
+impl Write for WasmSinkWriter {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        self.buf.extend_from_slice(data);
+        Ok(data.len())
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        self.inner.flush()
+        Ok(())
     }
 }
 
-pub(crate) fn js_err<E: ToString>(error: E) -> JsValue {
-    JsValue::from_str(&error.to_string())
+impl Drop for WasmSinkWriter {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = self.buffers.lock() {
+            guard.push((
+                self.filename.clone(),
+                self.mime_type.clone(),
+                self.role.clone(),
+                std::mem::take(&mut self.buf),
+            ));
+        }
+    }
 }
+

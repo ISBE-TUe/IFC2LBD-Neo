@@ -1,0 +1,11 @@
+[package]
+name = "plugin-template-postprocess"
+description = "Template: minimal postprocess plugin for IFC2LBD-Neo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+lbd-pipeline = { path = "../lbd-pipeline" }
+lbd-ontology = { path = "../lbd-ontology" }
