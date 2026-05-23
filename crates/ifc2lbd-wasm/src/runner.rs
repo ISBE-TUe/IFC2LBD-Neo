@@ -31,11 +31,12 @@ use crate::validation::{
 };
 use crate::DEFAULT_BASE_URI;
 use lbd_pipeline::{
-    BEO_PRODUCER_ID, BOT_PRODUCER_ID, BSDD_MATCH_PREPROCESS_ID, BSDD_PRODUCER_ID,
-    CLEANUP_PREPROCESS_ID, FILE_EXPORT_ID, IFCOWL_PRODUCER_ID,
+    BEO_PRODUCER_ID, BOT_PRODUCER_ID, BSDD_PRODUCER_ID,
+    FILE_EXPORT_ID, IFCOWL_PRODUCER_ID, LOG_EXPORT_ID,
     NQUADS_CHUNKED_SERIALIZER_ID, NQUADS_SERIALIZER_ID, OMG_FOG_PRODUCER_ID,
-    PipelineContext, PipelineLogBundle, PipelineStage, ResourceLimits, PROPS_OPM_PRODUCER_ID,
-    TURTLE_SERIALIZER_ID, spawn_preprocessors, spawn_producers,
+    PipelineContext, PipelineLogBundle, PipelineStage, PluginRegistry, ResourceLimits,
+    PROPS_OPM_PRODUCER_ID, STDOUT_EXPORT_ID, TURTLE_SERIALIZER_ID,
+    spawn_preprocessors_with, spawn_producers,
 };
 
 /// Returns true if the named-graph IRI belongs to an IfcOWL (or alignment) graph.
@@ -72,12 +73,18 @@ fn make_pipeline_context(
 /// handled by the existing bespoke code paths that precompute geometry.
 fn active_producer_ids_from_settings(settings: &ExecutionSettings) -> Vec<String> {
     let mut ids = Vec::new();
-    if settings.emit_bot { ids.push(BOT_PRODUCER_ID.to_string()); }
-    if settings.emit_beo { ids.push(BEO_PRODUCER_ID.to_string()); }
-    if settings.emit_bsdd { ids.push(BSDD_PRODUCER_ID.to_string()); }
-    if settings.emit_props_opm { ids.push(PROPS_OPM_PRODUCER_ID.to_string()); }
-    if settings.emit_omg_fog { ids.push(OMG_FOG_PRODUCER_ID.to_string()); }
-    if settings.emit_ifcowl { ids.push(IFCOWL_PRODUCER_ID.to_string()); }
+    for id in [
+        BOT_PRODUCER_ID,
+        BEO_PRODUCER_ID,
+        BSDD_PRODUCER_ID,
+        PROPS_OPM_PRODUCER_ID,
+        OMG_FOG_PRODUCER_ID,
+        IFCOWL_PRODUCER_ID,
+    ] {
+        if settings.has(id) {
+            ids.push(id.to_string());
+        }
+    }
     ids
 }
 
@@ -85,6 +92,57 @@ fn active_producer_ids_from_settings(settings: &ExecutionSettings) -> Vec<String
 #[cfg(target_arch = "wasm32")]
 fn now_ms() -> u64 {
     js_sys::Date::now() as u64
+}
+
+/// Run preprocess plugins one-by-one, emitting `running`/`success` stage events
+/// per plugin (with per-plugin durations) and returning the (id, duration_ms)
+/// pairs for `StageDurations::by_preprocess`.
+#[cfg(target_arch = "wasm32")]
+fn run_preprocess_with_events(
+    sink: &js_sys::Function,
+    ids: &[String],
+    registry: &PluginRegistry,
+    ctx: &mut PipelineContext,
+) -> Result<Vec<(String, u64)>, lbd_serializer::SerializerError> {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+
+    let starts: RefCell<HashMap<String, u64>> = RefCell::new(HashMap::new());
+    let durations: RefCell<Vec<(String, u64)>> = RefCell::new(Vec::new());
+
+    spawn_preprocessors_with(
+        ids,
+        registry,
+        ctx,
+        |id| {
+            starts.borrow_mut().insert(id.to_string(), now_ms());
+            let _ = emit_stage_event(sink, id, "Preprocess", "running", 0, 0, 0, None);
+        },
+        |id| {
+            let t0 = starts.borrow_mut().remove(id).unwrap_or_else(now_ms);
+            let dur = now_ms().saturating_sub(t0);
+            durations.borrow_mut().push((id.to_string(), dur));
+            let _ = emit_stage_event(sink, id, "Preprocess", "success", dur, 0, 0, None);
+        },
+    )
+    .map_err(|e| lbd_serializer::SerializerError::Io(std::io::Error::other(e)))?;
+    Ok(durations.into_inner())
+}
+
+/// Emit an Export stage event for every active export plugin (file/log/stdout).
+#[cfg(target_arch = "wasm32")]
+fn emit_export_events(
+    sink: &js_sys::Function,
+    settings: &ExecutionSettings,
+    status: &str,
+    duration_ms: u64,
+) -> Result<(), lbd_serializer::SerializerError> {
+    for id in [FILE_EXPORT_ID, LOG_EXPORT_ID, STDOUT_EXPORT_ID] {
+        if settings.has(id) {
+            emit_stage_event(sink, id, "Export", status, duration_ms, 0, 0, None)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -279,15 +337,15 @@ impl PipelineRunner {
         let options = self.make_convert_options(&base_uri, mode, &settings, request);
 
         // Emit "running" for all active produce stages
-        for (flag, id) in [
-            (settings.emit_bot, BOT_PRODUCER_ID),
-            (settings.emit_beo, BEO_PRODUCER_ID),
-            (settings.emit_bsdd, BSDD_PRODUCER_ID),
-            (settings.emit_props_opm, PROPS_OPM_PRODUCER_ID),
-            (settings.emit_omg_fog, OMG_FOG_PRODUCER_ID),
-            (settings.emit_ifcowl, IFCOWL_PRODUCER_ID),
+        for id in [
+            BOT_PRODUCER_ID,
+            BEO_PRODUCER_ID,
+            BSDD_PRODUCER_ID,
+            PROPS_OPM_PRODUCER_ID,
+            OMG_FOG_PRODUCER_ID,
+            IFCOWL_PRODUCER_ID,
         ] {
-            if flag {
+            if settings.has(id) {
                 emit_stage_event(sink, id, "Produce", "running", 0, 0, 0, None)
                     .map_err(|e| WasmApiError::Serialization(e.to_string()))?;
             }
@@ -323,17 +381,8 @@ impl PipelineRunner {
             None,
         )
         .map_err(|e| WasmApiError::Serialization(e.to_string()))?;
-        emit_stage_event(
-            sink,
-            FILE_EXPORT_ID,
-            "Export",
-            "success",
-            stage_durations.export_ms,
-            0,
-            0,
-            None,
-        )
-        .map_err(|e| WasmApiError::Serialization(e.to_string()))?;
+        emit_export_events(sink, &settings, "success", stage_durations.export_ms)
+            .map_err(|e| WasmApiError::Serialization(e.to_string()))?;
 
         Ok(StreamConversionBundle {
             resolved_plan: ResolvedPlan {
@@ -436,7 +485,7 @@ impl PipelineRunner {
         let ifcowl_max_workers = effective_ifcowl_workers(mode, request);
         ConvertOptions {
             base_uri: base_uri.to_string(),
-            emit_ifcowl_links: settings.emit_ifcowl,
+            emit_ifcowl_links: settings.has(IFCOWL_PRODUCER_ID),
             enable_topology: false,
             enable_topology_extension: false,
             topology_only: false,
@@ -556,7 +605,7 @@ fn turtle_file_summaries(
     let chan_cap = if options.low_memory_mode { 4 } else { 16 };
     let (lbd_sender, lbd_receiver) = crossbeam::channel::bounded(chan_cap);
 
-    if settings.emit_ifcowl {
+    if settings.has(IFCOWL_PRODUCER_ID) {
         let (ifcowl_sender, ifcowl_receiver) = crossbeam::channel::bounded(chan_cap);
         let (merged_sender, merged_receiver) = crossbeam::channel::bounded(chan_cap * 2);
         let (producer_result_sender, producer_result_receiver) =
@@ -717,7 +766,7 @@ fn nquads_file_summaries(
     let (ifcowl_sender, ifcowl_receiver) = crossbeam::channel::bounded(8);
     let (consumer_result_sender, consumer_result_receiver) =
         crossbeam::channel::bounded::<Result<u64, lbd_serializer::SerializerError>>(1);
-    let emit_ifcowl = settings.emit_ifcowl;
+    let emit_ifcowl = settings.has(IFCOWL_PRODUCER_ID);
     let lbd_graph_clone = lbd_graph.clone();
     let ifcowl_graph_clone = ifcowl_graph.clone();
 
@@ -738,7 +787,7 @@ fn nquads_file_summaries(
         let _ = consumer_result_sender.send(result);
     });
 
-    let producer_result = if settings.emit_ifcowl {
+    let producer_result = if settings.has(IFCOWL_PRODUCER_ID) {
         stream_step_and_model(step, model, options, &lbd_sender, Some(&ifcowl_sender))
     } else {
         stream_step_and_model(step, model, options, &lbd_sender, None)
@@ -1035,21 +1084,14 @@ fn turtle_to_sink_joined(
         step_arc.clone(),
         chan_cap,
     );
-    let preprocess_ids: Vec<String> = {
-        let mut ids = vec![CLEANUP_PREPROCESS_ID.to_string()];
-        if settings.emit_bsdd { ids.push(BSDD_MATCH_PREPROCESS_ID.to_string()); }
-        ids
-    };
-    for id in &preprocess_ids {
-        emit_stage_event(sink, id, "Preprocess", "running", 0, 0, 0, None)?;
-    }
-    let pre_t0 = now_ms();
-    spawn_preprocessors(&preprocess_ids, &registry, &mut ctx)
-        .map_err(|e| lbd_serializer::SerializerError::Io(std::io::Error::other(e)))?;
-    let pre_ms = now_ms() - pre_t0;
-    for id in &preprocess_ids {
-        emit_stage_event(sink, id, "Preprocess", "success", pre_ms, 0, 0, None)?;
-    }
+    let preprocess_ids: Vec<String> = registry
+        .manifests_for_stage(PipelineStage::Preprocess)
+        .into_iter()
+        .filter(|m| settings.has(m.id))
+        .map(|m| m.id.to_string())
+        .collect();
+    let preprocess_durations =
+        run_preprocess_with_events(sink, &preprocess_ids, &registry, &mut ctx)?;
     let ctx = std::sync::Arc::new(ctx);
 
     // The context uses options without topology-disable (topology runs separately via
@@ -1142,21 +1184,19 @@ fn turtle_to_sink_joined(
     }
     let serialize_ms = now_ms() - serialize_t0;
 
-    emit_stage_event(sink, FILE_EXPORT_ID, "Export", "running", 0, 0, 0, None)?;
+    emit_export_events(sink, settings, "running", 0)?;
     let export_t0 = now_ms();
     let (summary, peak, chunk_size) = writer.finish()?;
     let export_ms = now_ms() - export_t0;
 
     let mut summaries = vec![summary];
-    if settings.emit_log {
+    if settings.has(LOG_EXPORT_ID) {
         emit_log_sidecar(sink, &ctx, sink_config, &mut summaries)?;
     }
     let mut stage_durations = StageDurations::new();
     stage_durations.serialize_ms = serialize_ms;
     stage_durations.export_ms = export_ms;
-    for id in &preprocess_ids {
-        stage_durations.by_preprocess.push((id.clone(), pre_ms));
-    }
+    stage_durations.by_preprocess = preprocess_durations.clone();
     for (plugin_id, ms) in produce_durations {
         let triples = produce_triples.get(plugin_id).copied().unwrap_or(0);
         stage_durations.by_producer.insert(plugin_id.to_string(), (ms, triples));
@@ -1196,21 +1236,14 @@ fn turtle_to_sink_separate(
         step_arc.clone(),
         chan_cap,
     );
-    let preprocess_ids: Vec<String> = {
-        let mut ids = vec![CLEANUP_PREPROCESS_ID.to_string()];
-        if settings.emit_bsdd { ids.push(BSDD_MATCH_PREPROCESS_ID.to_string()); }
-        ids
-    };
-    for id in &preprocess_ids {
-        emit_stage_event(sink, id, "Preprocess", "running", 0, 0, 0, None)?;
-    }
-    let pre_t0 = now_ms();
-    spawn_preprocessors(&preprocess_ids, &registry, &mut ctx)
-        .map_err(|e| lbd_serializer::SerializerError::Io(std::io::Error::other(e)))?;
-    let pre_ms = now_ms() - pre_t0;
-    for id in &preprocess_ids {
-        emit_stage_event(sink, id, "Preprocess", "success", pre_ms, 0, 0, None)?;
-    }
+    let preprocess_ids: Vec<String> = registry
+        .manifests_for_stage(PipelineStage::Preprocess)
+        .into_iter()
+        .filter(|m| settings.has(m.id))
+        .map(|m| m.id.to_string())
+        .collect();
+    let preprocess_durations =
+        run_preprocess_with_events(sink, &preprocess_ids, &registry, &mut ctx)?;
     let ctx = std::sync::Arc::new(ctx);
 
     let producer_ids = active_producer_ids_from_settings(settings);
@@ -1242,7 +1275,7 @@ fn turtle_to_sink_separate(
     let serialize_t0 = now_ms();
 
     macro_rules! drain_sep_and_emit {
-        ($rx_opt:expr, $slug:literal, $id:expr) => {
+        ($rx_opt:expr, $slug:literal, $id:expr, $grouping:expr) => {
             if let Some(rx) = $rx_opt {
                 let t0 = now_ms();
                 let (summary, triples) = serialize_turtle_receiver_to_file(
@@ -1252,7 +1285,7 @@ fn turtle_to_sink_separate(
                     sink,
                     sink_config,
                     &options,
-                    settings.turtle_grouping,
+                    $grouping,
                     &instance_base,
                 )?;
                 let ms = now_ms() - t0;
@@ -1263,29 +1296,28 @@ fn turtle_to_sink_separate(
             }
         };
     }
-    drain_sep_and_emit!(bot_receiver, "bot", BOT_PRODUCER_ID);
-    drain_sep_and_emit!(beo_receiver, "beo", BEO_PRODUCER_ID);
-    drain_sep_and_emit!(bsdd_receiver, "bsdd", BSDD_PRODUCER_ID);
-    drain_sep_and_emit!(props_receiver, "props", PROPS_OPM_PRODUCER_ID);
-    drain_sep_and_emit!(omg_receiver, "omg", OMG_FOG_PRODUCER_ID);
-    drain_sep_and_emit!(ifcowl_receiver, "ifcowl", IFCOWL_PRODUCER_ID);
+    drain_sep_and_emit!(bot_receiver, "bot", BOT_PRODUCER_ID, settings.turtle_grouping);
+    drain_sep_and_emit!(beo_receiver, "beo", BEO_PRODUCER_ID, settings.turtle_grouping);
+    drain_sep_and_emit!(bsdd_receiver, "bsdd", BSDD_PRODUCER_ID, settings.turtle_grouping);
+    drain_sep_and_emit!(props_receiver, "props", PROPS_OPM_PRODUCER_ID, settings.turtle_grouping);
+    drain_sep_and_emit!(omg_receiver, "omg", OMG_FOG_PRODUCER_ID, settings.turtle_grouping);
+    // IfcOWL: always stream — sorted/grouped buffering 2.3M+ triples OOMs WASM.
+    drain_sep_and_emit!(ifcowl_receiver, "ifcowl", IFCOWL_PRODUCER_ID, TurtleGrouping::Streaming);
     let serialize_ms = now_ms() - serialize_t0;
 
-    emit_stage_event(sink, FILE_EXPORT_ID, "Export", "running", 0, 0, 0, None)?;
+    emit_export_events(sink, settings, "running", 0)?;
     let export_t0 = now_ms();
     let peak = sink_config.max_pending_bytes;
     let chunk_size = sink_config.chunk_size;
     let export_ms = now_ms() - export_t0;
 
-    if settings.emit_log {
+    if settings.has(LOG_EXPORT_ID) {
         emit_log_sidecar(sink, &ctx, sink_config, &mut summaries)?;
     }
     let mut stage_durations = StageDurations::new();
     stage_durations.serialize_ms = serialize_ms;
     stage_durations.export_ms = export_ms;
-    for id in &preprocess_ids {
-        stage_durations.by_preprocess.push((id.clone(), pre_ms));
-    }
+    stage_durations.by_preprocess = preprocess_durations.clone();
     for (plugin_id, ms) in produce_durations {
         let triples = produce_triples.get(plugin_id).copied().unwrap_or(0);
         stage_durations
@@ -1389,21 +1421,14 @@ fn nquads_to_sink(
         step_arc.clone(),
         chan_cap,
     );
-    let preprocess_ids: Vec<String> = {
-        let mut ids = vec![CLEANUP_PREPROCESS_ID.to_string()];
-        if settings.emit_bsdd { ids.push(BSDD_MATCH_PREPROCESS_ID.to_string()); }
-        ids
-    };
-    for id in &preprocess_ids {
-        emit_stage_event(sink, id, "Preprocess", "running", 0, 0, 0, None)?;
-    }
-    let pre_t0 = now_ms();
-    spawn_preprocessors(&preprocess_ids, &registry, &mut ctx)
-        .map_err(|e| lbd_serializer::SerializerError::Io(std::io::Error::other(e)))?;
-    let pre_ms = now_ms() - pre_t0;
-    for id in &preprocess_ids {
-        emit_stage_event(sink, id, "Preprocess", "success", pre_ms, 0, 0, None)?;
-    }
+    let preprocess_ids: Vec<String> = registry
+        .manifests_for_stage(PipelineStage::Preprocess)
+        .into_iter()
+        .filter(|m| settings.has(m.id))
+        .map(|m| m.id.to_string())
+        .collect();
+    let preprocess_durations =
+        run_preprocess_with_events(sink, &preprocess_ids, &registry, &mut ctx)?;
     let ctx = std::sync::Arc::new(ctx);
 
     let producer_ids = active_producer_ids_from_settings(settings);
@@ -1462,19 +1487,17 @@ fn nquads_to_sink(
         drain_chunked!(ifcowl_receiver, "ifcowl", IFCOWL_PRODUCER_ID);
         let serialize_ms = now_ms() - serialize_t0;
 
-        emit_stage_event(sink, FILE_EXPORT_ID, "Export", "running", 0, 0, 0, None)?;
+        emit_export_events(sink, settings, "running", 0)?;
         let export_t0 = now_ms();
         let export_ms = now_ms() - export_t0;
 
-        if settings.emit_log {
+        if settings.has(LOG_EXPORT_ID) {
             emit_log_sidecar(sink, &ctx, sink_config, &mut summaries)?;
         }
         let mut sd = StageDurations::new();
         sd.serialize_ms = serialize_ms;
         sd.export_ms = export_ms;
-        for id in &preprocess_ids {
-            sd.by_preprocess.push((id.clone(), pre_ms));
-        }
+        sd.by_preprocess = preprocess_durations.clone();
         for (plugin_id, ms) in produce_durations {
             let triples = produce_triples.get(plugin_id).copied().unwrap_or(0);
             sd.by_producer.insert(plugin_id.to_string(), (ms, triples));
@@ -1514,21 +1537,19 @@ fn nquads_to_sink(
         drain_merged!(ifcowl_receiver, "ifcowl", IFCOWL_PRODUCER_ID);
         let serialize_ms = now_ms() - serialize_t0;
 
-        emit_stage_event(sink, FILE_EXPORT_ID, "Export", "running", 0, 0, 0, None)?;
+        emit_export_events(sink, settings, "running", 0)?;
         let export_t0 = now_ms();
         let (summary, peak, chunk_size) = writer.finish()?;
         let export_ms = now_ms() - export_t0;
         summaries.push(summary);
 
-        if settings.emit_log {
+        if settings.has(LOG_EXPORT_ID) {
             emit_log_sidecar(sink, &ctx, sink_config, &mut summaries)?;
         }
         let mut sd = StageDurations::new();
         sd.serialize_ms = serialize_ms;
         sd.export_ms = export_ms;
-        for id in &preprocess_ids {
-            sd.by_preprocess.push((id.clone(), pre_ms));
-        }
+        sd.by_preprocess = preprocess_durations.clone();
         for (plugin_id, ms) in produce_durations {
             let triples = produce_triples.get(plugin_id).copied().unwrap_or(0);
             sd.by_producer.insert(plugin_id.to_string(), (ms, triples));
@@ -1601,7 +1622,7 @@ fn export_browser_files(
             role: "lbd".to_string(),
             payload: lbd_bytes,
         });
-        if settings.emit_ifcowl {
+        if settings.has(IFCOWL_PRODUCER_ID) {
             let mut ifcowl_bytes: Vec<u8> = Vec::new();
             serialize_turtle_to_writer(&conversion.ifcowl_triples, &mut ifcowl_bytes)?;
             files.push(ExportedFile {
@@ -1637,12 +1658,12 @@ fn export_browser_files(
             }};
         }
 
-        let bot_triples = collect_producer!(settings.emit_bot, |tx| lbd_converter::stream_bot(model, options, tx));
-        let beo_triples = collect_producer!(settings.emit_beo, |tx| lbd_converter::stream_beo(model, options, tx));
-        let bsdd_triples = collect_producer!(settings.emit_bsdd, |tx| lbd_converter::stream_bsdd(model, options, tx));
-        let props_triples = collect_producer!(settings.emit_props_opm, |tx| lbd_converter::stream_props_opm(model, options, tx));
-        let omg_triples = collect_producer!(settings.emit_omg_fog, |tx| lbd_converter::stream_omg_fog(model, options, tx));
-        let ifcowl_triples = collect_producer!(settings.emit_ifcowl, |tx| lbd_converter::modules::ifcowl::stream_ifcowl(
+        let bot_triples = collect_producer!(settings.has(BOT_PRODUCER_ID), |tx| lbd_converter::stream_bot(model, options, tx));
+        let beo_triples = collect_producer!(settings.has(BEO_PRODUCER_ID), |tx| lbd_converter::stream_beo(model, options, tx));
+        let bsdd_triples = collect_producer!(settings.has(BSDD_PRODUCER_ID), |tx| lbd_converter::stream_bsdd(model, options, tx));
+        let props_triples = collect_producer!(settings.has(PROPS_OPM_PRODUCER_ID), |tx| lbd_converter::stream_props_opm(model, options, tx));
+        let omg_triples = collect_producer!(settings.has(OMG_FOG_PRODUCER_ID), |tx| lbd_converter::stream_omg_fog(model, options, tx));
+        let ifcowl_triples = collect_producer!(settings.has(IFCOWL_PRODUCER_ID), |tx| lbd_converter::modules::ifcowl::stream_ifcowl(
             step, &base, step.header.schema, tx,
             options.stream_batch_size, options.ifcowl_max_workers,
         ));

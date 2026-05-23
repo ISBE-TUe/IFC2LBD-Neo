@@ -1,3 +1,5 @@
+use lbd_pipeline::IFCOWL_PRODUCER_ID;
+
 use crate::types::{ConversionRequest, ExecutionMode, ExecutionSettings};
 
 pub(crate) fn execution_mode_str(mode: ExecutionMode) -> &'static str {
@@ -39,9 +41,9 @@ pub(crate) fn select_execution_mode(
 ) -> (ExecutionMode, u64, u64, String) {
     let input_mb = (input_size_bytes / (1024 * 1024)).max(1);
     let multiplier = if settings.output_formats.has_any_nquads() {
-        if settings.emit_ifcowl { 26 } else { 16 }
+        if settings.has(IFCOWL_PRODUCER_ID) { 26 } else { 16 }
     } else {
-        if settings.emit_ifcowl { 22 } else { 14 }
+        if settings.has(IFCOWL_PRODUCER_ID) { 22 } else { 14 }
     };
     let estimated_peak_mb = 96 + input_mb.saturating_mul(multiplier);
     let feasibility_check_mb = request
