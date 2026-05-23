@@ -522,15 +522,6 @@ fn ensure_trailing_slash(base: &str) -> String {
     }
 }
 
-/*  Original implementation was
-fn ensure_trailing_slash(base: &str) -> &str {
-    if base.ends_with('/') {
-        base
-    } else {
-        base   // TODO: check this  (JO)
-    }
-}*/
-
 pub fn write_nquads_batch<W: Write>(
     writer: &mut W,
     triples: &[Triple],

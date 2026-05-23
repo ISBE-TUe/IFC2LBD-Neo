@@ -9,7 +9,8 @@ const RUNS = Number(process.argv[3] || 3);
 
 const request = {
   moduleIds: [
-    "neo-lbd-producer",
+    "neo-bot-producer",
+    "neo-beo-producer",
     "neo-ifcowl-producer",
     "neo-nquads-serializer",
     "neo-file-export",

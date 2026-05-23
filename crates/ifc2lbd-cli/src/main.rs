@@ -1,46 +1,30 @@
 //! Provides the command-line interface and end-to-end orchestration of the pipeline.
-//! Parses flags and modes (e.g., output format, chunking options, --topology, --topology-full, --bbox).
-//! Wires together parsing, modeling, conversion, topology, geometry, and serialization components according to user-selected options, while keeping stages clearly separated and extensible.
+//! Parses flags and module options, wires together parsing, modeling, conversion, and serialization.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
 use std::time::Instant;
 
 use anyhow::Context;
 use clap::{Parser, ValueEnum};
 use ifc_model::build_model;
-use ifc_model::IfcModel;
-use ifc_step::{parse_step_file, EntityId, StepFile};
+use ifc_step::parse_step_file;
 use lbd_converter::{normalize_base_uri, stream_beo, stream_bot, stream_ifcowl, stream_omg_fog, stream_props_opm, ConvertOptions};
-use lbd_geometry::csg::derive_relations_with_csg_batched;
-use lbd_geometry::{BoundingBox, ExactCheckOptions, GeometryRelation};
 use lbd_serializer::{
     serialize_lbd_batches_incremental_to_writer, serialize_lbd_batches_to_writer,
     serialize_nquads_batches_to_writer, serialize_nquads_merged_batches_to_writer,
     serialize_turtle_batches_to_writer,
 };
 
-mod bbox;
 mod chunk_writer;
-mod kernel;
-mod mesh;
 mod pipeline_plugins;
-mod transform;
-mod voxel;
 
 const SERIALIZER_CHANNEL_CAPACITY: usize = 32;
 const SERIALIZER_BUFFER_BYTES: usize = 1024 * 1024;
-const CORE_CHUNK_BLOCK_LINES: u64 = 4096;
-const CORE_CHUNK_BATCH_BYTES: usize = 4 * 1024 * 1024;
-const MIN_CORE_CHUNK_BYTES: u64 = 64 * 1024 * 1024;
-const MAX_CORE_CHUNK_BYTES: u64 = 512 * 1024 * 1024;
-const IFC_TO_NQ_ESTIMATE_MULTIPLIER: u64 = 32;
 const IFCOWL_TO_NQ_ESTIMATE_MULTIPLIER: u64 = 28;
 const LBD_TO_NQ_ESTIMATE_MULTIPLIER: u64 = 2;
 
@@ -502,7 +486,7 @@ fn main() -> anyhow::Result<()> {
         let receiver = ifcowl_receiver
             .take()
             .ok_or_else(|| anyhow::anyhow!("missing IfcOWL receiver for turtle sidecar mode"))?;
-        let path = bbox::resolve_ifcowl_path(args.output_file.as_deref(), input_path);
+        let path = resolve_ifcowl_path(args.output_file.as_deref(), input_path);
         let ifcowl_base = base_options.base_uri.clone();
         ifcowl_thread = Some(thread::spawn(move || -> anyhow::Result<()> {
             let file = File::create(&path).with_context(|| {
@@ -703,6 +687,9 @@ fn validate_typed_module_configs(
         if module_id == lbd_pipeline::NQUADS_SERIALIZER_ID {
             validate_nquads_serializer_module_config(entries)?;
         }
+        if module_id == lbd_pipeline::NQUADS_CHUNKED_SERIALIZER_ID {
+            validate_nquads_chunked_serializer_module_config(entries)?;
+        }
         if module_id == lbd_pipeline::TURTLE_SERIALIZER_ID {
             validate_turtle_serializer_module_config(entries)?;
         }
@@ -759,35 +746,45 @@ fn resolve_execution_settings(
 ) -> anyhow::Result<ExecutionSettings> {
     let active: HashSet<&str> = plan.enabled_ids.iter().map(|id| id.as_str()).collect();
     let has_nquads = active.contains(lbd_pipeline::NQUADS_SERIALIZER_ID);
+    let has_nquads_chunked = active.contains(lbd_pipeline::NQUADS_CHUNKED_SERIALIZER_ID);
     let has_turtle = active.contains(lbd_pipeline::TURTLE_SERIALIZER_ID);
-    let output_format = match (has_turtle, has_nquads) {
+    let output_format = match (has_turtle, has_nquads || has_nquads_chunked) {
         (true, false) => OutputFormat::Turtle,
         (false, true) => OutputFormat::Nquads,
         (true, true) => anyhow::bail!(
-            "conflicting serializer modules enabled (`{}` and `{}`)",
+            "conflicting serializer modules enabled (`{}` and N-Quads serializer)",
             lbd_pipeline::TURTLE_SERIALIZER_ID,
-            lbd_pipeline::NQUADS_SERIALIZER_ID
         ),
         (false, false) => anyhow::bail!(
-            "no serializer module enabled; add `--module {}` or `--module {}`",
+            "no serializer module enabled; add `--module {}`, `--module {}`, or `--module {}`",
             lbd_pipeline::TURTLE_SERIALIZER_ID,
-            lbd_pipeline::NQUADS_SERIALIZER_ID
+            lbd_pipeline::NQUADS_SERIALIZER_ID,
+            lbd_pipeline::NQUADS_CHUNKED_SERIALIZER_ID,
         ),
     };
 
+    // For the chunked serializer the options live under its own namespace and
+    // chunking defaults to "lines". For the plain serializer the default is "none".
     let nquads_entries = configs.get(lbd_pipeline::NQUADS_SERIALIZER_ID);
+    let chunked_entries = configs.get(lbd_pipeline::NQUADS_CHUNKED_SERIALIZER_ID);
+    let (effective_entries, default_chunking) = if has_nquads_chunked {
+        (chunked_entries, "lines")
+    } else {
+        (nquads_entries, "none")
+    };
     let chunking = parse_quad_chunking(
-        nquads_entries
+        effective_entries
             .and_then(|e| e.get("chunking"))
-            .map(String::as_str),
+            .map(String::as_str)
+            .or(Some(default_chunking)),
     )?;
     let chunk_size_lines =
-        parse_usize_with_default(nquads_entries, "chunk_size_lines", 2_000_000usize)?;
+        parse_usize_with_default(effective_entries, "chunk_size_lines", 2_000_000usize)?;
     let chunk_size_bytes =
-        parse_usize_with_default(nquads_entries, "chunk_size_bytes", 268_435_456usize)?;
-    let chunk_prefix = string_with_default(nquads_entries, "chunk_prefix", "out");
-    let chunk_min_count = parse_usize_with_default(nquads_entries, "chunk_min_count", 1usize)?;
-    let chunk_core_count = parse_optional_usize(nquads_entries, "chunk_core_count")?;
+        parse_usize_with_default(effective_entries, "chunk_size_bytes", 268_435_456usize)?;
+    let chunk_prefix = string_with_default(effective_entries, "chunk_prefix", "out");
+    let chunk_min_count = parse_usize_with_default(effective_entries, "chunk_min_count", 1usize)?;
+    let chunk_core_count = parse_optional_usize(effective_entries, "chunk_core_count")?;
 
     let turtle_entries = configs.get(lbd_pipeline::TURTLE_SERIALIZER_ID);
     let turtle_grouping = match turtle_entries
@@ -858,19 +855,6 @@ fn parse_optional_usize(
     }
 }
 
-fn parse_f64_with_default(
-    entries: Option<&HashMap<String, String>>,
-    key: &str,
-    default: f64,
-) -> anyhow::Result<f64> {
-    match entries.and_then(|m| m.get(key)) {
-        Some(raw) => raw
-            .parse::<f64>()
-            .map_err(|_| anyhow::anyhow!("invalid float for `{}`: `{}`", key, raw)),
-        None => Ok(default),
-    }
-}
-
 fn string_with_default(
     entries: Option<&HashMap<String, String>>,
     key: &str,
@@ -918,6 +902,45 @@ fn validate_nquads_serializer_module_config(
     Ok(())
 }
 
+fn validate_nquads_chunked_serializer_module_config(
+    entries: &HashMap<String, String>,
+) -> Result<(), String> {
+    for (key, value) in entries {
+        match key.as_str() {
+            "chunking" => {
+                if !matches!(value.as_str(), "none" | "lines" | "bytes" | "cores") {
+                    return Err(format!(
+                        "`neo-nquads-chunked-serializer.chunking` must be one of none|lines|bytes|cores, got `{}`",
+                        value
+                    ));
+                }
+            }
+            "chunk_size_lines" | "chunk_size_bytes" | "chunk_min_count" | "chunk_core_count" => {
+                let parsed = value.parse::<usize>().map_err(|_| {
+                    format!(
+                        "`neo-nquads-chunked-serializer.{}` must be an integer, got `{}`",
+                        key, value
+                    )
+                })?;
+                if parsed == 0 {
+                    return Err(format!(
+                        "`neo-nquads-chunked-serializer.{}` must be > 0",
+                        key
+                    ));
+                }
+            }
+            "chunk_prefix" => {}
+            other => {
+                return Err(format!(
+                    "unknown option `neo-nquads-chunked-serializer.{}` (supported: chunking, chunk_size_lines, chunk_size_bytes, chunk_prefix, chunk_min_count, chunk_core_count)",
+                    other
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn validate_turtle_serializer_module_config(
     entries: &HashMap<String, String>,
 ) -> Result<(), String> {
@@ -942,136 +965,20 @@ fn validate_turtle_serializer_module_config(
     Ok(())
 }
 
-fn validate_bbox_module_config(entries: &HashMap<String, String>) -> Result<(), String> {
-    for (key, value) in entries {
-        match key.as_str() {
-            "inflation_threshold" => {
-                let parsed = value.parse::<f64>().map_err(|_| {
-                    format!(
-                        "`neo-bbox-enricher.inflation_threshold` must be a float, got `{}`",
-                        value
-                    )
-                })?;
-                if parsed <= 0.0 {
-                    return Err("`neo-bbox-enricher.inflation_threshold` must be > 0".to_string());
-                }
-            }
-            "report_path" => {}
-            other => {
-                return Err(format!(
-                    "unknown option `neo-bbox-enricher.{}` (supported: inflation_threshold, report_path)",
-                    other
-                ));
-            }
-        }
+fn resolve_ifcowl_path(output_file: Option<&Path>, input_file: &Path) -> PathBuf {
+    if let Some(path) = output_file {
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("lbd_output");
+        return parent.join(format!("{stem}_ifcowl.ttl"));
     }
-    Ok(())
-}
-
-
-pub(crate) fn topology_full_relations(
-    model: &IfcModel,
-    step: &StepFile,
-    _input_path: &Path,
-    geometry_tolerance: f64, /* used by future CSG boolean intersection */
-    // used for future CSG boolean intersection,
-    bbox_inflation_threshold: f64,
-    _kernel_timeout: Duration,
-    _max_pairs_per_batch: usize,
-) -> anyhow::Result<(
-    Vec<GeometryRelation>,
-    HashMap<EntityId, [f64; 6]>,
-    HashMap<EntityId, String>,
-    bbox::BboxQualityReport,
-)> {
-    let (candidate_pairs, mut prefilter_bboxes) = bbox::rtree_candidate_pairs(model, step);
-    let unique_elements = {
-        let mut ids = HashSet::new();
-        for (a, b) in &candidate_pairs {
-            ids.insert(*a);
-            ids.insert(*b);
-        }
-        ids
-    };
-    tracing::info!(
-        "topology-full candidates: {} pairs across {} elements",
-        candidate_pairs.len(),
-        unique_elements.len(),
-    );
-
-    if candidate_pairs.is_empty() {
-        let empty_report = bbox::BboxQualityReport {
-            elements_requested: 0,
-            elements_with_mesh: 0,
-            escalated_exact_count: 0,
-            rotated_bbox_count: 0,
-            avg_inflation_fast: 0.0,
-            max_inflation_fast: 0.0,
-            avg_inflation_final: 0.0,
-            max_inflation_final: 0.0,
-            avg_escalated_reduction_ratio: 0.0,
-            count_fast_over_1_2: 0,
-            count_fast_over_1_5: 0,
-            count_fast_over_1_8: 0,
-            count_fast_over_2_0: 0,
-            inflation_threshold: bbox_inflation_threshold,
-            top_inflation_outliers: Vec::new(),
-        };
-        return Ok((Vec::new(), HashMap::new(), HashMap::new(), empty_report));
-    }
-
-    let mut sorted_element_ids: Vec<EntityId> = unique_elements.iter().copied().collect();
-    sorted_element_ids.sort_unstable();
-    let (mesh_bboxes, mesh_wkts, bbox_report) = bbox::collect_mesh_bounding_boxes_hybrid(
-        step,
-        sorted_element_ids,
-        bbox_inflation_threshold,
-    );
-
-    for (eid, bbox) in mesh_bboxes.iter() {
-        prefilter_bboxes.entry(*eid).or_insert(*bbox);
-    }
-
-    // Pipeline: R-tree broad-phase → voxel adjacency (surface contact).
-    // Voxel replaces the external OCC subprocess with pure Rust code that compiles to WASM.
-    tracing::info!(
-        "topology-full: running voxel adjacency ({} candidates)",
-        candidate_pairs.len()
-    );
-    let (mut relations, _voxel_bboxes) =
-        bbox::voxel_adjacency_relations_with_candidates(step, &candidate_pairs, 0.1, 50_000);
-    tracing::info!(
-        "topology-full: voxel adjacency produced {} relations",
-        relations.len()
-    );
-
-    // Exact mesh intersection via parry3d BVH collision detection.
-    // This refines voxel results with true triangle-level intersection testing.
-    let tolerance = ExactCheckOptions {
-        tolerance: geometry_tolerance,
-    };
-    tracing::info!(
-        "topology-full: running parry3d mesh intersection ({} pairs, tolerance={})",
-        candidate_pairs.len(),
-        geometry_tolerance,
-    );
-    let exact_relations = derive_relations_with_csg_batched(
-        model,
-        step,
-        &candidate_pairs,
-        &tolerance,
-        &prefilter_bboxes,
-        50,
-    );
-    tracing::info!(
-        "topology-full: parry3d intersection produced {} relations",
-        exact_relations.len()
-    );
-
-    // Merge voxel + parry3d results (union of relations)
-    relations.extend(exact_relations);
-
-    return Ok((relations, mesh_bboxes, mesh_wkts, bbox_report));
+    let stem = input_file
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("ifc_output");
+    PathBuf::from(format!("{stem}_ifcowl.ttl"))
 }
 
 fn normalize_base_for_graph_iri(base_uri: &str) -> String {
@@ -1142,7 +1049,7 @@ mod tests {
             "ifc2lbd-neo",
             "input.ifc",
             "--module",
-            "neo-lbd-producer",
+            "neo-bot-producer",
             "--module",
             "neo-nquads-serializer",
             "--output",
@@ -1160,7 +1067,7 @@ mod tests {
         assert_eq!(
             args.module,
             vec![
-                "neo-lbd-producer".to_string(),
+                "neo-bot-producer".to_string(),
                 "neo-nquads-serializer".to_string()
             ]
         );
@@ -1188,7 +1095,7 @@ mod tests {
             "ifc2lbd-neo",
             "input.ifc",
             "--module",
-            "neo-lbd-producer",
+            "neo-bot-producer",
             "--module",
             "neo-topology-full-producer",
             "--module",
@@ -1196,23 +1103,11 @@ mod tests {
         ])
         .expect("parse");
         let requested = build_requested_module_list(&args);
-        assert!(requested.contains(&"neo-lbd-producer".to_string()));
+        assert!(requested.contains(&"neo-bot-producer".to_string()));
         assert!(requested.contains(&"neo-topology-full-producer".to_string()));
         assert!(requested.contains(&"neo-nquads-serializer".to_string()));
     }
 
-    #[test]
-    fn core_chunk_count_is_capped_by_min_chunk_size_estimate() {
-        // 10 MiB IFC => estimate 320 MiB => max 5 chunks at 64 MiB minimum.
-        let effective = chunk_writer::resolve_effective_core_chunk_count(
-            chunk_writer::QuadChunkingMode::Cores,
-            Some(28),
-            1,
-            10 * 1024 * 1024,
-        )
-        .expect("effective");
-        assert_eq!(effective, 5);
-    }
 
     #[test]
     fn quad_chunk_writer_rotates_and_writes_manifest() {

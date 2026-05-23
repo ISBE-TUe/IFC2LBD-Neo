@@ -126,12 +126,6 @@ No options. Named graph IRIs are derived from `--base-uri` automatically.
 | `chunk_min_count`   | integer                           | `1`                             |
 | `chunk_core_count`  | integer                           | — (only with `chunking=cores`)  |
 
-### `neo-bbox-enricher`
-
-| Option                 | Values     | Default |
-| ---------------------- | ---------- | ------- |
-| `inflation_threshold`  | float > 0  | `1.5`   |
-
 ---
 
 ## Discovery and Diagnostics
@@ -241,16 +235,18 @@ If documents conflict, prefer files under `docs/current/`.
 
 ```text
 crates/
-  ifc-step/           IFC STEP file parser
-  ifc-model/          IFC object model builder
-  lbd-converter/      LBD triple producers (BOT, BEO, Props, OMG, IfcOWL)
-  lbd-pipeline/       Module trait definitions and plugin registry
-  lbd-serializer/     Turtle and N-Quads serializers
-  lbd-ontology/       RDF triple types and ontology constants
-  lbd-topology/       IFC spatial relationship topology
-  lbd-geometry/       Bounding box and geometry computation
-  ifc2lbd-wasm/       WebAssembly facade and browser runner
-  ifc2lbd-cli/        CLI binary and pipeline orchestration
+  ifc-step/              IFC STEP file parser
+  ifc-schema/            IFC type hierarchy tables (IFC2X3, IFC4, IFC4x3)
+  ifc-model/             IFC object model builder
+  lbd-converter/         LBD triple producers (BOT, BEO, Props, OMG, IfcOWL)
+  lbd-pipeline/          Module trait definitions and plugin registry
+  lbd-serializer/        Turtle and N-Quads serializers
+  lbd-ontology/          RDF triple types and ontology constants
+  lbd-topology/          IFC spatial relationship topology
+  lbd-geometry/          Bounding box and geometry computation
+  lbd-geometry-kernel/   Native geometry kernel binary (OpenCascade via chijin)
+  ifc2lbd-wasm/          WebAssembly facade and browser runner
+  ifc2lbd-cli/           CLI binary and pipeline orchestration
   plugin-topology-full/  Full geometry-based topology plugin
 web/
   wasm-prototype/     Browser UI (Vite + WASM)
