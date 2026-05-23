@@ -8,7 +8,7 @@ import { getState } from "./state.js";
 // Only options that differ from these will appear in the command.
 const MODULE_DEFAULTS = {
   "neo-turtle-serializer": {
-    grouping: "sorted",
+    grouping: "streaming",
     layout: "joined",
   },
   "neo-nquads-chunked-serializer": {

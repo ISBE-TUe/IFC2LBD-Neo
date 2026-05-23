@@ -822,6 +822,7 @@ dependencies = [
  "ifc-model",
  "ifc-schema",
  "ifc-step",
+ "js-sys",
  "lbd-geometry",
  "lbd-ontology",
  "lbd-topology",
@@ -1266,6 +1267,7 @@ dependencies = [
  "lbd-pipeline",
  "serde_json",
  "tracing",
+ "unicode-normalization",
 ]
 
 [[package]]

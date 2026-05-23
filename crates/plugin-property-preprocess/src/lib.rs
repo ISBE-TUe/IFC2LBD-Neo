@@ -9,6 +9,7 @@ use lbd_pipeline::{
 };
 use serde_json::json;
 use tracing::info;
+use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
 
 pub struct CleanupPreprocessPlugin;
 pub struct BsddMatchPreprocessPlugin;
@@ -40,9 +41,35 @@ impl PreprocessPlugin for CleanupPreprocessPlugin {
             .ok_or_else(|| PreprocessError::Preprocessing("CleanupPreprocessPlugin: missing IfcModel in context".to_string()))?;
 
         let before_props: usize = model.property_sets.values().map(|ps| ps.properties.len()).sum();
+        let property_names_with_non_ascii = model
+            .property_single_values
+            .values()
+            .filter(|p| !p.name.is_ascii())
+            .count()
+            + model
+                .property_enumerated_values
+                .values()
+                .filter(|p| !p.name.is_ascii())
+                .count();
+        let segmented_property_names = model
+            .property_single_values
+            .values()
+            .filter(|p| has_segment_marker(p.name.as_str()))
+            .count()
+            + model
+                .property_enumerated_values
+                .values()
+                .filter(|p| has_segment_marker(p.name.as_str()))
+                .count();
+        let property_sets_with_non_ascii = model
+            .property_sets
+            .values()
+            .filter(|ps| ps.name.as_deref().is_some_and(|name| !name.is_ascii()))
+            .count();
         let deduped = dedup_model_property_sets(&model);
         let after_props: usize = deduped.property_sets.values().map(|ps| ps.properties.len()).sum();
-        ctx.replace(Arc::new(deduped));
+        let (normalized_model, normalization_stats) = normalize_model_text(&deduped);
+        ctx.replace(Arc::new(normalized_model));
 
         let deduped_count = before_props.saturating_sub(after_props);
         let mut logs = ctx.get::<PipelineLogBundle>().map(|x| (*x).clone()).unwrap_or_default();
@@ -50,6 +77,12 @@ impl PreprocessPlugin for CleanupPreprocessPlugin {
             "properties_before_dedup": before_props,
             "properties_after_dedup": after_props,
             "properties_deduped": deduped_count,
+            "property_names_with_non_ascii": property_names_with_non_ascii,
+            "property_sets_with_non_ascii": property_sets_with_non_ascii,
+            "segmented_property_names": segmented_property_names,
+            "property_names_normalized": normalization_stats.property_names_normalized,
+            "property_sets_normalized": normalization_stats.property_sets_normalized,
+            "non_ascii_names_remaining": normalization_stats.non_ascii_names_remaining,
         }));
         ctx.replace(Arc::new(logs));
         info!("cleanup preprocess complete: dedup applied");
@@ -100,4 +133,79 @@ impl PreprocessPlugin for BsddMatchPreprocessPlugin {
         info!("bSDD match preprocess complete: cache ready");
         Ok(())
     }
+}
+
+fn has_segment_marker(value: &str) -> bool {
+    value.contains(':') || value.contains('/') || value.contains('\\') || value.contains('|')
+}
+
+#[derive(Default)]
+struct TextNormalizationStats {
+    property_names_normalized: usize,
+    property_sets_normalized: usize,
+    non_ascii_names_remaining: usize,
+}
+
+fn normalize_model_text(model: &IfcModel) -> (IfcModel, TextNormalizationStats) {
+    let mut updated = model.clone();
+    let mut stats = TextNormalizationStats::default();
+
+    for property in updated.property_single_values.values_mut() {
+        let normalized = transliterate_ascii(property.name.as_str());
+        if normalized != property.name {
+            property.name = normalized.into();
+            stats.property_names_normalized += 1;
+        }
+        if !property.name.is_ascii() {
+            stats.non_ascii_names_remaining += 1;
+        }
+    }
+
+    for property in updated.property_enumerated_values.values_mut() {
+        let normalized = transliterate_ascii(property.name.as_str());
+        if normalized != property.name {
+            property.name = normalized.into();
+            stats.property_names_normalized += 1;
+        }
+        if !property.name.is_ascii() {
+            stats.non_ascii_names_remaining += 1;
+        }
+    }
+
+    for property_set in updated.property_sets.values_mut() {
+        if let Some(name) = property_set.name.as_mut() {
+            let normalized = transliterate_ascii(name.as_str());
+            if normalized != name.as_str() {
+                *name = normalized.into();
+                stats.property_sets_normalized += 1;
+            }
+            if !name.is_ascii() {
+                stats.non_ascii_names_remaining += 1;
+            }
+        }
+    }
+
+    (updated, stats)
+}
+
+fn transliterate_ascii(input: &str) -> String {
+    let transliterated = input
+        .chars()
+        .flat_map(|ch| match ch {
+            'ä' => ['a', 'e'].into_iter().collect::<Vec<_>>(),
+            'ö' => ['o', 'e'].into_iter().collect::<Vec<_>>(),
+            'ü' => ['u', 'e'].into_iter().collect::<Vec<_>>(),
+            'Ä' => ['A', 'e'].into_iter().collect::<Vec<_>>(),
+            'Ö' => ['O', 'e'].into_iter().collect::<Vec<_>>(),
+            'Ü' => ['U', 'e'].into_iter().collect::<Vec<_>>(),
+            'ß' => ['s', 's'].into_iter().collect::<Vec<_>>(),
+            other => vec![other],
+        })
+        .collect::<String>();
+
+    transliterated
+        .nfkd()
+        .filter(|c| !is_combining_mark(*c))
+        .map(|c| if c.is_ascii() { c } else { '_' })
+        .collect()
 }

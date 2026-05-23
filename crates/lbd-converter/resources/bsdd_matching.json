@@ -48,6 +48,15 @@
     "phaseerstellt": "Phase Created",
     "tragendesmaterial": "Material"
   },
+  "pset_prop_aliases": {
+    "psetbaustelleneinrichtung": {
+      "bezeichnungsnummer": "TagNumber",
+      "beginnnutzung": "StartDate",
+      "endenutzung": "EndDate",
+      "verfugbarkeitstart": "StartDate",
+      "verfugbarkeitende": "EndDate"
+    }
+  },
   "hard_mappings": {
     "ifcbeam|psetbeamcommon|isexternal": "IsExternal",
     "ifcbeam|psetbeamcommon|loadbearing": "LoadBearing",

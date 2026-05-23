@@ -153,6 +153,15 @@ fn now_ms() -> u64 {
     origin.elapsed().as_millis() as u64
 }
 
+#[cfg(target_arch = "wasm32")]
+fn effective_turtle_grouping(grouping: TurtleGrouping, options: &ConvertOptions) -> TurtleGrouping {
+    if matches!(grouping, TurtleGrouping::Sorted) && options.low_memory_mode {
+        TurtleGrouping::Streaming
+    } else {
+        grouping
+    }
+}
+
 /// Stage completion event sent from rayon producer threads to main thread.
 struct StageDoneEvent {
     plugin_id: &'static str,
@@ -335,6 +344,11 @@ impl PipelineRunner {
             .map_err(|e| WasmApiError::Serialization(e.to_string()))?;
 
         let options = self.make_convert_options(&base_uri, mode, &settings, request);
+        if matches!(settings.turtle_grouping, TurtleGrouping::Sorted) && options.low_memory_mode {
+            warnings.push(
+                "neo-turtle-serializer.grouping=sorted was downgraded to streaming in WASM because low-memory mode was selected".to_string(),
+            );
+        }
 
         // Emit "running" for all active produce stages
         for id in [
@@ -984,6 +998,7 @@ fn serialize_turtle_receiver_to_file(
         sink_config.chunk_size,
         sink_config.max_pending_bytes,
     )?;
+    let grouping = effective_turtle_grouping(grouping, options);
     let grouped = matches!(grouping, TurtleGrouping::Sorted);
     if !grouped && !options.low_memory_mode {
         write_turtle_prefixes_for_stream(&mut writer, Some(instance_base))?;
@@ -1018,6 +1033,7 @@ fn serialize_turtle_receiver_to_writer(
     grouping: TurtleGrouping,
     instance_base: &str,
 ) -> Result<u64, lbd_serializer::SerializerError> {
+    let grouping = effective_turtle_grouping(grouping, options);
     let grouped = matches!(grouping, TurtleGrouping::Sorted);
     let mut triple_count: u64 = 0;
     if grouped {
@@ -1121,12 +1137,13 @@ fn turtle_to_sink_joined(
         sink_config.chunk_size,
         sink_config.max_pending_bytes,
     )?;
-    if !options.low_memory_mode && !matches!(settings.turtle_grouping, TurtleGrouping::Sorted) {
+    let effective_grouping = effective_turtle_grouping(settings.turtle_grouping, &options);
+    if !options.low_memory_mode && !matches!(effective_grouping, TurtleGrouping::Sorted) {
         write_turtle_prefixes_for_stream(&mut writer, Some(&instance_base))?;
     }
     emit_stage_event(sink, TURTLE_SERIALIZER_ID, "Serialize", "running", 0, 0, 0, None)?;
     let serialize_t0 = now_ms();
-    if matches!(settings.turtle_grouping, TurtleGrouping::Sorted) {
+    if matches!(effective_grouping, TurtleGrouping::Sorted) {
         let mut all_triples: Vec<lbd_ontology::Triple> = Vec::new();
         macro_rules! collect_and_emit {
             ($rx_opt:expr, $id:expr) => {
@@ -1167,7 +1184,7 @@ fn turtle_to_sink_joined(
             ($rx_opt:expr, $id:expr) => {
                 if let Some(rx) = $rx_opt {
                     let t0 = now_ms();
-                    let count = serialize_turtle_receiver_to_writer(rx, &mut writer, &options, settings.turtle_grouping, &instance_base)?;
+                    let count = serialize_turtle_receiver_to_writer(rx, &mut writer, &options, effective_grouping, &instance_base)?;
                     let ms = now_ms() - t0;
                     produce_triples.insert($id, count);
                     produce_durations.insert($id, ms);
@@ -1296,11 +1313,12 @@ fn turtle_to_sink_separate(
             }
         };
     }
-    drain_sep_and_emit!(bot_receiver, "bot", BOT_PRODUCER_ID, settings.turtle_grouping);
-    drain_sep_and_emit!(beo_receiver, "beo", BEO_PRODUCER_ID, settings.turtle_grouping);
-    drain_sep_and_emit!(bsdd_receiver, "bsdd", BSDD_PRODUCER_ID, settings.turtle_grouping);
-    drain_sep_and_emit!(props_receiver, "props", PROPS_OPM_PRODUCER_ID, settings.turtle_grouping);
-    drain_sep_and_emit!(omg_receiver, "omg", OMG_FOG_PRODUCER_ID, settings.turtle_grouping);
+    let effective_grouping = effective_turtle_grouping(settings.turtle_grouping, &options);
+    drain_sep_and_emit!(bot_receiver, "bot", BOT_PRODUCER_ID, effective_grouping);
+    drain_sep_and_emit!(beo_receiver, "beo", BEO_PRODUCER_ID, effective_grouping);
+    drain_sep_and_emit!(bsdd_receiver, "bsdd", BSDD_PRODUCER_ID, effective_grouping);
+    drain_sep_and_emit!(props_receiver, "props", PROPS_OPM_PRODUCER_ID, effective_grouping);
+    drain_sep_and_emit!(omg_receiver, "omg", OMG_FOG_PRODUCER_ID, effective_grouping);
     // IfcOWL: always stream — sorted/grouped buffering 2.3M+ triples OOMs WASM.
     drain_sep_and_emit!(ifcowl_receiver, "ifcowl", IFCOWL_PRODUCER_ID, TurtleGrouping::Streaming);
     let serialize_ms = now_ms() - serialize_t0;

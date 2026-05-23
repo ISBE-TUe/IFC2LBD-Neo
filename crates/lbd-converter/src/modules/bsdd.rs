@@ -6,19 +6,20 @@ use crossbeam::channel::Sender;
 use flate2::read::GzDecoder;
 use ifc_model::IfcModel;
 use ifc_schema::SpatialType;
-use ifc_step::{StepSchema, StepValue};
+use ifc_step::{decode_ifc_unicode, StepSchema, StepValue};
 use lbd_ontology::{
-    opm_current_property_state, opm_has_property_state,
-    opm_property, rdf_type, rdfs_label, schema_value, Object, Triple,
-    XSD,
+    opm_current_property_state, opm_has_property_state, opm_property, prov_generated_at_time,
+    rdf_type, rdfs_label, schema_value, smls_unit, Object, Triple, XSD,
 };
 use serde::Deserialize;
 use serde_json::json;
 use strsim::jaro_winkler;
 use tracing::info;
+use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
 
 use crate::{
-    element_resource_iri, normalize_base_uri, sorted_values, spatial_resource_iri,
+    build_unit_type_map, current_generated_at_rfc3339, element_resource_iri, normalize_base_uri,
+    resolve_property_unit, resolve_quantity_unit, sorted_values, spatial_resource_iri,
     ConvertOptions, StreamError, MAX_STREAM_BATCH_SIZE, MIN_STREAM_BATCH_SIZE,
 };
 
@@ -47,8 +48,10 @@ impl BsddMatchCache {
         let mut ambiguous: usize = 0;
         let mut unmapped: usize = 0;
         let mut fuzzy_scores: Vec<f64> = Vec::new();
+        let mut method_counts: HashMap<&'static str, usize> = HashMap::new();
 
         for m in self.by_key.values() {
+            *method_counts.entry(m.method).or_insert(0) += 1;
             match m.status {
                 MatchStatus::Matched => {
                     if m.method == "fuzzy" {
@@ -86,6 +89,7 @@ impl BsddMatchCache {
             "fuzzy_confidence_avg": fuzzy_avg,
             "fuzzy_confidence_min": fuzzy_min,
             "fuzzy_confidence_max": fuzzy_max,
+            "method_counts": method_counts,
         })
     }
 }
@@ -153,6 +157,8 @@ struct BsddMatchingConfig {
     #[serde(default)]
     prop_aliases: HashMap<String, String>,
     #[serde(default)]
+    pset_prop_aliases: HashMap<String, HashMap<String, String>>,
+    #[serde(default)]
     hard_mappings: HashMap<String, String>,
     #[serde(default)]
     schema_class_aliases: HashMap<String, HashMap<String, String>>,
@@ -178,40 +184,83 @@ impl BsddIndex {
             .schema_class_aliases
             .get(&schema.to_string())
             .unwrap_or(&empty_schema_aliases);
-        let class_alias = canonical_alias(class_code_like, &matching.class_aliases, schema_aliases);
-        let pset_alias = canonical_alias(pset_name, &matching.pset_aliases, &HashMap::new());
-        let prop_alias = canonical_alias(prop_name, &matching.prop_aliases, &HashMap::new());
+        let class_norms = normalized_match_variants(
+            class_code_like,
+            &matching.class_aliases,
+            schema_aliases,
+            &HashMap::new(),
+            false,
+        );
+        let pset_norms = normalized_match_variants(
+            pset_name,
+            &matching.pset_aliases,
+            &HashMap::new(),
+            &HashMap::new(),
+            false,
+        );
+        let prop_norms = normalized_match_variants(
+            prop_name,
+            &matching.prop_aliases,
+            &HashMap::new(),
+            matching
+                .pset_prop_aliases
+                .get(
+                    &normalized_match_variants(
+                        pset_name,
+                        &matching.pset_aliases,
+                        &HashMap::new(),
+                        &HashMap::new(),
+                        false,
+                    )
+                    .into_iter()
+                    .next()
+                    .unwrap_or_default(),
+                )
+                .unwrap_or(&HashMap::new()),
+            true,
+        );
 
-        let class_norm = normalize(&class_alias);
-        let pset_norm = normalize(&pset_alias);
-        let prop_norm = normalize(&prop_alias);
-        let pset_prop_key = format!("{pset_norm}|{prop_norm}");
-        let class_prop_key = format!("{class_norm}|{prop_norm}");
-        let exact_key = format!("{class_norm}|{pset_norm}|{prop_norm}");
-        let hard_key = format!("{class_norm}|{pset_norm}|{prop_norm}");
-        let schema_hard_key = format!("{}|{hard_key}", schema.to_string().to_ascii_lowercase());
+        for class_norm in &class_norms {
+            for pset_norm in &pset_norms {
+                for prop_norm in &prop_norms {
+                    let exact_key = format!("{class_norm}|{pset_norm}|{prop_norm}");
+                    let hard_key = exact_key.clone();
+                    let schema_hard_key =
+                        format!("{}|{hard_key}", schema.to_string().to_ascii_lowercase());
 
-        if let Some(code) = matching.hard_mappings.get(&schema_hard_key).or_else(|| matching.hard_mappings.get(&hard_key)) {
-            return MatchResult {
-                status: MatchStatus::Matched,
-                property_code: Some(code.clone()),
-                exact_meta: self.exact_meta.get(&exact_key).cloned(),
-                method: "hard_override",
-                confidence: Some(1.0),
-            };
+                    if let Some(code) = matching
+                        .hard_mappings
+                        .get(&schema_hard_key)
+                        .or_else(|| matching.hard_mappings.get(&hard_key))
+                    {
+                        return MatchResult {
+                            status: MatchStatus::Matched,
+                            property_code: Some(code.clone()),
+                            exact_meta: self.exact_meta.get(&exact_key).cloned(),
+                            method: "hard_override",
+                            confidence: Some(1.0),
+                        };
+                    }
+
+                    if let Some(code) = self.exact.get(&exact_key) {
+                        return MatchResult {
+                            status: MatchStatus::Matched,
+                            property_code: Some(code.clone()),
+                            exact_meta: self.exact_meta.get(&exact_key).cloned(),
+                            method: "exact_class_pset_prop",
+                            confidence: Some(1.0),
+                        };
+                    }
+                }
+            }
         }
 
-        if let Some(code) = self.exact.get(&exact_key) {
-            return MatchResult {
-                status: MatchStatus::Matched,
-                property_code: Some(code.clone()),
-                exact_meta: self.exact_meta.get(&exact_key).cloned(),
-                method: "exact_class_pset_prop",
-                confidence: Some(1.0),
-            };
-        }
-
-        let pset_candidates = self.by_pset_prop.get(&pset_prop_key).cloned().unwrap_or_default();
+        let pset_candidates = collect_candidates(
+            pset_norms
+                .iter()
+                .flat_map(|pset_norm| prop_norms.iter().map(move |prop_norm| format!("{pset_norm}|{prop_norm}"))),
+            &self.by_pset_prop,
+        );
         if pset_candidates.len() == 1 {
             return MatchResult {
                 status: MatchStatus::Normalized,
@@ -231,7 +280,12 @@ impl BsddIndex {
             };
         }
 
-        let class_candidates = self.by_class_prop.get(&class_prop_key).cloned().unwrap_or_default();
+        let class_candidates = collect_candidates(
+            class_norms
+                .iter()
+                .flat_map(|class_norm| prop_norms.iter().map(move |prop_norm| format!("{class_norm}|{prop_norm}"))),
+            &self.by_class_prop,
+        );
         if class_candidates.len() == 1 {
             return MatchResult {
                 status: MatchStatus::Normalized,
@@ -251,7 +305,7 @@ impl BsddIndex {
             };
         }
 
-        let prop_candidates = self.by_prop.get(&prop_norm).cloned().unwrap_or_default();
+        let prop_candidates = collect_candidates(prop_norms.iter().cloned(), &self.by_prop);
         if prop_candidates.len() == 1 {
             return MatchResult {
                 status: MatchStatus::Normalized,
@@ -271,14 +325,18 @@ impl BsddIndex {
             };
         }
 
-        if let Some((code, score)) = self.resolve_fuzzy(&class_norm, &pset_norm, &prop_norm) {
-            return MatchResult {
-                status: MatchStatus::Normalized,
-                property_code: Some(code),
-                exact_meta: None,
-                method: "fuzzy",
-                confidence: Some(score),
-            };
+        let class_norm = class_norms.first().map(String::as_str).unwrap_or_default();
+        let pset_norm = pset_norms.first().map(String::as_str).unwrap_or_default();
+        for prop_norm in &prop_norms {
+            if let Some((code, score)) = self.resolve_fuzzy(class_norm, pset_norm, prop_norm) {
+                return MatchResult {
+                    status: MatchStatus::Normalized,
+                    property_code: Some(code),
+                    exact_meta: None,
+                    method: "fuzzy",
+                    confidence: Some(score),
+                };
+            }
         }
 
         MatchResult {
@@ -374,8 +432,9 @@ fn load_bsdd_matching() -> Result<&'static BsddMatchingConfig, String> {
 }
 
 fn normalize(input: &str) -> String {
-    input
-        .chars()
+    transliterate_for_matching(input)
+        .nfkd()
+        .filter(|c| !is_combining_mark(*c))
         .filter(|c| c.is_ascii_alphanumeric())
         .flat_map(|c| c.to_lowercase())
         .collect()
@@ -400,6 +459,123 @@ fn string_similarity(a: &str, b: &str) -> f64 {
     jaro_winkler(a, b)
 }
 
+fn transliterate_for_matching(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for ch in input.chars() {
+        match ch {
+            'ä' => out.push_str("ae"),
+            'ö' => out.push_str("oe"),
+            'ü' => out.push_str("ue"),
+            'Ä' => out.push_str("Ae"),
+            'Ö' => out.push_str("Oe"),
+            'Ü' => out.push_str("Ue"),
+            'ß' => out.push_str("ss"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+fn normalized_match_variants(
+    input: &str,
+    aliases: &HashMap<String, String>,
+    schema_aliases: &HashMap<String, String>,
+    scoped_aliases: &HashMap<String, String>,
+    strip_segments: bool,
+) -> Vec<String> {
+    let mut raw_candidates = vec![input.trim().to_string()];
+    let key = normalize(input);
+    if let Some(v) = schema_aliases.get(&key) {
+        raw_candidates.insert(0, v.clone());
+    }
+    if let Some(v) = scoped_aliases.get(&key) {
+        raw_candidates.insert(0, v.clone());
+    }
+    if let Some(v) = aliases.get(&key) {
+        raw_candidates.insert(0, v.clone());
+    }
+
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for candidate in raw_candidates {
+        for surface in surface_variants(&candidate, strip_segments) {
+            let norm = normalize(&surface);
+            if !norm.is_empty() && seen.insert(norm.clone()) {
+                out.push(norm);
+            }
+        }
+    }
+    out
+}
+
+fn surface_variants(input: &str, strip_segments: bool) -> Vec<String> {
+    let mut out = Vec::new();
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return out;
+    }
+    out.push(trimmed.to_string());
+    let compact = trimmed.replace("::", ":");
+    if compact != trimmed {
+        out.push(compact.clone());
+    }
+    if let Some(stripped) = strip_software_prefix(&compact) {
+        out.push(stripped.clone());
+    }
+    if strip_segments {
+        let segment_sources = out.clone();
+        for source in segment_sources {
+            for sep in [':', '/', '\\', '|'] {
+                if let Some(last) = source.rsplit(sep).next() {
+                    let last = last.trim();
+                    if !last.is_empty() && last != trimmed {
+                        out.push(last.to_string());
+                    }
+                }
+            }
+            if let Some((_, suffix)) = source.split_once(' ') {
+                let suffix = suffix.trim();
+                if !suffix.is_empty() && suffix != trimmed {
+                    out.push(suffix.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
+fn strip_software_prefix(input: &str) -> Option<String> {
+    let trimmed = input.trim();
+    if let Some((prefix, suffix)) = trimmed.split_once(' ') {
+        let norm_prefix = normalize(prefix);
+        if norm_prefix.starts_with("bsdpset") || norm_prefix.starts_with("psetrevit") {
+            let suffix = suffix.trim();
+            if !suffix.is_empty() {
+                return Some(suffix.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn collect_candidates<I>(keys: I, lookup: &HashMap<String, Vec<String>>) -> Vec<String>
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for key in keys {
+        if let Some(values) = lookup.get(&key) {
+            for value in values {
+                if seen.insert(value.clone()) {
+                    out.push(value.clone());
+                }
+            }
+        }
+    }
+    out
+}
+
 fn bsddm(local: &str) -> String {
     format!("{BSDDM_NS}{local}")
 }
@@ -410,6 +586,10 @@ fn bsdd_class(code: &str) -> String {
 
 fn bsdd_prop(code: &str) -> String {
     format!("{BSDD_PROP_NS}{code}")
+}
+
+fn bsdd_local_instance(base: &str, kind: &str, local: &str) -> String {
+    format!("{base}/bsdd_{kind}_{local}")
 }
 
 fn spatial_ifc_class(spatial_type: SpatialType) -> &'static str {
@@ -474,8 +654,8 @@ fn normalize_ifc_entity(raw: &str) -> String {
 
 fn step_value_to_object(value: &StepValue) -> Option<Object> {
     match value {
-        StepValue::String(s) => Some(Object::Literal(s.to_string())),
-        StepValue::Enum(s) => Some(Object::Literal(s.to_string())),
+        StepValue::String(s) => Some(Object::Literal(decode_ifc_unicode(s))),
+        StepValue::Enum(s) => Some(Object::Literal(decode_ifc_unicode(s))),
         StepValue::Bool(v) => Some(Object::TypedLiteral {
             value: v.to_string(),
             datatype: format!("{XSD}boolean"),
@@ -643,15 +823,45 @@ fn cache_key(
         .schema_class_aliases
         .get(&schema.to_string())
         .unwrap_or(&empty_schema_aliases);
-    let class_alias = canonical_alias(class_code_like, &matching.class_aliases, schema_aliases);
-    let pset_alias = canonical_alias(pset_name, &matching.pset_aliases, &HashMap::new());
-    let prop_alias = canonical_alias(prop_name, &matching.prop_aliases, &HashMap::new());
+    let class_norm = normalized_match_variants(
+        class_code_like,
+        &matching.class_aliases,
+        schema_aliases,
+        &HashMap::new(),
+        false,
+    )
+    .into_iter()
+    .next()
+    .unwrap_or_default();
+    let pset_norm = normalized_match_variants(
+        pset_name,
+        &matching.pset_aliases,
+        &HashMap::new(),
+        &HashMap::new(),
+        false,
+    )
+    .into_iter()
+    .next()
+    .unwrap_or_default();
+    let prop_norm = normalized_match_variants(
+        prop_name,
+        &matching.prop_aliases,
+        &HashMap::new(),
+        matching
+            .pset_prop_aliases
+            .get(&pset_norm)
+            .unwrap_or(&HashMap::new()),
+        true,
+    )
+    .into_iter()
+    .next()
+    .unwrap_or_default();
     format!(
         "{}|{}|{}|{}",
         schema.to_string().to_ascii_lowercase(),
-        normalize(&class_alias),
-        normalize(&pset_alias),
-        normalize(&prop_alias)
+        class_norm,
+        pset_norm,
+        prop_norm
     )
 }
 
@@ -675,10 +885,13 @@ pub fn stream_bsdd_with_cache(
     let batch_size = options
         .stream_batch_size
         .clamp(MIN_STREAM_BATCH_SIZE, MAX_STREAM_BATCH_SIZE);
+    let unit_by_type = build_unit_type_map(model);
+    let generated_at = current_generated_at_rfc3339();
 
     let mut batch = Vec::with_capacity(batch_size);
     let mut triples = 0_u64;
     let mut property_counter = 0_u64;
+    let mut quantity_counter = 0_u64;
     let mut unmatched_histogram: HashMap<String, u64> = HashMap::new();
     // Standalone typing: elements
     for element in sorted_values(&model.elements) {
@@ -743,10 +956,10 @@ pub fn stream_bsdd_with_cache(
                 continue;
             };
             let pset_name = pset.name.as_deref().unwrap_or_default();
-            let pset_subject = format!(
-                "{subject}/bsdd_pset_{}_{}",
-                sanitize(pset_name),
-                sanitize(&object_guid)
+            let pset_subject = bsdd_local_instance(
+                &base,
+                "pset",
+                &format!("{}_{}", sanitize(pset_name), sanitize(&object_guid)),
             );
 
             push(
@@ -771,6 +984,31 @@ pub fn stream_bsdd_with_cache(
                 },
                 &mut triples,
             )?;
+            if let Some(pset_code) = index.resolve_class(pset_name) {
+                push(
+                    &mut batch,
+                    sender,
+                    batch_size,
+                    Triple {
+                        subject: pset_subject.clone(),
+                        predicate: rdf_type(),
+                        object: Object::Iri(bsdd_class(pset_code)),
+                    },
+                    &mut triples,
+                )?;
+            } else {
+                push(
+                    &mut batch,
+                    sender,
+                    batch_size,
+                    Triple {
+                        subject: pset_subject.clone(),
+                        predicate: rdf_type(),
+                        object: Object::Iri(bsddm("customPropertySet")),
+                    },
+                    &mut triples,
+                )?;
+            }
             if !pset_name.is_empty() {
                 push(
                     &mut batch,
@@ -792,6 +1030,7 @@ pub fn stream_bsdd_with_cache(
                     };
                     property_counter += 1;
                     emit_property(
+                        &base,
                         &subject,
                         &object_guid,
                         pset_name,
@@ -803,6 +1042,8 @@ pub fn stream_bsdd_with_cache(
                         index,
                         matching,
                         match_cache,
+                        resolve_property_unit(psv, &unit_by_type, model),
+                        &generated_at,
                         &mut unmatched_histogram,
                         &mut property_counter,
                         &mut batch,
@@ -817,6 +1058,7 @@ pub fn stream_bsdd_with_cache(
                     for enum_value in &pev.values {
                         property_counter += 1;
                         emit_property(
+                            &base,
                             &subject,
                             &object_guid,
                             pset_name,
@@ -828,6 +1070,8 @@ pub fn stream_bsdd_with_cache(
                             index,
                             matching,
                             match_cache,
+                            None,
+                            &generated_at,
                             &mut unmatched_histogram,
                             &mut property_counter,
                             &mut batch,
@@ -837,6 +1081,135 @@ pub fn stream_bsdd_with_cache(
                         )?;
                     }
                 }
+            }
+        }
+    }
+
+    let mut quantity_object_ids: Vec<_> = model.quantities_for_object.keys().copied().collect();
+    quantity_object_ids.sort_unstable();
+
+    for object_id in quantity_object_ids {
+        let (subject, object_guid, class_name_like) = if let Some(element) = model.elements.get(&object_id) {
+            (
+                element_resource_iri(&base, element),
+                element.guid.to_string(),
+                element.entity_name.to_string(),
+            )
+        } else if let Some(spatial) = model.spatial_nodes.get(&object_id) {
+            (
+                spatial_resource_iri(&base, spatial.spatial_type, &spatial.guid),
+                spatial.guid.to_string(),
+                spatial_ifc_class(spatial.spatial_type).to_string(),
+            )
+        } else {
+            continue;
+        };
+
+        let mut quantity_set_ids = model.quantities_for_object[&object_id].clone();
+        quantity_set_ids.sort_unstable();
+
+        for quantity_set_id in quantity_set_ids {
+            let Some(quantity_set) = model.element_quantities.get(&quantity_set_id) else {
+                continue;
+            };
+            let quantity_set_name = quantity_set.name.as_deref().unwrap_or_default();
+            let quantity_set_subject = bsdd_local_instance(
+                &base,
+                "qset",
+                &format!("{}_{}", sanitize(quantity_set_name), sanitize(&object_guid)),
+            );
+
+            push(
+                &mut batch,
+                sender,
+                batch_size,
+                Triple {
+                    subject: subject.clone(),
+                    predicate: bsddm("hasQuantitySet"),
+                    object: Object::Iri(quantity_set_subject.clone()),
+                },
+                &mut triples,
+            )?;
+            push(
+                &mut batch,
+                sender,
+                batch_size,
+                Triple {
+                    subject: quantity_set_subject.clone(),
+                    predicate: rdf_type(),
+                    object: Object::Iri(bsddm("QuantitySet")),
+                },
+                &mut triples,
+            )?;
+            if let Some(quantity_set_code) = index.resolve_class(quantity_set_name) {
+                push(
+                    &mut batch,
+                    sender,
+                    batch_size,
+                    Triple {
+                        subject: quantity_set_subject.clone(),
+                        predicate: rdf_type(),
+                        object: Object::Iri(bsdd_class(quantity_set_code)),
+                    },
+                    &mut triples,
+                )?;
+            } else {
+                push(
+                    &mut batch,
+                    sender,
+                    batch_size,
+                    Triple {
+                        subject: quantity_set_subject.clone(),
+                        predicate: rdf_type(),
+                        object: Object::Iri(bsddm("customQuantitySet")),
+                    },
+                    &mut triples,
+                )?;
+            }
+            if !quantity_set_name.is_empty() {
+                push(
+                    &mut batch,
+                    sender,
+                    batch_size,
+                    Triple {
+                        subject: quantity_set_subject.clone(),
+                        predicate: rdfs_label(),
+                        object: Object::Literal(quantity_set_name.to_string()),
+                    },
+                    &mut triples,
+                )?;
+            }
+
+            for quantity_id in &quantity_set.quantities {
+                let Some(quantity) = model.physical_quantities.get(quantity_id) else {
+                    continue;
+                };
+                let Some(raw_value) = quantity.value.as_ref().and_then(step_value_to_object) else {
+                    continue;
+                };
+                quantity_counter += 1;
+                emit_property(
+                    &base,
+                    &subject,
+                    &object_guid,
+                    quantity_set_name,
+                    &quantity_set_subject,
+                    quantity.name.as_str(),
+                    raw_value,
+                    model.schema,
+                    &class_name_like,
+                    index,
+                    matching,
+                    match_cache,
+                    resolve_quantity_unit(quantity.entity_name.as_str(), &unit_by_type),
+                    &generated_at,
+                    &mut unmatched_histogram,
+                    &mut quantity_counter,
+                    &mut batch,
+                    sender,
+                    batch_size,
+                    &mut triples,
+                )?;
             }
         }
     }
@@ -860,6 +1233,7 @@ pub fn stream_bsdd_with_cache(
 
 #[allow(clippy::too_many_arguments)]
 fn emit_property(
+    base: &str,
     subject: &str,
     object_guid: &str,
     pset_name: &str,
@@ -871,6 +1245,8 @@ fn emit_property(
     index: &BsddIndex,
     matching: &BsddMatchingConfig,
     match_cache: Option<&BsddMatchCache>,
+    unit: Option<String>,
+    generated_at: &str,
     unmatched_histogram: &mut HashMap<String, u64>,
     property_counter: &mut u64,
     batch: &mut Vec<Triple>,
@@ -888,17 +1264,25 @@ fn emit_property(
         let key = format!("{pset_name}|{prop_name}");
         *unmatched_histogram.entry(key).or_insert(0) += 1;
     }
-    let prop_subject = format!(
-        "{subject}/bsdd_property_{}_{}_{}",
-        sanitize(prop_name),
-        sanitize(object_guid),
-        property_counter
+    let prop_subject = bsdd_local_instance(
+        base,
+        "property",
+        &format!(
+            "{}_{}_{}",
+            sanitize(prop_name),
+            sanitize(object_guid),
+            property_counter
+        ),
     );
-    let state_subject = format!(
-        "{subject}/bsdd_state_{}_{}_{}",
-        sanitize(prop_name),
-        sanitize(object_guid),
-        property_counter
+    let state_subject = bsdd_local_instance(
+        base,
+        "state",
+        &format!(
+            "{}_{}_{}",
+            sanitize(prop_name),
+            sanitize(object_guid),
+            property_counter
+        ),
     );
 
     push(
@@ -938,6 +1322,31 @@ fn emit_property(
         },
         triples,
     )?;
+    if matches!(match_result.status, MatchStatus::Unmapped) {
+        push(
+            batch,
+            sender,
+            batch_size,
+            Triple {
+                subject: prop_subject.clone(),
+                predicate: rdf_type(),
+                object: Object::Iri(bsddm("customProperty")),
+            },
+            triples,
+        )?;
+    } else {
+        push(
+            batch,
+            sender,
+            batch_size,
+            Triple {
+                subject: prop_subject.clone(),
+                predicate: rdf_type(),
+                object: Object::Iri(bsddm("Property")),
+            },
+            triples,
+        )?;
+    }
     push(
         batch,
         sender,
@@ -1031,21 +1440,63 @@ fn emit_property(
         sender,
         batch_size,
         Triple {
-            subject: state_subject,
+            subject: state_subject.clone(),
+            predicate: prov_generated_at_time(),
+            object: Object::TypedLiteral {
+                value: generated_at.to_string(),
+                datatype: format!("{XSD}dateTime"),
+            },
+        },
+        triples,
+    )?;
+    push(
+        batch,
+        sender,
+        batch_size,
+        Triple {
+            subject: state_subject.clone(),
             predicate: schema_value(),
             object: value,
         },
         triples,
     )?;
+    if let Some(unit) = unit {
+        push(
+            batch,
+            sender,
+            batch_size,
+            Triple {
+                subject: state_subject,
+                predicate: smls_unit(),
+                object: Object::Iri(unit),
+            },
+            triples,
+        )?;
+    }
 
     Ok(())
 }
 
 fn sanitize(value: &str) -> String {
-    value
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-        .collect()
+    let decoded = decode_ifc_unicode(value);
+    let transliterated = transliterate_for_matching(&decoded);
+    let mut out = String::with_capacity(transliterated.len());
+    let mut last_was_underscore = false;
+    for ch in transliterated.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch);
+            last_was_underscore = false;
+        } else if !last_was_underscore {
+            out.push('_');
+            last_was_underscore = true;
+        }
+    }
+    let trimmed = out.trim_matches('_');
+    if trimmed.is_empty() {
+        "value".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 fn push(
