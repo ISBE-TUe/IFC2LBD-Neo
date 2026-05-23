@@ -571,7 +571,6 @@ These invariants **must not be violated** when modifying plugin infrastructure:
 |----|---------------|-------------|
 | `neo-file-export` | `FILE_EXPORT_ID` | Writes files to disk (CLI only) |
 | `neo-stdout-export` | `STDOUT_EXPORT_ID` | Writes to stdout (CLI only) |
-| `neo-grafeo-export` | `GRAFEO_EXPORT_ID` | Uploads to Grafeo RDF store (CLI only) |
 
 ---
 

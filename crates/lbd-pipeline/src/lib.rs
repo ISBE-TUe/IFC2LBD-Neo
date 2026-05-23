@@ -175,20 +175,18 @@ pub const NQUADS_CHUNKED_SERIALIZER_ID: &str = "neo-nquads-chunked-serializer";
 pub const FILE_EXPORT_ID: &str = "neo-file-export";
 pub const LOG_EXPORT_ID: &str = "neo-log-export";
 pub const STDOUT_EXPORT_ID: &str = "neo-stdout-export";
-pub const GRAFEO_EXPORT_ID: &str = "neo-grafeo-export";
 pub const CLEANUP_PREPROCESS_ID: &str = "neo-cleanup-preprocess";
 pub const BSDD_MATCH_PREPROCESS_ID: &str = "neo-bsdd-match-preprocess";
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct PipelineLogBundle {
-    pub entries: Vec<PipelineLogEntry>,
+    pub modules: HashMap<String, serde_json::Value>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct PipelineLogEntry {
-    pub module_id: String,
-    pub metric: String,
-    pub value: serde_json::Value,
+impl PipelineLogBundle {
+    pub fn write_module(&mut self, module_id: &str, stats: serde_json::Value) {
+        self.modules.insert(module_id.to_string(), stats);
+    }
 }
 
 /// A tagged batch of triples produced by a producer plugin.
@@ -401,7 +399,6 @@ pub trait ExportSession: Send {
 /// - `neo-file-export` — write files to the local file system (CLI) or
 ///   buffer in memory for browser download (WASM).
 /// - `neo-stdout-export` — write to stdout.
-/// - `neo-grafeo-export` — stream RDF batches directly into Grafeo.
 /// - Custom — upload to blob storage, POST to a REST API, etc.
 pub trait ExportPlugin: PipelinePlugin {
     /// Create a fresh export session for one conversion run.

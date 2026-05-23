@@ -37,7 +37,6 @@ rio_api = { workspace = true }
 rio_turtle = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-bincode = { workspace = true }
 rstar = { workspace = true }
 
 [dev-dependencies]

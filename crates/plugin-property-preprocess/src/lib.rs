@@ -3,7 +3,7 @@ use std::sync::Arc;
 use ifc_model::IfcModel;
 use lbd_converter::{build_bsdd_match_cache, dedup_model_property_sets, BsddMatchCache};
 use lbd_pipeline::{
-    PipelineContext, PipelineLogBundle, PipelineLogEntry, PipelinePlugin, PipelineStage,
+    PipelineContext, PipelineLogBundle, PipelinePlugin, PipelineStage,
     PluginManifest, PreprocessError, PreprocessPlugin, FailurePolicy, ParallelismMode,
     CLEANUP_PREPROCESS_ID, BSDD_MATCH_PREPROCESS_ID,
 };
@@ -46,21 +46,11 @@ impl PreprocessPlugin for CleanupPreprocessPlugin {
 
         let deduped_count = before_props.saturating_sub(after_props);
         let mut logs = ctx.get::<PipelineLogBundle>().map(|x| (*x).clone()).unwrap_or_default();
-        logs.entries.push(PipelineLogEntry {
-            module_id: CLEANUP_PREPROCESS_ID.to_string(),
-            metric: "properties_before_dedup".to_string(),
-            value: json!(before_props),
-        });
-        logs.entries.push(PipelineLogEntry {
-            module_id: CLEANUP_PREPROCESS_ID.to_string(),
-            metric: "properties_after_dedup".to_string(),
-            value: json!(after_props),
-        });
-        logs.entries.push(PipelineLogEntry {
-            module_id: CLEANUP_PREPROCESS_ID.to_string(),
-            metric: "properties_deduped".to_string(),
-            value: json!(deduped_count),
-        });
+        logs.write_module(CLEANUP_PREPROCESS_ID, json!({
+            "properties_before_dedup": before_props,
+            "properties_after_dedup": after_props,
+            "properties_deduped": deduped_count,
+        }));
         ctx.replace(Arc::new(logs));
         info!("cleanup preprocess complete: dedup applied");
         Ok(())
@@ -96,6 +86,8 @@ impl PreprocessPlugin for BsddMatchPreprocessPlugin {
         let cache: BsddMatchCache = build_bsdd_match_cache(&model)
             .map_err(|e| PreprocessError::Preprocessing(format!("BsddMatchPreprocessPlugin: failed building bSDD match cache: {e}")))?;
 
+        let match_stats = cache.stats();
+
         if ctx.get::<BsddMatchCache>().is_some() {
             ctx.replace(Arc::new(cache));
         } else {
@@ -103,11 +95,7 @@ impl PreprocessPlugin for BsddMatchPreprocessPlugin {
         }
 
         let mut logs = ctx.get::<PipelineLogBundle>().map(|x| (*x).clone()).unwrap_or_default();
-        logs.entries.push(PipelineLogEntry {
-            module_id: BSDD_MATCH_PREPROCESS_ID.to_string(),
-            metric: "bsdd_match_cache_built".to_string(),
-            value: json!(true),
-        });
+        logs.write_module(BSDD_MATCH_PREPROCESS_ID, match_stats);
         ctx.replace(Arc::new(logs));
         info!("bSDD match preprocess complete: cache ready");
         Ok(())

@@ -96,11 +96,6 @@ Unless explicitly scoped as a semantic change, refactors must preserve:
 These invariants are expected across releases:
 
 - IfcOWL producer activation emits sidecar/named-graph IfcOWL output and keeps links in LBD via `owl:sameAs`.
-- Topology triples are emitted only when topology producer modules are active.
-- `neo-topology-lite-producer` is IFC-relation topology mode.
-- `neo-topology-full-producer` is advanced topology mode.
-- Bounding boxes are emitted only when `neo-bbox-enricher` is active.
-- Bounding boxes are represented via geometry resources (`lbd:hasBoundingBox`, `geo:hasGeometry`, `geo:asWKT`).
 - Property states remain queryable via OPM-compatible predicates.
 
 ## Determinism Rules
@@ -142,7 +137,3 @@ python3 scripts/run_release_benchmarks.py
 - Tests pass and cover moved code paths.
 - Documentation updated in same PR.
 - Any residual risk or TODO is explicitly noted.
-
-## Known Current Gap
-
-- `neo-topology-full-producer` is now wired through the OCC exact-kernel path from the CLI, but parts of the converter implementation are still more monolithic than the target module layout described above.

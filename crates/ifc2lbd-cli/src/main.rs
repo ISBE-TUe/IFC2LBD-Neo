@@ -13,7 +13,7 @@ use anyhow::Context;
 use clap::{Parser, ValueEnum};
 use ifc_model::build_model;
 use ifc_step::parse_step_file;
-use lbd_converter::{normalize_base_uri, stream_beo, stream_bot, stream_ifcowl, stream_omg_fog, stream_props_opm, ConvertOptions};
+use lbd_converter::ConvertOptions;
 use lbd_serializer::{
     serialize_lbd_batches_incremental_to_writer, serialize_lbd_batches_to_writer,
     serialize_nquads_batches_to_writer, serialize_nquads_merged_batches_to_writer,
@@ -154,19 +154,13 @@ fn main() -> anyhow::Result<()> {
     validate_args(&args, &settings)?;
     let input_file_size_bytes = std::fs::metadata(input_path).map(|m| m.len()).unwrap_or(0);
 
-    let active_plugins: HashSet<&str> = activation_plan
-        .enabled_ids
-        .iter()
-        .map(|id| id.as_str())
-        .collect();
-    let mut active_producer_ids: Vec<String> = activation_plan
+    let active_producer_ids: Vec<String> = activation_plan
         .enabled_ids
         .iter()
         .filter_map(|id| built_in_registry.plugin(id).map(|p| p.manifest()))
         .filter(|m| m.stage == lbd_pipeline::PipelineStage::Produce)
         .map(|m| m.id.to_string())
         .collect();
-    active_producer_ids.sort();
     tracing::info!(
         "active producer modules: {}",
         active_producer_ids.join(", ")
@@ -194,8 +188,6 @@ fn main() -> anyhow::Result<()> {
         build_start.elapsed().as_secs_f64()
     );
 
-    let topology_graph_iri = format!("{normalized_base}/topology");
-
     let base_options = ConvertOptions {
         base_uri: args.base_uri,
         emit_ifcowl_links: emit_ifcowl,
@@ -212,8 +204,6 @@ fn main() -> anyhow::Result<()> {
         ifcowl_max_workers: 16,
     };
 
-    // CLI producers use direct streaming (not spawn_producers), so we must
-    // explicitly run the preprocess stage here before those calls execute.
     let preprocess_ids: Vec<String> = activation_plan
         .enabled_ids
         .iter()
@@ -231,15 +221,14 @@ fn main() -> anyhow::Result<()> {
     ctx.insert(model.clone());
     ctx.insert(std::sync::Arc::new(base_options.clone()));
     ctx.insert(step.clone());
+    let preprocess_start = Instant::now();
     lbd_pipeline::spawn_preprocessors(&preprocess_ids, &built_in_registry, &mut ctx)
         .map_err(|e| anyhow::anyhow!("preprocess stage failed: {:?}", e))?;
-    // Re-read model and step — preprocess plugins may have replaced them via ctx.replace().
-    let model = ctx
-        .get::<ifc_model::IfcModel>()
-        .ok_or_else(|| anyhow::anyhow!("IfcModel missing from context after preprocess"))?;
-    let step = ctx
-        .get::<ifc_step::StepFile>()
-        .ok_or_else(|| anyhow::anyhow!("StepFile missing from context after preprocess"))?;
+    tracing::info!(
+        "phase preprocess completed in {:.3}s",
+        preprocess_start.elapsed().as_secs_f64()
+    );
+    let ctx = std::sync::Arc::new(ctx);
 
     let (converter_lbd_sender, converter_lbd_receiver) =
         crossbeam::channel::bounded(SERIALIZER_CHANNEL_CAPACITY);
@@ -256,9 +245,7 @@ fn main() -> anyhow::Result<()> {
     let lbd_base_uri = base_options.base_uri.clone();
     let lbd_graph_iri_thread = lbd_graph_iri.clone();
     let ifcowl_graph_iri_thread = ifcowl_graph_iri.clone();
-    let topology_graph_iri_thread = topology_graph_iri.clone();
     let quad_chunking_mode = settings.nquads.chunking;
-    let grafeo_direct_stream = active_plugins.contains(lbd_pipeline::GRAFEO_EXPORT_ID);
     let quad_chunk_size_lines = settings.nquads.chunk_size_lines;
     let quad_chunk_size_bytes = settings.nquads.chunk_size_bytes;
     let quad_chunk_prefix = settings.nquads.chunk_prefix.clone();
@@ -283,12 +270,12 @@ fn main() -> anyhow::Result<()> {
             lbd_chunk_core_count.unwrap_or(1),
         );
     }
+    // For N-Quads format, merge IfcOWL batches into the LBD output thread.
     let merged_ifcowl_receiver = if output_format == OutputFormat::Nquads {
         ifcowl_receiver.take()
     } else {
         None
     };
-    let merged_topology_receiver: Option<crossbeam::channel::Receiver<Vec<lbd_ontology::Triple>>> = None;
     let lbd_thread = thread::spawn(move || -> anyhow::Result<()> {
         match output_format {
             OutputFormat::Turtle => match lbd_target {
@@ -329,21 +316,7 @@ fn main() -> anyhow::Result<()> {
                 }
             },
             OutputFormat::Nquads => {
-                if grafeo_direct_stream {
-                    let stdout = std::io::stdout();
-                    let handle = stdout.lock();
-                    let writer = BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, handle);
-                    pipeline_plugins::stream_grafeo_batches_to_writer(
-                        lbd_receiver,
-                        merged_ifcowl_receiver,
-                        merged_topology_receiver,
-                        writer,
-                        &lbd_graph_iri_thread,
-                        &ifcowl_graph_iri_thread,
-                        &topology_graph_iri_thread,
-                    )
-                    .context("failed to write Grafeo direct RDF stream to stdout")?;
-                } else if quad_chunking_mode != chunk_writer::QuadChunkingMode::None {
+                if quad_chunking_mode != chunk_writer::QuadChunkingMode::None {
                     let output_dir =
                         chunk_writer::resolve_quad_chunk_output_dir(lbd_target.as_deref());
                     let mut lbd_chunk_writer = chunk_writer::QuadChunkWriter::new(
@@ -368,7 +341,6 @@ fn main() -> anyhow::Result<()> {
                     } else {
                         None
                     };
-                    let mut topology_chunk_writer: Option<chunk_writer::QuadChunkWriter> = None;
 
                     let ifcowl_thread = if let Some(ifcowl_receiver) = merged_ifcowl_receiver {
                         let ifcowl_graph = ifcowl_graph_iri_thread.clone();
@@ -390,26 +362,6 @@ fn main() -> anyhow::Result<()> {
                     } else {
                         None
                     };
-                    let topology_thread = if let Some(receiver) = merged_topology_receiver {
-                        let topology_graph = topology_graph_iri_thread.clone();
-                        let mut writer = topology_chunk_writer
-                            .take()
-                            .ok_or_else(|| anyhow::anyhow!("missing topology chunk writer"))?;
-                        Some(thread::spawn(move || -> anyhow::Result<()> {
-                            serialize_nquads_batches_to_writer(
-                                receiver,
-                                &mut writer,
-                                &topology_graph,
-                            )
-                            .context("failed to write topology chunked N-Quads output")?;
-                            writer
-                                .finish()
-                                .context("failed to finalize topology quad chunk manifest")?;
-                            Ok(())
-                        }))
-                    } else {
-                        None
-                    };
 
                     serialize_nquads_batches_to_writer(
                         lbd_receiver,
@@ -424,11 +376,6 @@ fn main() -> anyhow::Result<()> {
                     if let Some(handle) = ifcowl_thread {
                         handle.join().map_err(|_| {
                             anyhow::anyhow!("IfcOWL chunk writer thread panicked")
-                        })??;
-                    }
-                    if let Some(handle) = topology_thread {
-                        handle.join().map_err(|_| {
-                            anyhow::anyhow!("topology chunk writer thread panicked")
                         })??;
                     }
                 } else {
@@ -460,19 +407,6 @@ fn main() -> anyhow::Result<()> {
                                     format!("failed to write N-Quads to {}", path.display())
                                 })?;
                             }
-                            if let Some(topology_receiver) = merged_topology_receiver {
-                                serialize_nquads_batches_to_writer(
-                                    topology_receiver,
-                                    &mut writer,
-                                    &topology_graph_iri_thread,
-                                )
-                                .with_context(|| {
-                                    format!(
-                                        "failed to append topology N-Quads to {}",
-                                        path.display()
-                                    )
-                                })?;
-                            }
                         }
                         None => {
                             let stdout = std::io::stdout();
@@ -496,14 +430,6 @@ fn main() -> anyhow::Result<()> {
                                 )
                                 .context("failed to write N-Quads to stdout")?;
                             }
-                            if let Some(topology_receiver) = merged_topology_receiver {
-                                serialize_nquads_batches_to_writer(
-                                    topology_receiver,
-                                    &mut writer,
-                                    &topology_graph_iri_thread,
-                                )
-                                .context("failed to append topology N-Quads to stdout")?;
-                            }
                         }
                     }
                 }
@@ -512,6 +438,8 @@ fn main() -> anyhow::Result<()> {
         Ok(())
     });
 
+    // For Turtle + IfcOWL: IfcOWL gets its own output file serialized in a
+    // separate thread. The bounded channel provides backpressure to cap memory.
     let mut ifcowl_thread = None;
     if output_format == OutputFormat::Turtle && emit_ifcowl {
         let receiver = ifcowl_receiver
@@ -531,62 +459,41 @@ fn main() -> anyhow::Result<()> {
     }
 
     let producer_start = Instant::now();
-    // Run IfcOWL in a background thread (if requested), then sequentially run the
-    // active LBD producer modules.  This mirrors the WASM path so both produce
-    // identical triples.
-    let lbd_base = normalize_base_uri(&base_options.base_uri);
-    let ifcowl_result: anyhow::Result<()> = if let Some(sender) = ifcowl_sender.as_ref() {
-        let sender = sender.clone();
-        let schema = step.header.schema;
-        let base_clone = lbd_base.clone();
-        let batch_size = base_options.stream_batch_size;
-        let max_workers = base_options.ifcowl_max_workers;
-        let step_ref = &step;
-        std::thread::scope(|scope| -> anyhow::Result<()> {
-            let ifcowl_handle = scope.spawn(move || {
-                stream_ifcowl(step_ref, &base_clone, schema, &sender, batch_size, max_workers)
-                    .map_err(|e| anyhow::anyhow!("ifcowl streaming failed: {:?}", e))
-            });
-            if active_plugins.contains(lbd_pipeline::BOT_PRODUCER_ID) {
-                stream_bot(&model, &base_options, &converter_lbd_sender)
-                    .map_err(|e| anyhow::anyhow!("bot streaming failed: {:?}", e))?;
-            }
-            if active_plugins.contains(lbd_pipeline::BEO_PRODUCER_ID) {
-                stream_beo(&model, &base_options, &converter_lbd_sender)
-                    .map_err(|e| anyhow::anyhow!("beo streaming failed: {:?}", e))?;
-            }
-            if active_plugins.contains(lbd_pipeline::PROPS_OPM_PRODUCER_ID) {
-                stream_props_opm(&model, &base_options, &converter_lbd_sender)
-                    .map_err(|e| anyhow::anyhow!("props-opm streaming failed: {:?}", e))?;
-            }
-            if active_plugins.contains(lbd_pipeline::OMG_FOG_PRODUCER_ID) {
-                stream_omg_fog(&model, &base_options, &converter_lbd_sender)
-                    .map_err(|e| anyhow::anyhow!("omg-fog streaming failed: {:?}", e))?;
-            }
-            ifcowl_handle
-                .join()
-                .map_err(|_| anyhow::anyhow!("ifcowl thread panicked"))?
+    // Dispatch all producers through the plugin system.
+    // Each producer gets its own bounded channel (backpressure per-producer).
+    // Routing threads forward batches to the appropriate serializer channel:
+    //   IfcOWL/alignment graph IRIs → ifcowl_sender (separate bounded channel, OOM safety)
+    //   All other graphs            → converter_lbd_sender
+    let producer_receivers = lbd_pipeline::spawn_producers(
+        &active_producer_ids,
+        &built_in_registry,
+        &ctx,
+        SERIALIZER_CHANNEL_CAPACITY,
+    );
+    let routing_handles: Vec<_> = producer_receivers
+        .into_iter()
+        .map(|(_id, rx)| {
+            let lbd_tx = converter_lbd_sender.clone();
+            let owl_tx = ifcowl_sender.clone();
+            thread::spawn(move || {
+                for batch in rx {
+                    let iri = batch.kind.iri();
+                    if iri.ends_with("/ifcowl") || iri.ends_with("/alignment") {
+                        if let Some(ref tx) = owl_tx {
+                            if tx.send(batch.triples).is_err() {
+                                break;
+                            }
+                        }
+                    } else if lbd_tx.send(batch.triples).is_err() {
+                        break;
+                    }
+                }
+            })
         })
-    } else {
-        if active_plugins.contains(lbd_pipeline::BOT_PRODUCER_ID) {
-            stream_bot(&model, &base_options, &converter_lbd_sender)
-                .map_err(|e| anyhow::anyhow!("bot streaming failed: {:?}", e))?;
-        }
-        if active_plugins.contains(lbd_pipeline::BEO_PRODUCER_ID) {
-            stream_beo(&model, &base_options, &converter_lbd_sender)
-                .map_err(|e| anyhow::anyhow!("beo streaming failed: {:?}", e))?;
-        }
-        if active_plugins.contains(lbd_pipeline::PROPS_OPM_PRODUCER_ID) {
-            stream_props_opm(&model, &base_options, &converter_lbd_sender)
-                .map_err(|e| anyhow::anyhow!("props-opm streaming failed: {:?}", e))?;
-        }
-        if active_plugins.contains(lbd_pipeline::OMG_FOG_PRODUCER_ID) {
-            stream_omg_fog(&model, &base_options, &converter_lbd_sender)
-                .map_err(|e| anyhow::anyhow!("omg-fog streaming failed: {:?}", e))?;
-        }
-        Ok(())
-    };
-    ifcowl_result.context("failed to run core conversion producer modules")?;
+        .collect();
+    for handle in routing_handles {
+        handle.join().map_err(|_| anyhow::anyhow!("producer routing thread panicked"))?;
+    }
     tracing::info!(
         "phase triple_production completed in {:.3}s",
         producer_start.elapsed().as_secs_f64()
@@ -733,40 +640,30 @@ fn validate_activation_plan_with_args(
     settings: &ExecutionSettings,
 ) -> anyhow::Result<()> {
     let active: HashSet<&str> = plan.enabled_ids.iter().map(|id| id.as_str()).collect();
-    let output_format = settings.output_format;
-    if active.contains(lbd_pipeline::GRAFEO_EXPORT_ID) {
-        if output_format != OutputFormat::Nquads {
-            anyhow::bail!("grafeo export module requires `neo-nquads-serializer`");
-        }
-        if settings.nquads.chunking != chunk_writer::QuadChunkingMode::None {
-            anyhow::bail!("grafeo export module cannot be combined with N-Quads chunking");
-        }
-    }
     let has_any_producer = active.contains(lbd_pipeline::BOT_PRODUCER_ID)
         || active.contains(lbd_pipeline::BEO_PRODUCER_ID)
+        || active.contains(lbd_pipeline::BSDD_PRODUCER_ID)
         || active.contains(lbd_pipeline::PROPS_OPM_PRODUCER_ID)
-        || active.contains(lbd_pipeline::OMG_FOG_PRODUCER_ID);
+        || active.contains(lbd_pipeline::OMG_FOG_PRODUCER_ID)
+        || active.contains(lbd_pipeline::IFCOWL_PRODUCER_ID);
     if !has_any_producer {
         anyhow::bail!(
-            "module plan must include at least one LBD producer (`{}`, `{}`, or `{}`)",
+            "module plan must include at least one producer (`{}`, `{}`, `{}`, or similar)",
             lbd_pipeline::BOT_PRODUCER_ID,
-            lbd_pipeline::BEO_PRODUCER_ID,
+            lbd_pipeline::BSDD_PRODUCER_ID,
             lbd_pipeline::PROPS_OPM_PRODUCER_ID,
         );
     }
     let has_file_export = active.contains(lbd_pipeline::FILE_EXPORT_ID);
     let has_log_export = active.contains(lbd_pipeline::LOG_EXPORT_ID);
     let has_stdout_export = active.contains(lbd_pipeline::STDOUT_EXPORT_ID);
-    let has_grafeo_export = active.contains(lbd_pipeline::GRAFEO_EXPORT_ID);
-    let export_count =
-        has_file_export as usize + has_log_export as usize + has_stdout_export as usize + has_grafeo_export as usize;
+    let export_count = has_file_export as usize + has_log_export as usize + has_stdout_export as usize;
     if export_count != 1 {
         anyhow::bail!(
-            "module plan must include exactly one export module (`{}`, `{}`, `{}`, or `{}`)",
+            "module plan must include exactly one export module (`{}`, `{}`, or `{}`)",
             lbd_pipeline::FILE_EXPORT_ID,
             lbd_pipeline::LOG_EXPORT_ID,
             lbd_pipeline::STDOUT_EXPORT_ID,
-            lbd_pipeline::GRAFEO_EXPORT_ID
         );
     }
     Ok(())
