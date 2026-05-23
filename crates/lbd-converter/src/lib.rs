@@ -9,6 +9,7 @@ pub mod modules;
 /// Compute approximate bounding boxes from STEP data (no mesh/OCC dependency).
 /// Used by the WASM bbox enricher for topology enrichment.
 pub use modules::bbox::compute_approximate_bboxes;
+pub use modules::bsdd::stream_bsdd;
 
 // LBD sub-module public streaming API — each produces its own named graph.
 // To add a new module: create modules/<name>.rs, pub mod it in modules/mod.rs, add pub use here.
@@ -109,6 +110,8 @@ pub struct ConversionResult {
 pub enum StreamError {
     #[error("failed to send triple batch to serializer")]
     ChannelClosed,
+    #[error("conversion failed: {0}")]
+    Conversion(String),
 }
 
 // Larger batches reduce channel traffic and formatter call overhead on large exports.

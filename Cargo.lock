@@ -837,6 +837,7 @@ name = "lbd-converter"
 version = "0.1.0"
 dependencies = [
  "crossbeam",
+ "flate2",
  "ifc-model",
  "ifc-schema",
  "ifc-step",
@@ -847,6 +848,8 @@ dependencies = [
  "rayon",
  "rio_api",
  "rio_turtle",
+ "serde",
+ "serde_json",
  "smol_str",
  "thiserror",
  "time",

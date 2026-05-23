@@ -7,13 +7,13 @@ use anyhow::Context;
 use crossbeam::channel::{Receiver, Sender};
 use ifc_model::IfcModel;
 use ifc_step::StepFile;
-use lbd_converter::{stream_beo, stream_bot, stream_omg_fog, stream_props_opm, ConvertOptions};
+use lbd_converter::{stream_beo, stream_bot, stream_bsdd, stream_omg_fog, stream_props_opm, ConvertOptions};
 use lbd_ontology::Triple;
 use lbd_pipeline::{
     BatchKind, DerivedFile, ExportError, ExportFileSummary, ExportPlugin, ExportSession,
     FailurePolicy, ParallelismMode, PipelineContext, PipelinePlugin, PipelineStage, PluginManifest,
     PluginRegistry, ProducerError, ProducerPlugin, SerializerPlugin, TaggedBatch, BEO_PRODUCER_ID,
-    BOT_PRODUCER_ID, FILE_EXPORT_ID, GRAFEO_EXPORT_ID, IFCOWL_PRODUCER_ID,
+    BOT_PRODUCER_ID, BSDD_PRODUCER_ID, FILE_EXPORT_ID, GRAFEO_EXPORT_ID, IFCOWL_PRODUCER_ID,
     NQUADS_CHUNKED_SERIALIZER_ID, NQUADS_SERIALIZER_ID, OMG_FOG_PRODUCER_ID, PROPS_OPM_PRODUCER_ID,
     STDOUT_EXPORT_ID, TURTLE_SERIALIZER_ID,
 };
@@ -59,6 +59,7 @@ pub fn built_in_registry() -> PluginRegistry {
     let mut registry = PluginRegistry::new();
     registry.register_producer(BotProducerPlugin).unwrap();
     registry.register_producer(BeoProducerPlugin).unwrap();
+    registry.register_producer(BsddProducerPlugin).unwrap();
     registry.register_producer(PropsOpmProducerPlugin).unwrap();
     registry.register_producer(OmgFogProducerPlugin).unwrap();
     registry.register_producer(IfcowlProducerPlugin).unwrap();
@@ -73,6 +74,7 @@ pub fn built_in_registry() -> PluginRegistry {
 
 struct BotProducerPlugin;
 struct BeoProducerPlugin;
+struct BsddProducerPlugin;
 struct PropsOpmProducerPlugin;
 struct OmgFogProducerPlugin;
 struct IfcowlProducerPlugin;
@@ -192,6 +194,50 @@ impl PipelinePlugin for PropsOpmProducerPlugin {
             named_graph_slug: Some("props"),
             needs_full_graph: false,
         }
+    }
+}
+
+impl PipelinePlugin for BsddProducerPlugin {
+    fn manifest(&self) -> PluginManifest {
+        PluginManifest {
+            id: BSDD_PRODUCER_ID,
+            display_name: "bSDD producer",
+            stage: PipelineStage::Produce,
+            description: "Generates standalone bSDD semantic class/property triples with OPM states.",
+            inputs: vec!["ifc-model"],
+            outputs: vec!["bsdd-triples"],
+            requires: vec![],
+            conflicts_with: vec![],
+            failure_policy: FailurePolicy::Optional,
+            parallelism: ParallelismMode::ParallelByBatch,
+            wasm_compatible: true,
+            named_graph_slug: Some("bsdd"),
+            needs_full_graph: false,
+        }
+    }
+}
+
+impl ProducerPlugin for BsddProducerPlugin {
+    fn produce(
+        &self,
+        ctx: &PipelineContext,
+        sender: &Sender<TaggedBatch>,
+    ) -> Result<(), ProducerError> {
+        let model = ctx.get::<IfcModel>().ok_or_else(|| {
+            ProducerError::Conversion("BsddProducerPlugin: missing IfcModel in context".to_string())
+        })?;
+        let options = ctx.get::<ConvertOptions>().ok_or_else(|| {
+            ProducerError::Conversion(
+                "BsddProducerPlugin: missing ConvertOptions in context".to_string(),
+            )
+        })?;
+        let (raw_sender, raw_receiver) =
+            crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
+        let graph_iri = BatchKind::new(format!("{}bsdd", options.base_uri.trim_end_matches('/')));
+        forward_as_tagged(raw_receiver, graph_iri, sender.clone());
+        stream_bsdd(&model, &options, &raw_sender)
+            .map(|_| ())
+            .map_err(|e| ProducerError::Conversion(format!("bSDD streaming failed: {e}")))
     }
 }
 

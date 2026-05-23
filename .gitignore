@@ -20,6 +20,7 @@ __pycache__/
 *.ifc.*
 *.occ-cache/
 *.nq
+ifc-4.3.json
 
 # Generated outputs / reports
 out.ttl
