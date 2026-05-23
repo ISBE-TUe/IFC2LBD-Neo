@@ -2,7 +2,6 @@
 //! Parses flags and module options, wires together parsing, modeling, conversion, and serialization.
 
 use std::collections::{HashMap, HashSet};
-use std::fs::File;
 use std::io::BufWriter;
 use std::path::Path;
 use std::path::PathBuf;
@@ -20,8 +19,11 @@ use lbd_serializer::{
     serialize_turtle_batches_to_writer,
 };
 
+use crate::pipeline_plugins::OutputDir;
+
 mod chunk_writer;
 mod pipeline_plugins;
+mod session;
 
 const SERIALIZER_CHANNEL_CAPACITY: usize = 32;
 const SERIALIZER_BUFFER_BYTES: usize = 1024 * 1024;
@@ -221,6 +223,11 @@ fn main() -> anyhow::Result<()> {
     ctx.insert(model.clone());
     ctx.insert(std::sync::Arc::new(base_options.clone()));
     ctx.insert(step.clone());
+
+    let (output_dir, lbd_filename) =
+        resolve_output_dir_and_filename(args.output_file.as_deref(), input_path, output_format);
+    ctx.insert(std::sync::Arc::new(OutputDir(output_dir.clone())));
+
     let preprocess_start = Instant::now();
     lbd_pipeline::spawn_preprocessors(&preprocess_ids, &built_in_registry, &mut ctx)
         .map_err(|e| anyhow::anyhow!("preprocess stage failed: {:?}", e))?;
@@ -228,6 +235,15 @@ fn main() -> anyhow::Result<()> {
         "phase preprocess completed in {:.3}s",
         preprocess_start.elapsed().as_secs_f64()
     );
+
+    let export_plugin = built_in_registry
+        .resolve_active_export(&activation_plan.enabled_ids)
+        .map_err(|e| anyhow::anyhow!("export plugin resolution failed: {}", e))?;
+    let export_session = export_plugin
+        .start_session(&ctx)
+        .map_err(|e| anyhow::anyhow!("export start_session failed: {}", e))?;
+    let session = session::new_shared(export_session);
+
     let ctx = std::sync::Arc::new(ctx);
 
     let (converter_lbd_sender, converter_lbd_receiver) =
@@ -241,10 +257,14 @@ fn main() -> anyhow::Result<()> {
         (None, None)
     };
 
-    let lbd_target = args.output_file.clone();
     let lbd_base_uri = base_options.base_uri.clone();
     let lbd_graph_iri_thread = lbd_graph_iri.clone();
     let ifcowl_graph_iri_thread = ifcowl_graph_iri.clone();
+    let lbd_filename_thread = lbd_filename.clone();
+    let lbd_mime: &'static str = match output_format {
+        OutputFormat::Turtle => "text/turtle",
+        OutputFormat::Nquads => "application/n-quads",
+    };
     let quad_chunking_mode = settings.nquads.chunking;
     let quad_chunk_size_lines = settings.nquads.chunk_size_lines;
     let quad_chunk_size_bytes = settings.nquads.chunk_size_bytes;
@@ -276,51 +296,29 @@ fn main() -> anyhow::Result<()> {
     } else {
         None
     };
+    let lbd_session = session.clone();
     let lbd_thread = thread::spawn(move || -> anyhow::Result<()> {
         match output_format {
-            OutputFormat::Turtle => match lbd_target {
-                Some(path) => {
-                    let file = File::create(&path).with_context(|| {
-                        format!("failed to create output file {}", path.display())
-                    })?;
-                    let writer = BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, file);
-                    if turtle_grouping == TurtleGrouping::Sorted {
-                        serialize_lbd_batches_to_writer(lbd_receiver, writer, &lbd_base_uri)
-                            .with_context(|| {
-                                format!("failed to write Turtle to {}", path.display())
-                            })?;
-                    } else {
-                        serialize_lbd_batches_incremental_to_writer(
-                            lbd_receiver,
-                            writer,
-                            &lbd_base_uri,
-                        )
-                        .with_context(|| format!("failed to write Turtle to {}", path.display()))?;
-                    }
+            OutputFormat::Turtle => {
+                let sink = session::open_sink(&lbd_session, &lbd_filename_thread, lbd_mime, "data")
+                    .map_err(|e| anyhow::anyhow!("failed to open LBD output sink: {}", e))?;
+                let writer = BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, sink);
+                if turtle_grouping == TurtleGrouping::Sorted {
+                    serialize_lbd_batches_to_writer(lbd_receiver, writer, &lbd_base_uri)
+                        .with_context(|| format!("failed to write Turtle to {lbd_filename_thread}"))?;
+                } else {
+                    serialize_lbd_batches_incremental_to_writer(
+                        lbd_receiver,
+                        writer,
+                        &lbd_base_uri,
+                    )
+                    .with_context(|| format!("failed to write Turtle to {lbd_filename_thread}"))?;
                 }
-                None => {
-                    let stdout = std::io::stdout();
-                    let handle = stdout.lock();
-                    let writer = BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, handle);
-                    if turtle_grouping == TurtleGrouping::Sorted {
-                        serialize_lbd_batches_to_writer(lbd_receiver, writer, &lbd_base_uri)
-                            .context("failed to write Turtle to stdout")?;
-                    } else {
-                        serialize_lbd_batches_incremental_to_writer(
-                            lbd_receiver,
-                            writer,
-                            &lbd_base_uri,
-                        )
-                        .context("failed to write Turtle to stdout")?;
-                    }
-                }
-            },
+            }
             OutputFormat::Nquads => {
                 if quad_chunking_mode != chunk_writer::QuadChunkingMode::None {
-                    let output_dir =
-                        chunk_writer::resolve_quad_chunk_output_dir(lbd_target.as_deref());
                     let mut lbd_chunk_writer = chunk_writer::QuadChunkWriter::new(
-                        output_dir,
+                        lbd_session.clone(),
                         format!("{}-lbd", quad_chunk_prefix),
                         quad_chunking_mode,
                         quad_chunk_size_lines,
@@ -330,7 +328,7 @@ fn main() -> anyhow::Result<()> {
                     )?;
                     let mut ifcowl_chunk_writer = if merged_ifcowl_receiver.is_some() {
                         Some(chunk_writer::QuadChunkWriter::new(
-                            chunk_writer::resolve_quad_chunk_output_dir(lbd_target.as_deref()),
+                            lbd_session.clone(),
                             format!("{}-ifcowl", quad_chunk_prefix),
                             quad_chunking_mode,
                             quad_chunk_size_lines,
@@ -379,58 +377,32 @@ fn main() -> anyhow::Result<()> {
                         })??;
                     }
                 } else {
-                    match lbd_target {
-                        Some(path) => {
-                            let file = File::create(&path).with_context(|| {
-                                format!("failed to create output file {}", path.display())
+                    let sink =
+                        session::open_sink(&lbd_session, &lbd_filename_thread, lbd_mime, "data")
+                            .map_err(|e| {
+                                anyhow::anyhow!("failed to open LBD output sink: {}", e)
                             })?;
-                            let mut writer =
-                                BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, file);
-                            if let Some(ifcowl_receiver) = merged_ifcowl_receiver {
-                                serialize_nquads_merged_batches_to_writer(
-                                    lbd_receiver,
-                                    ifcowl_receiver,
-                                    &mut writer,
-                                    &lbd_graph_iri_thread,
-                                    &ifcowl_graph_iri_thread,
-                                )
-                                .with_context(|| {
-                                    format!("failed to write N-Quads to {}", path.display())
-                                })?;
-                            } else {
-                                serialize_nquads_batches_to_writer(
-                                    lbd_receiver,
-                                    &mut writer,
-                                    &lbd_graph_iri_thread,
-                                )
-                                .with_context(|| {
-                                    format!("failed to write N-Quads to {}", path.display())
-                                })?;
-                            }
-                        }
-                        None => {
-                            let stdout = std::io::stdout();
-                            let handle = stdout.lock();
-                            let mut writer =
-                                BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, handle);
-                            if let Some(ifcowl_receiver) = merged_ifcowl_receiver {
-                                serialize_nquads_merged_batches_to_writer(
-                                    lbd_receiver,
-                                    ifcowl_receiver,
-                                    &mut writer,
-                                    &lbd_graph_iri_thread,
-                                    &ifcowl_graph_iri_thread,
-                                )
-                                .context("failed to write N-Quads to stdout")?;
-                            } else {
-                                serialize_nquads_batches_to_writer(
-                                    lbd_receiver,
-                                    &mut writer,
-                                    &lbd_graph_iri_thread,
-                                )
-                                .context("failed to write N-Quads to stdout")?;
-                            }
-                        }
+                    let mut writer = BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, sink);
+                    if let Some(ifcowl_receiver) = merged_ifcowl_receiver {
+                        serialize_nquads_merged_batches_to_writer(
+                            lbd_receiver,
+                            ifcowl_receiver,
+                            &mut writer,
+                            &lbd_graph_iri_thread,
+                            &ifcowl_graph_iri_thread,
+                        )
+                        .with_context(|| {
+                            format!("failed to write N-Quads to {lbd_filename_thread}")
+                        })?;
+                    } else {
+                        serialize_nquads_batches_to_writer(
+                            lbd_receiver,
+                            &mut writer,
+                            &lbd_graph_iri_thread,
+                        )
+                        .with_context(|| {
+                            format!("failed to write N-Quads to {lbd_filename_thread}")
+                        })?;
                     }
                 }
             }
@@ -445,15 +417,23 @@ fn main() -> anyhow::Result<()> {
         let receiver = ifcowl_receiver
             .take()
             .ok_or_else(|| anyhow::anyhow!("missing IfcOWL receiver for turtle sidecar mode"))?;
-        let path = resolve_ifcowl_path(args.output_file.as_deref(), input_path);
+        let ifcowl_filename = resolve_ifcowl_filename(&lbd_filename);
         let ifcowl_base = base_options.base_uri.clone();
+        let ifcowl_session = session.clone();
+        let ifcowl_filename_thread = ifcowl_filename.clone();
         ifcowl_thread = Some(thread::spawn(move || -> anyhow::Result<()> {
-            let file = File::create(&path).with_context(|| {
-                format!("failed to create IfcOWL output file {}", path.display())
-            })?;
-            let writer = BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, file);
+            let sink = session::open_sink(
+                &ifcowl_session,
+                &ifcowl_filename_thread,
+                "text/turtle",
+                "ifcowl-sidecar",
+            )
+            .map_err(|e| anyhow::anyhow!("failed to open IfcOWL output sink: {}", e))?;
+            let writer = BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, sink);
             serialize_turtle_batches_to_writer(receiver, writer, Some(&ifcowl_base))
-                .with_context(|| format!("failed to write IfcOWL Turtle to {}", path.display()))?;
+                .with_context(|| {
+                    format!("failed to write IfcOWL Turtle to {ifcowl_filename_thread}")
+                })?;
             Ok(())
         }));
     }
@@ -515,9 +495,64 @@ fn main() -> anyhow::Result<()> {
         "phase serializer_join completed in {:.3}s",
         serializer_join_start.elapsed().as_secs_f64()
     );
+
+    let summaries = session::finalize(session)
+        .map_err(|e| anyhow::anyhow!("export finalize failed: {}", e))?;
+    for summary in &summaries {
+        tracing::info!(
+            "exported {} ({}, {} bytes, role={})",
+            summary.filename,
+            summary.mime_type,
+            summary.bytes,
+            summary.role
+        );
+    }
     tracing::info!("run completed in {:.3}s", run_start.elapsed().as_secs_f64());
 
     Ok(())
+}
+
+fn resolve_output_dir_and_filename(
+    output_file: Option<&Path>,
+    input_file: &Path,
+    format: OutputFormat,
+) -> (PathBuf, String) {
+    let extension = match format {
+        OutputFormat::Turtle => "ttl",
+        OutputFormat::Nquads => "nq",
+    };
+    if let Some(p) = output_file {
+        let dir = p
+            .parent()
+            .map(|d| {
+                if d.as_os_str().is_empty() {
+                    PathBuf::from(".")
+                } else {
+                    d.to_path_buf()
+                }
+            })
+            .unwrap_or_else(|| PathBuf::from("."));
+        let name = p
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map(String::from)
+            .unwrap_or_else(|| format!("output.{extension}"));
+        (dir, name)
+    } else {
+        let stem = input_file
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("ifc_output");
+        (PathBuf::from("."), format!("{stem}.{extension}"))
+    }
+}
+
+fn resolve_ifcowl_filename(lbd_filename: &str) -> String {
+    let stem = Path::new(lbd_filename)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("lbd_output");
+    format!("{stem}_ifcowl.ttl")
 }
 
 fn print_pipeline_modules(registry: &lbd_pipeline::PluginRegistry) {
@@ -893,22 +928,6 @@ fn validate_turtle_serializer_module_config(
         }
     }
     Ok(())
-}
-
-fn resolve_ifcowl_path(output_file: Option<&Path>, input_file: &Path) -> PathBuf {
-    if let Some(path) = output_file {
-        let parent = path.parent().unwrap_or_else(|| Path::new("."));
-        let stem = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("lbd_output");
-        return parent.join(format!("{stem}_ifcowl.ttl"));
-    }
-    let stem = input_file
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("ifc_output");
-    PathBuf::from(format!("{stem}_ifcowl.ttl"))
 }
 
 fn normalize_base_for_graph_iri(base_uri: &str) -> String {

@@ -1,0 +1,12 @@
+{
+  "ambiguous": 0,
+  "fuzzy_confidence_avg": null,
+  "fuzzy_confidence_max": null,
+  "fuzzy_confidence_min": null,
+  "matched_exact": 22,
+  "matched_fuzzy": 0,
+  "normalized": 2,
+  "total_matched": 24,
+  "total_unique_keys": 107,
+  "unmapped": 83
+}
