@@ -1,0 +1,48 @@
+{
+  "profile_id": "base",
+  "profile_version": "1.0.0",
+  "fuzzy": {
+    "enabled": true,
+    "threshold": 0.94,
+    "scope": "class"
+  },
+  "class_aliases": {
+    "ifcwallstandardcase": "IfcWall",
+    "ifcslab": "IfcSlab",
+    "ifccolumnstandardcase": "IfcColumn",
+    "ifcbeamstandardcase": "IfcBeam",
+    "ifcmemberstandardcase": "IfcMember",
+    "ifcplateStandardcase": "IfcPlate",
+    "ifcopeningelement": "IfcOpeningElement",
+    "ifcfurnishingelement": "IfcFurnishingElement",
+    "ifcbuildingelementproxy": "IfcBuildingElementProxy"
+  },
+  "pset_aliases": {},
+  "prop_aliases": {},
+  "pset_prop_aliases": {},
+  "hard_mappings": {
+    "ifcbeam|psetbeamcommon|isexternal": "IsExternal",
+    "ifcbeam|psetbeamcommon|loadbearing": "LoadBearing",
+    "ifcbeam|psetbeamcommon|roll": "Roll",
+    "ifcbeam|psetbeamcommon|slope": "Slope",
+    "ifcbeam|psetbeamcommon|span": "Span",
+    "ifcwall|psetwallcommon|isexternal": "IsExternal",
+    "ifcwall|psetwallcommon|loadbearing": "LoadBearing",
+    "ifcslab|psetslabcommon|isexternal": "IsExternal",
+    "ifcslab|psetslabcommon|loadbearing": "LoadBearing",
+    "ifccolumn|psetcolumncommon|isexternal": "IsExternal",
+    "ifccolumn|psetcolumncommon|loadbearing": "LoadBearing",
+    "ifcdoor|psetdoorcommon|isexternal": "IsExternal",
+    "ifcwindow|psetwindowcommon|isexternal": "IsExternal"
+  },
+  "schema_class_aliases": {
+    "IFC2X3": {
+      "ifcwallstandardcase": "IfcWall",
+      "ifccolumnstandardcase": "IfcColumn",
+      "ifcbeamstandardcase": "IfcBeam"
+    },
+    "IFC4": {
+      "ifcwallstandardcase": "IfcWall"
+    }
+  }
+}

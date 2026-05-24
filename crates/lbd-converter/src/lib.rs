@@ -10,8 +10,8 @@ pub mod modules;
 /// Used by the WASM bbox enricher for topology enrichment.
 pub use modules::bbox::compute_approximate_bboxes;
 pub use modules::bsdd::{
-    build_bsdd_match_cache, dedup_model_property_sets, stream_bsdd, stream_bsdd_with_cache,
-    BsddMatchCache,
+    build_bsdd_match_cache, dedup_model_property_sets, list_embedded_profiles,
+    score_profile_for_model, stream_bsdd, stream_bsdd_with_cache, BsddMatchCache,
 };
 
 // LBD sub-module public streaming API — each produces its own named graph.
@@ -47,7 +47,7 @@ use lbd_ontology::{
     lbd_property_set, lbd_quantity_set, list_has_contents, list_has_next,
     opm_current_property_state, opm_has_property_state,
     opm_property, owl_imports, owl_object_property, owl_ontology, props_property,
-    prov_generated_at_time, rdf_member, rdf_type, rdfs_comment, rdfs_label,
+    prov_generated_at_time, rdf_li, rdf_member, rdf_seq, rdf_type, rdfs_comment, rdfs_label,
     schema_applicable_type, schema_value,
     smls_unit, unit_iri, Object, Triple, EXPRESS, XSD,
 };
@@ -81,6 +81,16 @@ pub struct ConvertOptions {
     pub low_memory_mode: bool,
     pub stream_batch_size: usize,
     pub ifcowl_max_workers: usize,
+    pub ifcowl_mode: IfcowlMode,
+    /// bSDD mapping profile name ("base", "revit-dach", "allplan-de", "tekla-en") or a path to
+    /// a custom profile JSON file. `None` is equivalent to "base".
+    pub bsdd_profile: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IfcowlMode {
+    Full,
+    Projected,
 }
 
 impl Default for ConvertOptions {
@@ -99,6 +109,8 @@ impl Default for ConvertOptions {
             low_memory_mode: false,
             stream_batch_size: STREAM_BATCH_SIZE,
             ifcowl_max_workers: 16,
+            ifcowl_mode: IfcowlMode::Full,
+            bsdd_profile: None,
         }
     }
 }
@@ -128,7 +140,8 @@ pub fn convert_step_and_model(
     options: &ConvertOptions,
 ) -> ConversionResult {
     let base = normalize_base_uri(&options.base_uri);
-    let ifcowl_triples = modules::ifcowl::convert_ifcowl(step, &base, step.header.schema);
+    let ifcowl_triples =
+        modules::ifcowl::convert_ifcowl(step, &base, step.header.schema, options.ifcowl_mode);
     let triples = convert_lbd(model, options, &base);
     ConversionResult {
         triples,
@@ -164,6 +177,7 @@ pub fn stream_step_and_model(
                         &ifcowl_sender,
                         options.stream_batch_size,
                         options.ifcowl_max_workers,
+                        options.ifcowl_mode,
                     )
                 });
                 let lbd_result = stream_lbd(model, options, &base, lbd_sender);
@@ -181,6 +195,7 @@ pub fn stream_step_and_model(
                 &ifcowl_sender,
                 options.stream_batch_size,
                 options.ifcowl_max_workers,
+                options.ifcowl_mode,
             )?;
             return stream_lbd(model, options, &base, lbd_sender);
         }
@@ -1284,6 +1299,7 @@ struct IfcOwlEmitter<'a> {
     /// Per-entity sub-counter for list nodes (resets at start of each entity).
     entity_local_counter: u32,
     scalar_cache: HashMap<ScalarCacheValue, String>,
+    mode: IfcowlMode,
 }
 
 impl<'a> IfcOwlEmitter<'a> {
@@ -1294,6 +1310,7 @@ impl<'a> IfcOwlEmitter<'a> {
         node_counter_start: EntityId,
         entity_subjects: &'a HashMap<EntityId, String>,
         emit_header: bool,
+        mode: IfcowlMode,
     ) -> Self {
         let mut emitter = Self {
             base,
@@ -1305,6 +1322,7 @@ impl<'a> IfcOwlEmitter<'a> {
             current_entity_id: 0,
             entity_local_counter: 0,
             scalar_cache: HashMap::new(),
+            mode,
         };
         if emit_header {
             emitter.emit_ontology_header();
@@ -1358,6 +1376,41 @@ impl<'a> IfcOwlEmitter<'a> {
     ) {
         let expected_range = self.lookup.predicate_range(predicate_local_name);
         if let StepValue::List(items) = value {
+            if matches!(self.mode, IfcowlMode::Projected) {
+                if let Some(components) = projected_inline_components(predicate_local_name) {
+                    let (_, item_expected_range) =
+                        self.resolve_list_shape(expected_range, items);
+                    for (component, item) in components.iter().zip(items.iter()) {
+                        if let Some(object) =
+                            self.emit_value(item_expected_range.as_deref(), item)
+                        {
+                            self.triples.push(Triple {
+                                subject: subject.to_string(),
+                                predicate: ifcowl_property(self.namespace, component),
+                                object,
+                            });
+                        }
+                    }
+                    return;
+                }
+            }
+            if matches!(self.mode, IfcowlMode::Projected)
+                && !is_list_class_name(expected_range)
+                && items
+                    .iter()
+                    .all(|item| !matches!(item, StepValue::List(_)))
+            {
+                for item in items {
+                    if let Some(object) = self.emit_value(expected_range, item) {
+                        self.triples.push(Triple {
+                            subject: subject.to_string(),
+                            predicate: ifcowl_property(self.namespace, predicate_local_name),
+                            object,
+                        });
+                    }
+                }
+                return;
+            }
             // Non-list-class predicates where every item is a Ref or a Typed value:
             // emit each item as a direct predicate value (no wrapper list node).
             // Covers pure-ref lists (e.g. IfcRelAggregates.relatedObjects) AND
@@ -1401,18 +1454,10 @@ impl<'a> IfcOwlEmitter<'a> {
     fn emit_value(&mut self, expected_range: Option<&str>, value: &StepValue) -> Option<Object> {
         match value {
             StepValue::Ref(id) => self.entity_subjects.get(id).cloned().map(Object::Iri),
-            StepValue::String(value) => {
-                self.emit_scalar_resource(expected_range, ScalarValue::String(value.to_string()))
-            }
-            StepValue::Int(value) => {
-                self.emit_scalar_resource(expected_range, ScalarValue::Integer(*value))
-            }
-            StepValue::Real(value) => {
-                self.emit_scalar_resource(expected_range, ScalarValue::Double(*value))
-            }
-            StepValue::Bool(value) => {
-                self.emit_scalar_resource(expected_range, ScalarValue::Boolean(*value))
-            }
+            StepValue::String(value) => self.emit_scalar_value(expected_range, ScalarValue::String(value.to_string())),
+            StepValue::Int(value) => self.emit_scalar_value(expected_range, ScalarValue::Integer(*value)),
+            StepValue::Real(value) => self.emit_scalar_value(expected_range, ScalarValue::Double(*value)),
+            StepValue::Bool(value) => self.emit_scalar_value(expected_range, ScalarValue::Boolean(*value)),
             StepValue::Enum(value) => Some(Object::Iri(format!("{}{value}", self.namespace))),
             StepValue::Null => None,
             StepValue::Derived => None,
@@ -1435,20 +1480,23 @@ impl<'a> IfcOwlEmitter<'a> {
             .map(str::to_owned)
             .unwrap_or_else(|| pascal_ifc_name(type_name));
         match value {
-            StepValue::String(value) => {
-                self.emit_scalar_resource(Some(&local_name), ScalarValue::String(value.to_string()))
-            }
-            StepValue::Int(value) => {
-                self.emit_scalar_resource(Some(&local_name), ScalarValue::Integer(*value))
-            }
-            StepValue::Real(value) => {
-                self.emit_scalar_resource(Some(&local_name), ScalarValue::Double(*value))
-            }
-            StepValue::Bool(value) => {
-                self.emit_scalar_resource(Some(&local_name), ScalarValue::Boolean(*value))
-            }
+            StepValue::String(value) => self.emit_scalar_value(Some(&local_name), ScalarValue::String(value.to_string())),
+            StepValue::Int(value) => self.emit_scalar_value(Some(&local_name), ScalarValue::Integer(*value)),
+            StepValue::Real(value) => self.emit_scalar_value(Some(&local_name), ScalarValue::Double(*value)),
+            StepValue::Bool(value) => self.emit_scalar_value(Some(&local_name), ScalarValue::Boolean(*value)),
             StepValue::List(items) => self.emit_list(Some(&local_name), items),
             _ => self.emit_value(expected_range.or(Some(&local_name)), value),
+        }
+    }
+
+    fn emit_scalar_value(
+        &mut self,
+        expected_range: Option<&str>,
+        value: ScalarValue,
+    ) -> Option<Object> {
+        match self.mode {
+            IfcowlMode::Full => self.emit_scalar_resource(expected_range, value),
+            IfcowlMode::Projected => self.emit_scalar_literal(expected_range, value),
         }
     }
 
@@ -1456,18 +1504,18 @@ impl<'a> IfcOwlEmitter<'a> {
         if items.is_empty() {
             return None;
         }
+        match self.mode {
+            IfcowlMode::Full => self.emit_list_full(expected_range, items),
+            IfcowlMode::Projected => self.emit_list_projected(expected_range, items),
+        }
+    }
 
-        let (list_class, item_expected_range) = expected_range
-            .and_then(compound_measure_list_shape)
-            .map(|(list_class, item_range)| (list_class.to_string(), Some(item_range.to_string())))
-            .unwrap_or_else(|| {
-                let list_class = expected_range
-                    .map(str::to_owned)
-                    .or_else(|| infer_list_class_name(items))
-                    .unwrap_or_else(|| "IfcValue_List".to_string());
-                let item_expected_range = item_range_from_list_class(&list_class);
-                (list_class, item_expected_range)
-            });
+    fn emit_list_full(
+        &mut self,
+        expected_range: Option<&str>,
+        items: &[StepValue],
+    ) -> Option<Object> {
+        let (list_class, item_expected_range) = self.resolve_list_shape(expected_range, items);
 
         let mut node_subjects = Vec::with_capacity(items.len());
         if list_class == "IfcCompoundPlaneAngleMeasure" {
@@ -1508,6 +1556,47 @@ impl<'a> IfcOwlEmitter<'a> {
         node_subjects.first().cloned().map(Object::Iri)
     }
 
+    fn emit_list_projected(
+        &mut self,
+        expected_range: Option<&str>,
+        items: &[StepValue],
+    ) -> Option<Object> {
+        let (list_class, item_expected_range) = self.resolve_list_shape(expected_range, items);
+
+        let container = self.next_named_node(&list_class);
+        self.push_type(&container, rdf_seq());
+
+        for (index, item) in items.iter().enumerate() {
+            if let Some(object) = self.emit_value(item_expected_range.as_deref(), item) {
+                self.triples.push(Triple {
+                    subject: container.clone(),
+                    predicate: rdf_li(index + 1),
+                    object,
+                });
+            }
+        }
+
+        Some(Object::Iri(container))
+    }
+
+    fn resolve_list_shape(
+        &self,
+        expected_range: Option<&str>,
+        items: &[StepValue],
+    ) -> (String, Option<String>) {
+        expected_range
+            .and_then(compound_measure_list_shape)
+            .map(|(list_class, item_range)| (list_class.to_string(), Some(item_range.to_string())))
+            .unwrap_or_else(|| {
+                let list_class = expected_range
+                    .map(str::to_owned)
+                    .or_else(|| infer_list_class_name(items))
+                    .unwrap_or_else(|| "IfcValue_List".to_string());
+                let item_expected_range = item_range_from_list_class(&list_class);
+                (list_class, item_expected_range)
+            })
+    }
+
     fn emit_scalar_resource(
         &mut self,
         expected_range: Option<&str>,
@@ -1529,6 +1618,15 @@ impl<'a> IfcOwlEmitter<'a> {
         });
         self.scalar_cache.insert(cache_key, subject.clone());
         Some(Object::Iri(subject))
+    }
+
+    fn emit_scalar_literal(
+        &mut self,
+        expected_range: Option<&str>,
+        value: ScalarValue,
+    ) -> Option<Object> {
+        let class_name = self.canonical_scalar_class(expected_range?)?;
+        Some(value.direct_object(class_name))
     }
 
     fn canonical_scalar_class<'b>(&'b self, class_name: &'b str) -> Option<&'b str> {
@@ -1622,6 +1720,32 @@ impl ScalarValue {
                             datatype: format!("{XSD}boolean"),
                         },
                     )
+                }
+            }
+        }
+    }
+
+    fn direct_object(self, class_name: &str) -> Object {
+        match self {
+            ScalarValue::String(value) => Object::Literal(value),
+            ScalarValue::Integer(value) => Object::TypedLiteral {
+                value: value.to_string(),
+                datatype: format!("{XSD}integer"),
+            },
+            ScalarValue::Double(value) => Object::TypedLiteral {
+                value: canonicalize_decimal(value),
+                datatype: format!("{XSD}double"),
+            },
+            ScalarValue::Boolean(value) => {
+                if class_name.eq_ignore_ascii_case("LOGICAL")
+                    || class_name.eq_ignore_ascii_case("IfcLogical")
+                {
+                    Object::Iri(express_logical_value(value))
+                } else {
+                    Object::TypedLiteral {
+                        value: value.to_string(),
+                        datatype: format!("{XSD}boolean"),
+                    }
                 }
             }
         }
@@ -2255,6 +2379,29 @@ fn infer_list_class_name(items: &[StepValue]) -> Option<String> {
 
 fn item_range_from_list_class(list_class: &str) -> Option<String> {
     list_class.strip_suffix("_List").map(str::to_owned)
+}
+
+/// Hot-path geometric predicates whose list items should be emitted as
+/// separately-named scalar predicates in projected mode, instead of as a
+/// list container. Components are matched positionally to list items.
+///
+/// Only predicates that are universally short-list scalars (typically 1-3
+/// real numbers) belong here. Anything order-sensitive but variable-length
+/// (vertex meshes, etc.) must keep the rdf:Seq container.
+fn projected_inline_components(predicate_local_name: &str) -> Option<&'static [&'static str]> {
+    match predicate_local_name {
+        "coordinates_IfcCartesianPoint" => Some(&[
+            "coordinateX_IfcCartesianPoint",
+            "coordinateY_IfcCartesianPoint",
+            "coordinateZ_IfcCartesianPoint",
+        ]),
+        "directionRatios_IfcDirection" => Some(&[
+            "directionRatioX_IfcDirection",
+            "directionRatioY_IfcDirection",
+            "directionRatioZ_IfcDirection",
+        ]),
+        _ => None,
+    }
 }
 
 fn is_list_class_name(class_name: Option<&str>) -> bool {
@@ -2893,6 +3040,8 @@ mod tests {
                 low_memory_mode: false,
                 stream_batch_size: 8 * 1024,
                 ifcowl_max_workers: 16,
+                ifcowl_mode: IfcowlMode::Full,
+                bsdd_profile: None,
             },
         );
 
@@ -3044,7 +3193,7 @@ mod tests {
         .unwrap();
         let namespace = ifcowl_namespace(step.header.schema);
         let triples =
-            modules::ifcowl::convert_ifcowl(&step, "https://example.test/base", step.header.schema);
+            modules::ifcowl::convert_ifcowl(&step, "https://example.test/base", step.header.schema, IfcowlMode::Full);
 
         assert!(triples.iter().any(|triple| {
             triple.subject == "https://example.test/base/IfcCartesianPoint_1"
@@ -3089,7 +3238,7 @@ mod tests {
         .unwrap();
         let namespace = ifcowl_namespace(step.header.schema);
         let triples =
-            modules::ifcowl::convert_ifcowl(&step, "https://example.test/base", step.header.schema);
+            modules::ifcowl::convert_ifcowl(&step, "https://example.test/base", step.header.schema, IfcowlMode::Full);
 
         assert!(triples.iter().any(|triple| {
             triple.subject == "https://example.test/base/IfcOrganization_1"
@@ -3114,7 +3263,7 @@ mod tests {
         .unwrap();
         let namespace = ifcowl_namespace(step.header.schema);
         let triples =
-            modules::ifcowl::convert_ifcowl(&step, "https://example.test/base", step.header.schema);
+            modules::ifcowl::convert_ifcowl(&step, "https://example.test/base", step.header.schema, IfcowlMode::Full);
 
         assert!(triples.iter().any(|triple| {
             triple.subject == "https://example.test/base/IfcArbitraryProfileDefWithVoids_4"
@@ -3134,7 +3283,7 @@ mod tests {
         .unwrap();
         let namespace = ifcowl_namespace(step.header.schema);
         let triples =
-            modules::ifcowl::convert_ifcowl(&step, "https://example.test/base", step.header.schema);
+            modules::ifcowl::convert_ifcowl(&step, "https://example.test/base", step.header.schema, IfcowlMode::Full);
 
         assert!(triples.iter().any(|triple| {
             triple.subject == "https://example.test/base/IfcCompositeCurve_5"
@@ -3154,7 +3303,7 @@ mod tests {
         )
         .unwrap();
         let triples =
-            modules::ifcowl::convert_ifcowl(&step, "https://example.test/base", step.header.schema);
+            modules::ifcowl::convert_ifcowl(&step, "https://example.test/base", step.header.schema, IfcowlMode::Full);
 
         assert!(triples.iter().any(|triple| {
             triple.predicate == express_has_logical()
@@ -3169,7 +3318,7 @@ mod tests {
         )
         .unwrap();
         let triples =
-            modules::ifcowl::convert_ifcowl(&step, "https://example.test/base", step.header.schema);
+            modules::ifcowl::convert_ifcowl(&step, "https://example.test/base", step.header.schema, IfcowlMode::Full);
 
         assert!(triples.iter().any(|triple| {
             triple.subject.contains("/IfcCompoundPlaneAngleMeasure_")
@@ -3236,7 +3385,7 @@ mod tests {
         )
         .unwrap();
         let triples =
-            modules::ifcowl::convert_ifcowl(&step, "https://example.test/base", step.header.schema);
+            modules::ifcowl::convert_ifcowl(&step, "https://example.test/base", step.header.schema, IfcowlMode::Full);
 
         assert!(triples.iter().any(|triple| {
             triple.subject.contains("/REAL_List_")
@@ -3253,7 +3402,7 @@ mod tests {
         .unwrap();
         let namespace = ifcowl_namespace(step.header.schema);
         let triples =
-            modules::ifcowl::convert_ifcowl(&step, "https://example.test/base", step.header.schema);
+            modules::ifcowl::convert_ifcowl(&step, "https://example.test/base", step.header.schema, IfcowlMode::Full);
 
         assert!(!triples.iter().any(|triple| {
             triple.subject == "https://example.test/base/IfcSIUnit_1"
@@ -3286,6 +3435,8 @@ mod tests {
                 low_memory_mode: false,
                 stream_batch_size: 8 * 1024,
                 ifcowl_max_workers: 16,
+                ifcowl_mode: IfcowlMode::Full,
+                bsdd_profile: None,
             },
         );
 
@@ -3337,6 +3488,8 @@ mod tests {
                 low_memory_mode: false,
                 stream_batch_size: 8 * 1024,
                 ifcowl_max_workers: 16,
+                ifcowl_mode: IfcowlMode::Full,
+                bsdd_profile: None,
             },
         );
 
@@ -3368,6 +3521,8 @@ mod tests {
                 low_memory_mode: false,
                 stream_batch_size: 8 * 1024,
                 ifcowl_max_workers: 16,
+                ifcowl_mode: IfcowlMode::Full,
+                bsdd_profile: None,
             },
         );
         assert!(result.triples.iter().any(|triple| {
@@ -3475,6 +3630,8 @@ mod tests {
             low_memory_mode: false,
             stream_batch_size: 8 * 1024,
             ifcowl_max_workers: 16,
+            ifcowl_mode: IfcowlMode::Full,
+            bsdd_profile: None,
         };
         let result = convert_step_and_model(&step, &model, &options);
         assert!(result.triples.iter().any(|triple| {

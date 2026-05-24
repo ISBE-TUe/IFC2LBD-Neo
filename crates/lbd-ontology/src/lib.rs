@@ -70,6 +70,14 @@ pub fn rdf_member() -> String {
     format!("{RDF}member")
 }
 
+pub fn rdf_seq() -> String {
+    format!("{RDF}Seq")
+}
+
+pub fn rdf_li(n: usize) -> String {
+    format!("{RDF}_{}", n)
+}
+
 pub fn owl_same_as() -> String {
     format!("{OWL}sameAs")
 }
@@ -88,6 +96,10 @@ pub fn owl_datatype_property() -> String {
 
 pub fn owl_object_property() -> String {
     format!("{OWL}ObjectProperty")
+}
+
+pub fn rdfs_class() -> String {
+    format!("{RDFS}Class")
 }
 
 pub fn rdfs_comment() -> String {

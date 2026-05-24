@@ -9,7 +9,6 @@ use lbd_pipeline::{
 };
 use serde_json::json;
 use tracing::info;
-use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
 
 pub struct CleanupPreprocessPlugin;
 pub struct BsddMatchPreprocessPlugin;
@@ -116,7 +115,8 @@ impl PreprocessPlugin for BsddMatchPreprocessPlugin {
             .get::<IfcModel>()
             .ok_or_else(|| PreprocessError::Preprocessing("BsddMatchPreprocessPlugin: missing IfcModel in context".to_string()))?;
 
-        let cache: BsddMatchCache = build_bsdd_match_cache(&model)
+        let profile_name = std::env::var("IFC2LBD_BSDD_PROFILE").ok();
+        let cache: BsddMatchCache = build_bsdd_match_cache(&model, profile_name.as_deref())
             .map_err(|e| PreprocessError::Preprocessing(format!("BsddMatchPreprocessPlugin: failed building bSDD match cache: {e}")))?;
 
         let match_stats = cache.stats();
@@ -146,66 +146,28 @@ struct TextNormalizationStats {
     non_ascii_names_remaining: usize,
 }
 
+// Transliteration no longer mutates the model — it belongs only in the matcher's
+// internal normalization key (bsdd.rs::normalize). The model keeps original labels
+// like "Höhe" so consumers get faithful data; only the lookup key sees "hoehe".
 fn normalize_model_text(model: &IfcModel) -> (IfcModel, TextNormalizationStats) {
-    let mut updated = model.clone();
+    let updated = model.clone();
     let mut stats = TextNormalizationStats::default();
 
-    for property in updated.property_single_values.values_mut() {
-        let normalized = transliterate_ascii(property.name.as_str());
-        if normalized != property.name {
-            property.name = normalized.into();
-            stats.property_names_normalized += 1;
-        }
+    for property in updated.property_single_values.values() {
         if !property.name.is_ascii() {
             stats.non_ascii_names_remaining += 1;
         }
     }
-
-    for property in updated.property_enumerated_values.values_mut() {
-        let normalized = transliterate_ascii(property.name.as_str());
-        if normalized != property.name {
-            property.name = normalized.into();
-            stats.property_names_normalized += 1;
-        }
+    for property in updated.property_enumerated_values.values() {
         if !property.name.is_ascii() {
             stats.non_ascii_names_remaining += 1;
         }
     }
-
-    for property_set in updated.property_sets.values_mut() {
-        if let Some(name) = property_set.name.as_mut() {
-            let normalized = transliterate_ascii(name.as_str());
-            if normalized != name.as_str() {
-                *name = normalized.into();
-                stats.property_sets_normalized += 1;
-            }
-            if !name.is_ascii() {
-                stats.non_ascii_names_remaining += 1;
-            }
+    for property_set in updated.property_sets.values() {
+        if property_set.name.as_deref().is_some_and(|n| !n.is_ascii()) {
+            stats.non_ascii_names_remaining += 1;
         }
     }
 
     (updated, stats)
-}
-
-fn transliterate_ascii(input: &str) -> String {
-    let transliterated = input
-        .chars()
-        .flat_map(|ch| match ch {
-            'ä' => ['a', 'e'].into_iter().collect::<Vec<_>>(),
-            'ö' => ['o', 'e'].into_iter().collect::<Vec<_>>(),
-            'ü' => ['u', 'e'].into_iter().collect::<Vec<_>>(),
-            'Ä' => ['A', 'e'].into_iter().collect::<Vec<_>>(),
-            'Ö' => ['O', 'e'].into_iter().collect::<Vec<_>>(),
-            'Ü' => ['U', 'e'].into_iter().collect::<Vec<_>>(),
-            'ß' => ['s', 's'].into_iter().collect::<Vec<_>>(),
-            other => vec![other],
-        })
-        .collect::<String>();
-
-    transliterated
-        .nfkd()
-        .filter(|c| !is_combining_mark(*c))
-        .map(|c| if c.is_ascii() { c } else { '_' })
-        .collect()
 }

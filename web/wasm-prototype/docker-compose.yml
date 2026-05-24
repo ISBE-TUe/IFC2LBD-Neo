@@ -5,6 +5,7 @@ services:
       - "3000:3000"
     volumes:
       - ./src/pipeline:/app/src/pipeline
+      - ./src/wasm:/app/src/wasm
       - ./src/main.js:/app/src/main.js
       - ./src/entry.js:/app/src/entry.js
       - ./public:/app/public

@@ -362,6 +362,7 @@ impl ProducerPlugin for IfcowlProducerPlugin {
             &ifcowl_sender,
             options.stream_batch_size,
             options.ifcowl_max_workers,
+            options.ifcowl_mode,
         )
         .map_err(|_| ProducerError::ChannelClosed)
     }

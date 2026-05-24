@@ -1,5 +1,6 @@
 use lbd_pipeline::ActivationError;
 use serde::{Deserialize, Serialize};
+use lbd_converter::IfcowlMode;
 
 #[derive(Debug, thiserror::Error)]
 pub enum WasmApiError {
@@ -209,6 +210,8 @@ pub struct ExecutionSettings {
     pub output_stem: String,
     pub turtle_grouping: TurtleGrouping,
     pub turtle_layout: TurtleLayout,
+    pub ifcowl_mode: IfcowlMode,
+    pub bsdd_profile: Option<String>,
 }
 
 impl ExecutionSettings {
