@@ -216,7 +216,7 @@ impl PipelineRunner {
         input: &[u8],
         request: &ConversionRequest,
     ) -> Result<ConversionBundle, WasmApiError> {
-        let (plan, settings, mut warnings) = self.resolve_and_validate(request)?;
+        let (plan, settings, mut warnings) = self.resolve_and_validate(request, input.len() as u64)?;
         let base_uri = request
             .base_uri
             .clone()
@@ -266,7 +266,7 @@ impl PipelineRunner {
         input: &[u8],
         request: &ConversionRequest,
     ) -> Result<BenchmarkBundle, WasmApiError> {
-        let (plan, settings, warnings) = self.resolve_and_validate(request)?;
+        let (plan, settings, warnings) = self.resolve_and_validate(request, input.len() as u64)?;
         let base_uri = request
             .base_uri
             .clone()
@@ -317,7 +317,7 @@ impl PipelineRunner {
         request: &ConversionRequest,
         sink: &Function,
     ) -> Result<StreamConversionBundle, WasmApiError> {
-        let (plan, settings, mut warnings) = self.resolve_and_validate(request)?;
+        let (plan, settings, mut warnings) = self.resolve_and_validate(request, input.len() as u64)?;
         let base_uri = request
             .base_uri
             .clone()
@@ -476,6 +476,7 @@ impl PipelineRunner {
     fn resolve_and_validate(
         &self,
         request: &ConversionRequest,
+        input_size_bytes: u64,
     ) -> Result<(lbd_pipeline::ActivationPlan, ExecutionSettings, Vec<String>), WasmApiError> {
         let requested = dedupe_modules(request.module_ids.clone());
         let plan = self.registry.resolve_activation(&requested)?;
@@ -484,7 +485,7 @@ impl PipelineRunner {
         validate_typed_module_configs(&configs)?;
         validate_activation_plan(&plan)?;
         let mut warnings = Vec::new();
-        let settings = resolve_execution_settings(&plan, &configs, request, &mut warnings)?;
+        let settings = resolve_execution_settings(&plan, &configs, request, &mut warnings, input_size_bytes)?;
         Ok((plan, settings, warnings))
     }
 
@@ -511,6 +512,8 @@ impl PipelineRunner {
             low_memory_mode: mode == ExecutionMode::Lowmem,
             stream_batch_size,
             ifcowl_max_workers,
+            ifcowl_mode: settings.ifcowl_mode,
+            bsdd_profile: settings.bsdd_profile.clone(),
         }
     }
 
@@ -581,7 +584,7 @@ pub(crate) fn requested_settings_for_planning(
     validate_typed_module_configs(&configs)?;
     validate_activation_plan(&plan)?;
     let mut warnings = Vec::new();
-    resolve_execution_settings(&plan, &configs, request, &mut warnings)
+    resolve_execution_settings(&plan, &configs, request, &mut warnings, 0)
 }
 
 // ===========================================================================
@@ -1684,6 +1687,7 @@ fn export_browser_files(
         let ifcowl_triples = collect_producer!(settings.has(IFCOWL_PRODUCER_ID), |tx| lbd_converter::modules::ifcowl::stream_ifcowl(
             step, &base, step.header.schema, tx,
             options.stream_batch_size, options.ifcowl_max_workers,
+            options.ifcowl_mode,
         ));
 
         macro_rules! write_producer_nq {

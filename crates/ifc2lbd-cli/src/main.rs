@@ -12,7 +12,7 @@ use anyhow::Context;
 use clap::{Parser, ValueEnum};
 use ifc_model::build_model;
 use ifc_step::parse_step_file;
-use lbd_converter::ConvertOptions;
+use lbd_converter::{list_embedded_profiles, score_profile_for_model, ConvertOptions, IfcowlMode};
 use lbd_serializer::{
     serialize_lbd_batches_incremental_to_writer, serialize_lbd_batches_to_writer,
     serialize_nquads_batches_to_writer, serialize_nquads_merged_batches_to_writer,
@@ -98,6 +98,20 @@ struct Args {
     /// Show resolved module activation plan and exit.
     #[arg(long = "show-module-plan", default_value_t = false)]
     show_module_plan: bool,
+
+    /// Score bSDD mapping profiles against the input IFC file and print a ranked table.
+    /// Profiles: base, revit-dach, allplan-de, tekla-en (comma-separated, default: all).
+    /// Sampling is capped at `--analyze-bsdd-sample`.
+    #[arg(long = "analyze-bsdd", default_value_t = false)]
+    analyze_bsdd: bool,
+
+    /// Number of properties to sample for --analyze-bsdd (default 500).
+    #[arg(long = "analyze-bsdd-sample", default_value_t = 500)]
+    analyze_bsdd_sample: usize,
+
+    /// Comma-separated profiles to score in --analyze-bsdd (default: base,revit-dach,allplan-de,tekla-en).
+    #[arg(long = "analyze-bsdd-profiles", default_value = "base,revit-dach,allplan-de,tekla-en")]
+    analyze_bsdd_profiles: String,
 }
 
 #[derive(Clone, Debug)]
@@ -116,6 +130,8 @@ struct ExecutionSettings {
     emit_ifcowl: bool,
     nquads: NquadsModuleOptions,
     turtle_grouping: TurtleGrouping,
+    ifcowl_mode: IfcowlMode,
+    bsdd_profile: Option<String>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -133,6 +149,9 @@ fn main() -> anyhow::Result<()> {
     if args.list_modules {
         print_pipeline_modules(&built_in_registry);
         return Ok(());
+    }
+    if args.analyze_bsdd {
+        return run_analyze_bsdd(&args);
     }
     let requested_modules = build_requested_module_list(&args);
     let activation_plan = built_in_registry
@@ -169,7 +188,17 @@ fn main() -> anyhow::Result<()> {
     );
     let output_format = settings.output_format;
     let emit_ifcowl = settings.emit_ifcowl;
-    let turtle_grouping = settings.turtle_grouping;
+    let turtle_grouping = if module_configs
+        .get(lbd_pipeline::TURTLE_SERIALIZER_ID)
+        .and_then(|m| m.get("grouping"))
+        .is_some()
+    {
+        settings.turtle_grouping
+    } else if input_file_size_bytes <= 20 * 1024 * 1024 {
+        TurtleGrouping::Sorted
+    } else {
+        TurtleGrouping::Streaming
+    };
     let normalized_base = normalize_base_for_graph_iri(&args.base_uri);
     let lbd_graph_iri = format!("{normalized_base}/lbd");
     let ifcowl_graph_iri = format!("{normalized_base}/ifcowl");
@@ -204,6 +233,8 @@ fn main() -> anyhow::Result<()> {
         low_memory_mode: false,
         stream_batch_size: 8 * 1024,
         ifcowl_max_workers: 16,
+        ifcowl_mode: settings.ifcowl_mode,
+        bsdd_profile: settings.bsdd_profile.clone(),
     };
 
     let preprocess_ids: Vec<String> = activation_plan
@@ -666,6 +697,37 @@ fn validate_typed_module_configs(
         if module_id == lbd_pipeline::TURTLE_SERIALIZER_ID {
             validate_turtle_serializer_module_config(entries)?;
         }
+        if module_id == lbd_pipeline::IFCOWL_PRODUCER_ID {
+            validate_ifcowl_producer_module_config(entries)?;
+        }
+        if module_id == lbd_pipeline::BSDD_PRODUCER_ID {
+            validate_bsdd_producer_module_config(entries)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_bsdd_producer_module_config(
+    entries: &HashMap<String, String>,
+) -> Result<(), String> {
+    let known_profiles = ["base", "revit-dach", "allplan-de", "tekla-en"];
+    for (key, value) in entries {
+        match key.as_str() {
+            "profile" => {
+                if !known_profiles.contains(&value.as_str()) && !value.contains('/') && !value.ends_with(".json") {
+                    return Err(format!(
+                        "`neo-bsdd-producer.profile` must be one of {:?} or a path, got `{}`",
+                        known_profiles, value
+                    ));
+                }
+            }
+            other => {
+                return Err(format!(
+                    "unknown option `neo-bsdd-producer.{}` (supported: profile)",
+                    other
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -764,6 +826,24 @@ fn resolve_execution_settings(
             other
         ),
     };
+    let ifcowl_entries = configs.get(lbd_pipeline::IFCOWL_PRODUCER_ID);
+    let ifcowl_mode = match ifcowl_entries
+        .and_then(|e| e.get("mode"))
+        .map(String::as_str)
+        .unwrap_or("full")
+    {
+        "full" => IfcowlMode::Full,
+        "projected" => IfcowlMode::Projected,
+        other => anyhow::bail!(
+            "invalid `neo-ifcowl-producer.mode={}` (expected full|projected)",
+            other
+        ),
+    };
+
+    let bsdd_profile = configs
+        .get(lbd_pipeline::BSDD_PRODUCER_ID)
+        .and_then(|e| e.get("profile"))
+        .cloned();
 
     Ok(ExecutionSettings {
         output_format,
@@ -777,6 +857,8 @@ fn resolve_execution_settings(
             chunk_core_count,
         },
         turtle_grouping,
+        ifcowl_mode,
+        bsdd_profile,
     })
 }
 
@@ -930,8 +1012,133 @@ fn validate_turtle_serializer_module_config(
     Ok(())
 }
 
+fn validate_ifcowl_producer_module_config(
+    entries: &HashMap<String, String>,
+) -> Result<(), String> {
+    for (key, value) in entries {
+        match key.as_str() {
+            "mode" => {
+                if !matches!(value.as_str(), "full" | "projected") {
+                    return Err(format!(
+                        "`neo-ifcowl-producer.mode` must be one of full|projected, got `{}`",
+                        value
+                    ));
+                }
+            }
+            other => {
+                return Err(format!(
+                    "unknown option `neo-ifcowl-producer.{}` (supported: mode)",
+                    other
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn normalize_base_for_graph_iri(base_uri: &str) -> String {
     base_uri.trim_end_matches('/').to_string()
+}
+
+// ---------------------------------------------------------------------------
+// analyze-bsdd — Phase 4: profile scoring
+// ---------------------------------------------------------------------------
+
+fn run_analyze_bsdd(args: &Args) -> anyhow::Result<()> {
+    let input_path = args
+        .input
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("--analyze-bsdd requires an IFC input path"))?;
+
+    let step = parse_step_file(input_path)
+        .with_context(|| format!("failed to parse STEP file {}", input_path.display()))?;
+    let model = ifc_model::build_model(&step).context("failed to build IFC model")?;
+
+    let profiles: Vec<&str> = {
+        let requested: Vec<&str> = args.analyze_bsdd_profiles.split(',').map(str::trim).collect();
+        let embedded = list_embedded_profiles();
+        // Validate all requested profiles are known
+        for p in &requested {
+            if !embedded.contains(p) && !p.contains('/') && !p.ends_with(".json") {
+                anyhow::bail!(
+                    "unknown profile '{}'; embedded profiles: {:?}",
+                    p,
+                    embedded
+                );
+            }
+        }
+        requested
+    };
+
+    let sample = args.analyze_bsdd_sample;
+    eprintln!("Sampling up to {} properties per profile…", sample);
+    eprintln!();
+
+    let mut results: Vec<serde_json::Value> = Vec::new();
+    for profile in &profiles {
+        let score = score_profile_for_model(&model, profile, sample)
+            .map_err(|e| anyhow::anyhow!("profile '{}' failed: {e}", profile))?;
+        results.push(score);
+    }
+
+    // Sort by matched_ratio desc, then avg_confidence desc
+    results.sort_by(|a, b| {
+        let ar = a["matched_ratio"].as_f64().unwrap_or(0.0);
+        let br = b["matched_ratio"].as_f64().unwrap_or(0.0);
+        br.partial_cmp(&ar).unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    // Print table
+    let col_profile = 18usize;
+    let col_matched = 9usize;
+    let col_conf = 10usize;
+    let col_ambig = 9usize;
+    let col_unmapped = 10usize;
+    println!(
+        "{:<col_profile$}  {:>col_matched$}  {:>col_conf$}  {:>col_ambig$}  {:>col_unmapped$}",
+        "profile", "matched", "avg_conf", "ambig", "unmapped"
+    );
+    println!("{}", "-".repeat(col_profile + col_matched + col_conf + col_ambig + col_unmapped + 10));
+    for r in &results {
+        let pct = |key: &str| -> String {
+            let v = r[key].as_f64().unwrap_or(0.0) * 100.0;
+            format!("{:.1}%", v)
+        };
+        let conf = r["avg_confidence"].as_f64().unwrap_or(0.0);
+        println!(
+            "{:<col_profile$}  {:>col_matched$}  {:>col_conf$}  {:>col_ambig$}  {:>col_unmapped$}",
+            r["profile"].as_str().unwrap_or("?"),
+            pct("matched_ratio"),
+            format!("{:.3}", conf),
+            pct("ambiguous_ratio"),
+            pct("unmapped_ratio"),
+        );
+    }
+    eprintln!();
+
+    // Recommendation
+    if results.len() >= 2 {
+        let best = &results[0];
+        let second = &results[1];
+        let best_mr = best["matched_ratio"].as_f64().unwrap_or(0.0);
+        let second_mr = second["matched_ratio"].as_f64().unwrap_or(0.0);
+        let best_name = best["profile"].as_str().unwrap_or("?");
+        if best_mr - second_mr > 0.15 {
+            eprintln!(
+                "Recommendation: '{}' is clearly best (>{:.0}% margin). Use: --module-opt neo-bsdd-producer.profile={}",
+                best_name,
+                (best_mr - second_mr) * 100.0,
+                best_name
+            );
+        } else {
+            eprintln!(
+                "No clear winner (margin < 15%). Review the table and pick; or add '{}' as starting point.",
+                best_name
+            );
+        }
+    }
+
+    Ok(())
 }
 
 fn validate_args(args: &Args, settings: &ExecutionSettings) -> anyhow::Result<()> {
@@ -980,6 +1187,7 @@ mod tests {
         parse_module_configs, validate_args, Args, ExecutionSettings, NquadsModuleOptions,
         OutputFormat, TurtleGrouping,
     };
+    use lbd_converter::IfcowlMode;
     use clap::Parser;
     use std::io::Write;
     use std::path::{Path, PathBuf};
@@ -1154,6 +1362,8 @@ mod tests {
                 chunk_core_count: None,
             },
             turtle_grouping: TurtleGrouping::Streaming,
+            ifcowl_mode: IfcowlMode::Full,
+            bsdd_profile: None,
         }
     }
 }

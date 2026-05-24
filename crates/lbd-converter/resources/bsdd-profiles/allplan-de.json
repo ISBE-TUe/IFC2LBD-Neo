@@ -1,0 +1,28 @@
+{
+  "profile_id": "allplan-de",
+  "profile_version": "1.0.0",
+  "extends": "base",
+  "pset_aliases": {
+    "allgemein": "Pset_BuildingElementProxyCommon",
+    "berechnung": "Pset_QuantitativeInfo",
+    "tragwerk": "Pset_StructuralSurfaceMemberVaryingThickness",
+    "architektur": "Pset_ArchitecturalIndicator"
+  },
+  "prop_aliases": {
+    "lange": "Length",
+    "breite": "Width",
+    "hohe": "Height",
+    "flache": "GrossArea",
+    "volumen": "GrossVolume",
+    "bezeichnung": "Name",
+    "beschreibung": "Description",
+    "schicht": "LayerDescription",
+    "material": "Material",
+    "konstruktionsart": "ConstructionType",
+    "tragend": "LoadBearing",
+    "aussenanlage": "IsExternal",
+    "feuerwiderstandsklasse": "FireRating",
+    "warmedammmass": "ThermalTransmittance",
+    "schallschutz": "AcousticRating"
+  }
+}

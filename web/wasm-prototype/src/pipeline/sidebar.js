@@ -154,6 +154,30 @@ function optionControl(pluginId, key) {
         </select>
       </div>`;
   }
+  if (key === "mode") {
+    const modeVal = current || "full";
+    return `
+      <div class="detail-row">
+        <span class="detail-label">mode</span>
+        <select data-option-key="mode" class="detail-select">
+          <option value="full" ${modeVal === "full" ? "selected" : ""}>Full (standard ifcOWL)</option>
+          <option value="projected" ${modeVal === "projected" ? "selected" : ""}>Projected (compact, ~58% fewer triples)</option>
+        </select>
+      </div>`;
+  }
+  if (key === "profile") {
+    const profileVal = current || "base";
+    return `
+      <div class="detail-row">
+        <span class="detail-label">profile</span>
+        <select data-option-key="profile" class="detail-select">
+          <option value="base" ${profileVal === "base" ? "selected" : ""}>base (universal IFC aliases)</option>
+          <option value="revit-dach" ${profileVal === "revit-dach" ? "selected" : ""}>revit-dach (Revit, German)</option>
+          <option value="allplan-de" ${profileVal === "allplan-de" ? "selected" : ""}>allplan-de (Allplan, German)</option>
+          <option value="tekla-en" ${profileVal === "tekla-en" ? "selected" : ""}>tekla-en (Tekla, English)</option>
+        </select>
+      </div>`;
+  }
   // Default: text input with contextual placeholder
   const placeholders = {
     chunk_size_lines: "2000000 (2M lines)",

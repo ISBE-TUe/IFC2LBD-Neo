@@ -51,6 +51,8 @@ pub(crate) fn module_option_keys(module_id: &str) -> Vec<String> {
             "chunk_prefix".to_string(),
         ],
         TURTLE_SERIALIZER_ID => vec!["grouping".to_string(), "layout".to_string()],
+        IFCOWL_PRODUCER_ID => vec!["mode".to_string()],
+        BSDD_PRODUCER_ID => vec!["profile".to_string()],
         FILE_EXPORT_ID => vec!["output_stem".to_string()],
         LOG_EXPORT_ID => vec![],
         _ => Vec::new(),
@@ -437,6 +439,7 @@ impl ProducerPlugin for IfcowlProducerPlugin {
             &ifcowl_sender,
             options.stream_batch_size,
             options.ifcowl_max_workers,
+            options.ifcowl_mode,
         )
         .map_err(|_| ProducerError::ChannelClosed)
     }
