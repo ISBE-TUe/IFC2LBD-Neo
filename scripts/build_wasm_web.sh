@@ -8,7 +8,20 @@ mkdir -p "$OUT_DIR"
 
 cd "$ROOT_DIR"
 
-cargo +nightly build \
+if ! command -v rustup >/dev/null 2>&1; then
+  echo "rustup is required for wasm nightly build." >&2
+  exit 1
+fi
+
+NIGHTLY_CARGO="$(rustup which --toolchain nightly cargo)"
+NIGHTLY_RUSTC="$(rustup which --toolchain nightly rustc)"
+
+if [[ ! -x "$NIGHTLY_CARGO" || ! -x "$NIGHTLY_RUSTC" ]]; then
+  echo "nightly cargo/rustc not found. Install with: rustup toolchain install nightly" >&2
+  exit 1
+fi
+
+RUSTC="$NIGHTLY_RUSTC" "$NIGHTLY_CARGO" build \
   -Z build-std=std,panic_abort \
   --target wasm32-unknown-unknown \
   -p ifc2lbd-wasm \

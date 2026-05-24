@@ -2,16 +2,17 @@
 //!
 //! Splits N-Quads output into multiple files based on line count, byte size,
 //! or core-count heuristics. Used when `--module-opt neo-nquads-serializer.chunking`
-//! is set to a non-None value.
+//! is set to a non-None value. All file handles come from the active
+//! `ExportSession` so the chunked output participates in plugin-driven export.
 
-use std::fs::File;
 use std::io::{BufWriter, Write};
-use std::path::{Path, PathBuf};
 use std::thread;
 
 use anyhow::Context;
 use clap::ValueEnum;
 use serde::Serialize;
+
+use crate::session::{self, SharedSession};
 
 const SERIALIZER_BUFFER_BYTES: usize = 1024 * 1024;
 const CORE_CHUNK_BLOCK_LINES: u64 = 4096;
@@ -45,9 +46,8 @@ pub(crate) struct QuadChunkEntry {
     lines: u64,
 }
 
-#[derive(Debug)]
 pub(crate) struct QuadChunkWriter {
-    output_dir: PathBuf,
+    session: SharedSession,
     chunk_prefix: String,
     mode: QuadChunkingMode,
     lines_per_chunk: u64,
@@ -55,7 +55,7 @@ pub(crate) struct QuadChunkWriter {
     min_chunk_count: u64,
     core_chunk_count: u64,
     current_index: usize,
-    current_file: Option<BufWriter<File>>,
+    current_file: Option<BufWriter<Box<dyn Write + Send>>>,
     current_bytes: u64,
     current_lines: u64,
     pending_buffer: Vec<u8>,
@@ -77,7 +77,7 @@ pub(crate) enum CoreChunkWriteMsg {
 
 impl QuadChunkWriter {
     pub(crate) fn new(
-        output_dir: PathBuf,
+        session: SharedSession,
         chunk_prefix: String,
         mode: QuadChunkingMode,
         lines_per_chunk: usize,
@@ -85,12 +85,6 @@ impl QuadChunkWriter {
         min_chunk_count: usize,
         core_count_override: Option<usize>,
     ) -> anyhow::Result<Self> {
-        std::fs::create_dir_all(&output_dir).with_context(|| {
-            format!(
-                "failed to create quad chunk output dir {}",
-                output_dir.display()
-            )
-        })?;
         let available_cores = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1);
@@ -102,7 +96,7 @@ impl QuadChunkWriter {
         };
 
         let mut writer = Self {
-            output_dir,
+            session,
             chunk_prefix,
             mode,
             lines_per_chunk: lines_per_chunk as u64,
@@ -143,9 +137,7 @@ impl QuadChunkWriter {
         } else {
             self.close_current_file()?;
         }
-        let manifest_path = self
-            .output_dir
-            .join(format!("{}.manifest.json", self.chunk_prefix));
+        let manifest_filename = format!("{}.manifest.json", self.chunk_prefix);
         let manifest = QuadChunkManifest {
             chunking: match self.mode {
                 QuadChunkingMode::None => "none".to_string(),
@@ -164,8 +156,17 @@ impl QuadChunkWriter {
         };
         let manifest_json = serde_json::to_string_pretty(&manifest)
             .context("failed to serialize quad chunk manifest JSON")?;
-        std::fs::write(&manifest_path, manifest_json)
-            .with_context(|| format!("failed to write manifest {}", manifest_path.display()))?;
+        let mut sink = session::open_sink(
+            &self.session,
+            &manifest_filename,
+            "application/json",
+            "chunk-manifest",
+        )
+        .map_err(|e| anyhow::anyhow!("failed to open manifest sink: {}", e))?;
+        sink.write_all(manifest_json.as_bytes())
+            .with_context(|| format!("failed to write manifest {manifest_filename}"))?;
+        sink.flush()
+            .with_context(|| format!("failed to flush manifest {manifest_filename}"))?;
         Ok(())
     }
 
@@ -216,10 +217,14 @@ impl QuadChunkWriter {
 
     fn open_next_chunk_file(&mut self) -> anyhow::Result<()> {
         let file_name = format!("{}.part-{:03}.nq", self.chunk_prefix, self.current_index);
-        let path = self.output_dir.join(file_name);
-        let file = File::create(&path)
-            .with_context(|| format!("failed to create quad chunk {}", path.display()))?;
-        self.current_file = Some(BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, file));
+        let sink = session::open_sink(
+            &self.session,
+            &file_name,
+            "application/n-quads",
+            "chunk-data",
+        )
+        .map_err(|e| anyhow::anyhow!("failed to open quad chunk sink {file_name}: {}", e))?;
+        self.current_file = Some(BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, sink));
         self.current_bytes = 0;
         self.current_lines = 0;
         self.current_index += 1;
@@ -246,24 +251,31 @@ impl QuadChunkWriter {
     }
 
     fn start_core_chunk_writer_thread(&mut self, count: usize) -> anyhow::Result<()> {
-        let mut paths = Vec::with_capacity(count);
         self.core_bytes = vec![0; count];
         self.core_lines = vec![0; count];
         self.core_pending_buffers = (0..count)
             .map(|_| Vec::with_capacity(CORE_CHUNK_BATCH_BYTES))
             .collect();
+        let mut file_names = Vec::with_capacity(count);
         for i in 0..count {
-            let file_name = format!("{}.part-{:03}.nq", self.chunk_prefix, i);
-            let path = self.output_dir.join(&file_name);
-            paths.push(path);
+            file_names.push(format!("{}.part-{:03}.nq", self.chunk_prefix, i));
         }
+        let session = self.session.clone();
         let (sender, receiver) = crossbeam::channel::bounded::<CoreChunkWriteMsg>(64);
         let writer_thread = thread::spawn(move || -> anyhow::Result<()> {
-            let mut writers = Vec::with_capacity(paths.len());
-            for path in &paths {
-                let file = File::create(path)
-                    .with_context(|| format!("failed to create quad chunk {}", path.display()))?;
-                writers.push(BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, file));
+            let mut writers: Vec<BufWriter<Box<dyn Write + Send>>> =
+                Vec::with_capacity(file_names.len());
+            for file_name in &file_names {
+                let sink = session::open_sink(
+                    &session,
+                    file_name,
+                    "application/n-quads",
+                    "chunk-data",
+                )
+                .map_err(|e| {
+                    anyhow::anyhow!("failed to open quad chunk sink {file_name}: {}", e)
+                })?;
+                writers.push(BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, sink));
             }
             for msg in receiver {
                 match msg {
@@ -401,13 +413,6 @@ impl Write for QuadChunkWriter {
 
 const MIN_CORE_CHUNK_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_CORE_CHUNK_BYTES: u64 = 512 * 1024 * 1024;
-
-pub(crate) fn resolve_quad_chunk_output_dir(output_file: Option<&Path>) -> PathBuf {
-    output_file
-        .and_then(Path::parent)
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."))
-}
 
 pub(crate) fn resolve_effective_core_chunk_count_for_estimated_bytes(
     mode: QuadChunkingMode,

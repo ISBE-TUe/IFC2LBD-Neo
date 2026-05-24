@@ -166,14 +166,28 @@ impl BatchKind {
 pub const BOT_PRODUCER_ID: &str = "neo-bot-producer";
 pub const BEO_PRODUCER_ID: &str = "neo-beo-producer";
 pub const PROPS_OPM_PRODUCER_ID: &str = "neo-props-opm";
+pub const BSDD_PRODUCER_ID: &str = "neo-bsdd-producer";
 pub const OMG_FOG_PRODUCER_ID: &str = "neo-omg-fog";
 pub const IFCOWL_PRODUCER_ID: &str = "neo-ifcowl-producer";
 pub const TURTLE_SERIALIZER_ID: &str = "neo-turtle-serializer";
 pub const NQUADS_SERIALIZER_ID: &str = "neo-nquads-serializer";
 pub const NQUADS_CHUNKED_SERIALIZER_ID: &str = "neo-nquads-chunked-serializer";
 pub const FILE_EXPORT_ID: &str = "neo-file-export";
+pub const LOG_EXPORT_ID: &str = "neo-log-export";
 pub const STDOUT_EXPORT_ID: &str = "neo-stdout-export";
-pub const GRAFEO_EXPORT_ID: &str = "neo-grafeo-export";
+pub const CLEANUP_PREPROCESS_ID: &str = "neo-cleanup-preprocess";
+pub const BSDD_MATCH_PREPROCESS_ID: &str = "neo-bsdd-match-preprocess";
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct PipelineLogBundle {
+    pub modules: HashMap<String, serde_json::Value>,
+}
+
+impl PipelineLogBundle {
+    pub fn write_module(&mut self, module_id: &str, stats: serde_json::Value) {
+        self.modules.insert(module_id.to_string(), stats);
+    }
+}
 
 /// A tagged batch of triples produced by a producer plugin.
 #[derive(Clone, Debug)]
@@ -385,7 +399,6 @@ pub trait ExportSession: Send {
 /// - `neo-file-export` — write files to the local file system (CLI) or
 ///   buffer in memory for browser download (WASM).
 /// - `neo-stdout-export` — write to stdout.
-/// - `neo-grafeo-export` — stream RDF batches directly into Grafeo.
 /// - Custom — upload to blob storage, POST to a REST API, etc.
 pub trait ExportPlugin: PipelinePlugin {
     /// Create a fresh export session for one conversion run.
@@ -631,6 +644,25 @@ impl PluginRegistry {
         self.plugins.is_empty()
     }
 
+    /// Find the single active export plugin in the activation plan.
+    /// Returns an error if zero or multiple export plugins are active —
+    /// the activation resolver enforces mutual exclusion via `conflicts_with`,
+    /// so this should always yield exactly one.
+    pub fn resolve_active_export(
+        &self,
+        active_ids: &[String],
+    ) -> Result<Arc<dyn ExportPlugin>, String> {
+        let mut candidates: Vec<Arc<dyn ExportPlugin>> = active_ids
+            .iter()
+            .filter_map(|id| self.exporter(id))
+            .collect();
+        match candidates.len() {
+            0 => Err("no active export plugin in activation plan".to_string()),
+            1 => Ok(candidates.remove(0)),
+            n => Err(format!("expected exactly one active export plugin, found {n}")),
+        }
+    }
+
     fn register(&mut self, plugin: RegisteredPlugin) -> Result<(), RegistryError> {
         let manifest = plugin.manifest();
         if self.plugins.contains_key(manifest.id) {
@@ -654,12 +686,32 @@ pub fn spawn_preprocessors(
     registry: &PluginRegistry,
     ctx: &mut PipelineContext,
 ) -> Result<(), PreprocessError> {
+    spawn_preprocessors_with(active_ids, registry, ctx, |_| {}, |_| {})
+}
+
+/// Same as `spawn_preprocessors`, but invokes `before(id)` immediately before
+/// each plugin runs and `after(id)` immediately after it succeeds. The caller
+/// is responsible for measuring time with whatever clock fits the target
+/// (e.g. `std::time::Instant` on native, `js_sys::Date::now()` on WASM).
+pub fn spawn_preprocessors_with<B, A>(
+    active_ids: &[String],
+    registry: &PluginRegistry,
+    ctx: &mut PipelineContext,
+    mut before: B,
+    mut after: A,
+) -> Result<(), PreprocessError>
+where
+    B: FnMut(&str),
+    A: FnMut(&str),
+{
     for id in active_ids {
         let plugin = match registry.plugin(id) {
             Some(RegisteredPlugin::Preprocess(p)) => p.clone(),
             _ => continue,
         };
+        before(id);
         plugin.preprocess(ctx)?;
+        after(id);
     }
     Ok(())
 }

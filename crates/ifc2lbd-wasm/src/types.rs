@@ -1,5 +1,6 @@
 use lbd_pipeline::ActivationError;
 use serde::{Deserialize, Serialize};
+use lbd_converter::IfcowlMode;
 
 #[derive(Debug, thiserror::Error)]
 pub enum WasmApiError {
@@ -200,22 +201,23 @@ pub enum NquadsChunkingMode {
 #[derive(Debug, Clone)]
 pub struct ExecutionSettings {
     pub output_formats: OutputFormats,
-    // LBD sub-module activation flags.
-    // These drive `active_producer_ids_from_settings()` which builds the id list
-    // passed to `spawn_producers()`. When the ActivationPlan is threaded through
-    // to the dispatch sites directly, these per-field booleans can be removed.
-    // TODO: replace with ActivationPlan.enabled_ids lookup once the plan is
-    //       propagated into all dispatch sites.
-    pub emit_bot: bool,
-    pub emit_beo: bool,
-    pub emit_props_opm: bool,
-    pub emit_omg_fog: bool,
-    // Other producer flags
-    pub emit_ifcowl: bool,
+    /// IDs of all active plugins (preprocess, producer, postprocess, serializer,
+    /// export). Derived from the resolved `ActivationPlan`. Dispatch sites use
+    /// `has(plugin_id)` instead of dedicated per-module booleans so adding a
+    /// new plugin only requires registering it — no struct field churn.
+    pub active_plugin_ids: std::collections::HashSet<String>,
     pub nquads: NquadsModuleOptions,
     pub output_stem: String,
     pub turtle_grouping: TurtleGrouping,
     pub turtle_layout: TurtleLayout,
+    pub ifcowl_mode: IfcowlMode,
+    pub bsdd_profile: Option<String>,
+}
+
+impl ExecutionSettings {
+    pub fn has(&self, plugin_id: &str) -> bool {
+        self.active_plugin_ids.contains(plugin_id)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

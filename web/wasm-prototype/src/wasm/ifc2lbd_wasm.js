@@ -315,6 +315,10 @@ function __wbg_get_imports(memory) {
             const ret = arg0.length;
             return ret;
         },
+        __wbg_new_0_4d657201ced14de3: function() {
+            const ret = new Date();
+            return ret;
+        },
         __wbg_new_0c7403db6e782f19: function(arg0) {
             const ret = new Uint8Array(arg0);
             return ret;
@@ -376,6 +380,10 @@ function __wbg_get_imports(memory) {
             const ret = typeof window === 'undefined' ? null : window;
             return isLikeNone(ret) ? 0 : addToExternrefTable0(ret);
         },
+        __wbg_toISOString_07c00b3614e865a1: function(arg0) {
+            const ret = arg0.toISOString();
+            return ret;
+        },
         __wbg_value_ee3a06f4579184fa: function(arg0) {
             const ret = arg0.value;
             return ret;
@@ -404,7 +412,7 @@ function __wbg_get_imports(memory) {
             table.set(offset + 2, true);
             table.set(offset + 3, false);
         },
-        memory: memory || new WebAssembly.Memory({initial:190,maximum:65535,shared:true}),
+        memory: memory || new WebAssembly.Memory({initial:292,maximum:65535,shared:true}),
     };
     return {
         __proto__: null,

@@ -1,12 +1,14 @@
 use std::collections::{HashMap, HashSet};
 
+use lbd_converter::IfcowlMode;
 use crate::types::{
     ConversionRequest, ExecutionSettings, NquadsChunkingMode, NquadsModuleOptions, OutputFormats,
     TurtleGrouping, TurtleLayout, WasmApiError,
 };
 use lbd_pipeline::ActivationPlan;
 use lbd_pipeline::{
-    BEO_PRODUCER_ID, BOT_PRODUCER_ID, FILE_EXPORT_ID, IFCOWL_PRODUCER_ID,
+    BEO_PRODUCER_ID, BOT_PRODUCER_ID, BSDD_PRODUCER_ID, FILE_EXPORT_ID, IFCOWL_PRODUCER_ID,
+    LOG_EXPORT_ID,
     NQUADS_CHUNKED_SERIALIZER_ID,
     NQUADS_SERIALIZER_ID, OMG_FOG_PRODUCER_ID, PROPS_OPM_PRODUCER_ID,
     TURTLE_SERIALIZER_ID,
@@ -31,6 +33,7 @@ pub(crate) fn validate_activation_plan(plan: &ActivationPlan) -> Result<(), Wasm
     let active: HashSet<&str> = plan.enabled_ids.iter().map(|id| id.as_str()).collect();
     let has_any_producer = active.contains(BOT_PRODUCER_ID)
         || active.contains(BEO_PRODUCER_ID)
+        || active.contains(BSDD_PRODUCER_ID)
         || active.contains(PROPS_OPM_PRODUCER_ID)
         || active.contains(OMG_FOG_PRODUCER_ID)
         || active.contains(IFCOWL_PRODUCER_ID);
@@ -40,10 +43,10 @@ pub(crate) fn validate_activation_plan(plan: &ActivationPlan) -> Result<(), Wasm
             BOT_PRODUCER_ID, BEO_PRODUCER_ID, PROPS_OPM_PRODUCER_ID, IFCOWL_PRODUCER_ID
         )));
     }
-    if !active.contains(FILE_EXPORT_ID) {
+    if !active.contains(FILE_EXPORT_ID) && !active.contains(LOG_EXPORT_ID) {
         return Err(WasmApiError::Message(format!(
-            "module plan must include `{}`",
-            FILE_EXPORT_ID
+            "module plan must include `{}` or `{}`",
+            FILE_EXPORT_ID, LOG_EXPORT_ID
         )));
     }
     let has_nquads =
@@ -57,11 +60,14 @@ pub(crate) fn validate_activation_plan(plan: &ActivationPlan) -> Result<(), Wasm
     Ok(())
 }
 
+const AUTO_GROUPING_THRESHOLD_BYTES: u64 = 20 * 1024 * 1024; // 20 MB
+
 pub(crate) fn resolve_execution_settings(
     plan: &ActivationPlan,
     configs: &HashMap<String, HashMap<String, String>>,
     request: &ConversionRequest,
     warnings: &mut Vec<String>,
+    input_size_bytes: u64,
 ) -> Result<ExecutionSettings, WasmApiError> {
     let active: HashSet<&str> = plan.enabled_ids.iter().map(|id| id.as_str()).collect();
     let output_formats = OutputFormats {
@@ -131,18 +137,22 @@ pub(crate) fn resolve_execution_settings(
         .unwrap_or_else(|| "output".to_string());
 
     let turtle_entries = configs.get(TURTLE_SERIALIZER_ID);
-    let turtle_grouping = match turtle_entries
-        .and_then(|m| m.get("grouping"))
-        .map(String::as_str)
-        .unwrap_or("sorted")
-    {
-        "sorted" => TurtleGrouping::Sorted,
-        "streaming" => TurtleGrouping::Streaming,
-        other => {
+    let explicit_grouping = turtle_entries.and_then(|m| m.get("grouping"));
+    let turtle_grouping = match explicit_grouping.map(String::as_str) {
+        Some("sorted") => TurtleGrouping::Sorted,
+        Some("streaming") => TurtleGrouping::Streaming,
+        Some(other) => {
             return Err(WasmApiError::Message(format!(
                 "invalid `neo-turtle-serializer.grouping={}` (expected sorted|streaming)",
                 other
             )));
+        }
+        None => {
+            if input_size_bytes <= AUTO_GROUPING_THRESHOLD_BYTES {
+                TurtleGrouping::Sorted
+            } else {
+                TurtleGrouping::Streaming
+            }
         }
     };
     let turtle_layout = match turtle_entries
@@ -159,15 +169,30 @@ pub(crate) fn resolve_execution_settings(
             )));
         }
     };
+    let ifcowl_entries = configs.get(IFCOWL_PRODUCER_ID);
+    let ifcowl_mode = match ifcowl_entries
+        .and_then(|m| m.get("mode"))
+        .map(String::as_str)
+        .unwrap_or("full")
+    {
+        "full" => IfcowlMode::Full,
+        "projected" => IfcowlMode::Projected,
+        other => {
+            return Err(WasmApiError::Message(format!(
+                "invalid `neo-ifcowl-producer.mode={}` (expected full|projected)",
+                other
+            )));
+        }
+    };
+
+    let bsdd_profile = configs
+        .get(BSDD_PRODUCER_ID)
+        .and_then(|m| m.get("profile"))
+        .cloned();
 
     Ok(ExecutionSettings {
         output_formats,
-        // Modular LBD producers — add new producers here as emit_<name> flags
-        emit_bot: active.contains(BOT_PRODUCER_ID),
-        emit_beo: active.contains(BEO_PRODUCER_ID),
-        emit_props_opm: active.contains(PROPS_OPM_PRODUCER_ID),
-        emit_omg_fog: active.contains(OMG_FOG_PRODUCER_ID),
-        emit_ifcowl: active.contains(IFCOWL_PRODUCER_ID),
+        active_plugin_ids: active.iter().map(|s| s.to_string()).collect(),
         nquads: NquadsModuleOptions {
             chunking: nquads_chunking,
             chunk_size_lines,
@@ -177,6 +202,8 @@ pub(crate) fn resolve_execution_settings(
         output_stem,
         turtle_grouping,
         turtle_layout,
+        ifcowl_mode,
+        bsdd_profile,
     })
 }
 
@@ -233,11 +260,7 @@ pub(crate) fn validate_typed_module_configs(
             NQUADS_CHUNKED_SERIALIZER_ID => validate_nquads_chunked_serializer_options(entries)?,
             TURTLE_SERIALIZER_ID => validate_turtle_serializer_options(entries)?,
             FILE_EXPORT_ID => validate_file_export_options(entries)?,
-            BOT_PRODUCER_ID
-            | BEO_PRODUCER_ID
-            | PROPS_OPM_PRODUCER_ID
-            | OMG_FOG_PRODUCER_ID
-            | IFCOWL_PRODUCER_ID => {
+            BOT_PRODUCER_ID | BEO_PRODUCER_ID | PROPS_OPM_PRODUCER_ID | OMG_FOG_PRODUCER_ID => {
                 if !entries.is_empty() {
                     return Err(WasmApiError::Message(format!(
                         "module `{}` does not support options",
@@ -245,6 +268,8 @@ pub(crate) fn validate_typed_module_configs(
                     )));
                 }
             }
+            IFCOWL_PRODUCER_ID => validate_ifcowl_producer_options(entries)?,
+            BSDD_PRODUCER_ID => validate_bsdd_producer_options(entries)?,
             _ => {
                 return Err(WasmApiError::Message(format!(
                     "unsupported module `{}`",
@@ -280,6 +305,55 @@ pub(crate) fn validate_turtle_serializer_options(
             other => {
                 return Err(WasmApiError::Message(format!(
                     "unknown option `neo-turtle-serializer.{}` (supported: grouping, layout)",
+                    other
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_ifcowl_producer_options(
+    entries: &HashMap<String, String>,
+) -> Result<(), WasmApiError> {
+    for (key, value) in entries {
+        match key.as_str() {
+            "mode" => {
+                if !matches!(value.as_str(), "full" | "projected") {
+                    return Err(WasmApiError::Message(format!(
+                        "`neo-ifcowl-producer.mode` must be one of full|projected, got `{}`",
+                        value
+                    )));
+                }
+            }
+            other => {
+                return Err(WasmApiError::Message(format!(
+                    "unknown option `neo-ifcowl-producer.{}` (supported: mode)",
+                    other
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_bsdd_producer_options(
+    entries: &HashMap<String, String>,
+) -> Result<(), WasmApiError> {
+    let known_profiles = ["base", "revit-dach", "allplan-de", "tekla-en"];
+    for (key, value) in entries {
+        match key.as_str() {
+            "profile" => {
+                if !known_profiles.contains(&value.as_str()) {
+                    return Err(WasmApiError::Message(format!(
+                        "`neo-bsdd-producer.profile` must be one of {:?}, got `{}`",
+                        known_profiles, value
+                    )));
+                }
+            }
+            other => {
+                return Err(WasmApiError::Message(format!(
+                    "unknown option `neo-bsdd-producer.{}` (supported: profile)",
                     other
                 )));
             }

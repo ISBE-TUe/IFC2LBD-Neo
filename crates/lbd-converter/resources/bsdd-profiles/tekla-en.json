@@ -1,0 +1,28 @@
+{
+  "profile_id": "tekla-en",
+  "profile_version": "1.0.0",
+  "extends": "base",
+  "pset_aliases": {
+    "tsec_material": "Pset_MaterialCommon",
+    "tsec_profile": "Pset_ProfileMechanical",
+    "tsec_section": "Pset_SectionProperties",
+    "tsec_position": "Pset_PositioningElement",
+    "tsec_fabrication": "Pset_FabricationPart",
+    "tsec_assembly": "Pset_AssemblyPlaceCommon"
+  },
+  "prop_aliases": {
+    "profile_name": "ProfileName",
+    "profile_type": "ProfileType",
+    "part_name": "Name",
+    "part_pos": "Position",
+    "material_name": "Material",
+    "finish": "SurfaceFinish",
+    "class": "ObjectType",
+    "prelim_mark": "Tag",
+    "assembly_mark": "AssemblyTag",
+    "length": "Length",
+    "weight": "GrossWeight",
+    "area": "GrossArea",
+    "volume": "GrossVolume"
+  }
+}

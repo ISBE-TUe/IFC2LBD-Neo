@@ -120,12 +120,13 @@ function optionControl(pluginId, key) {
   const current = moduleOptions[pluginId]?.[key] || "";
 
   if (key === "grouping") {
+    const groupingVal = current || "streaming";
     return `
       <div class="detail-row">
         <span class="detail-label">${key}</span>
         <select data-option-key="${key}" class="detail-select">
-          <option value="sorted" ${current === "sorted" ? "selected" : ""}>Sorted (grouped)</option>
-          <option value="streaming" ${current === "streaming" ? "selected" : ""}>Streaming</option>
+          <option value="streaming" ${groupingVal === "streaming" ? "selected" : ""}>Streaming</option>
+          <option value="sorted" ${groupingVal === "sorted" ? "selected" : ""}>Sorted (grouped)</option>
         </select>
       </div>`;
   }
@@ -150,6 +151,30 @@ function optionControl(pluginId, key) {
           <option value="none" ${chunkingVal === "none" ? "selected" : ""}>None</option>
           <option value="lines" ${chunkingVal === "lines" ? "selected" : ""}>Lines</option>
           <option value="bytes" ${chunkingVal === "bytes" ? "selected" : ""}>Bytes</option>
+        </select>
+      </div>`;
+  }
+  if (key === "mode") {
+    const modeVal = current || "full";
+    return `
+      <div class="detail-row">
+        <span class="detail-label">mode</span>
+        <select data-option-key="mode" class="detail-select">
+          <option value="full" ${modeVal === "full" ? "selected" : ""}>Full (standard ifcOWL)</option>
+          <option value="projected" ${modeVal === "projected" ? "selected" : ""}>Projected (compact, ~58% fewer triples)</option>
+        </select>
+      </div>`;
+  }
+  if (key === "profile") {
+    const profileVal = current || "base";
+    return `
+      <div class="detail-row">
+        <span class="detail-label">profile</span>
+        <select data-option-key="profile" class="detail-select">
+          <option value="base" ${profileVal === "base" ? "selected" : ""}>base (universal IFC aliases)</option>
+          <option value="revit-dach" ${profileVal === "revit-dach" ? "selected" : ""}>revit-dach (Revit, German)</option>
+          <option value="allplan-de" ${profileVal === "allplan-de" ? "selected" : ""}>allplan-de (Allplan, German)</option>
+          <option value="tekla-en" ${profileVal === "tekla-en" ? "selected" : ""}>tekla-en (Tekla, English)</option>
         </select>
       </div>`;
   }
