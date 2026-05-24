@@ -7,7 +7,6 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-nalgebra = "0.33"
 ifc-model = { workspace = true }
 ifc-step = { workspace = true }
 lbd-topology = { workspace = true }
@@ -15,7 +14,4 @@ lbd-ontology = { workspace = true }
 rstar = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
 parry3d = { version = "0.26.0", default-features = false, features = ["dim3", "f32", "std", "alloc"] }
-uuid = { version = "1.20.0", features = ["js"] }

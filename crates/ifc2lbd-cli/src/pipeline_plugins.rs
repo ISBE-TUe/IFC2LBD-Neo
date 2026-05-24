@@ -16,6 +16,7 @@ use lbd_pipeline::{
     PROPS_OPM_PRODUCER_ID, STDOUT_EXPORT_ID, TURTLE_SERIALIZER_ID,
 };
 use plugin_property_preprocess::{BsddMatchPreprocessPlugin, CleanupPreprocessPlugin};
+use plugin_qto_preprocess::QtoPreprocessPlugin;
 
 // ---------------------------------------------------------------------------
 // OutputDir — context key for the export destination directory
@@ -57,6 +58,7 @@ pub fn built_in_registry() -> PluginRegistry {
     let mut registry = PluginRegistry::new();
     registry.register_preprocess(CleanupPreprocessPlugin).unwrap();
     registry.register_preprocess(BsddMatchPreprocessPlugin).unwrap();
+    registry.register_preprocess(QtoPreprocessPlugin).unwrap();
     registry.register_producer(BotProducerPlugin).unwrap();
     registry.register_producer(BeoProducerPlugin).unwrap();
     registry.register_producer(BsddProducerPlugin).unwrap();
