@@ -60,7 +60,7 @@ impl PipelinePlugin for QtoPreprocessPlugin {
     fn manifest(&self) -> PluginManifest {
         PluginManifest {
             id: QTO_PREPROCESS_ID,
-            display_name: "QTO preprocess",
+            display_name: "QTO Rebuild",
             stage: PipelineStage::Preprocess,
             description: "Detects missing IFC quantity sets and computes them from STEP geometry.",
             inputs: vec!["ifc-model", "ifc-step"],

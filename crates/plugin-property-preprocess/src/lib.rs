@@ -17,7 +17,7 @@ impl PipelinePlugin for CleanupPreprocessPlugin {
     fn manifest(&self) -> PluginManifest {
         PluginManifest {
             id: CLEANUP_PREPROCESS_ID,
-            display_name: "Cleanup preprocess",
+            display_name: "ASCII Repair",
             stage: PipelineStage::Preprocess,
             description: "Deduplicates IFC property occurrences and normalizes property payload quality.",
             inputs: vec!["ifc-model"],
@@ -93,7 +93,7 @@ impl PipelinePlugin for BsddMatchPreprocessPlugin {
     fn manifest(&self) -> PluginManifest {
         PluginManifest {
             id: BSDD_MATCH_PREPROCESS_ID,
-            display_name: "bSDD match preprocess",
+            display_name: "bSDD Matcher",
             stage: PipelineStage::Preprocess,
             description: "Precomputes bSDD fuzzy/exact match cache shared by producers.",
             inputs: vec!["ifc-model"],

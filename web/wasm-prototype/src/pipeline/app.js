@@ -17,57 +17,51 @@ const RUNTIME_BUILD = "pipeline-v10-2026-05-23T18:25Z";
 // Pipeline Templates
 // ---------------------------------------------------------------------------
 
-const LBD_MODULES = ["neo-bot-producer", "neo-beo-producer", "neo-props-opm", "neo-bsdd-producer", "neo-omg-fog"];
+const PREPROCESS_MODULES = ["neo-bsdd-match-preprocess", "neo-cleanup-preprocess", "neo-qto-preprocess"];
+const LBD_MODULES = ["neo-bot-producer", "neo-beo-producer", "neo-bsdd-producer", "neo-omg-fog"];
 
 const TEMPLATES = [
   {
-    id: "core-turtle-joined",
-    label: "Core → Turtle (Joined)",
-    desc: "BOT+BEO+Props+OMG into one Turtle file",
-    modules: [...LBD_MODULES, "neo-turtle-serializer", "neo-file-export"],
+    id: "full-turtle-joined",
+    label: "Full → Turtle (Joined)",
+    desc: "All preprocess + BOT+BEO+bSDD+OMG into one Turtle file",
+    modules: [...PREPROCESS_MODULES, ...LBD_MODULES, "neo-turtle-serializer", "neo-file-export"],
     options: { "neo-turtle-serializer": { grouping: "streaming", layout: "joined" } },
   },
   {
-    id: "core-turtle-separate",
-    label: "Core → Turtle (Separate)",
+    id: "full-turtle-separate",
+    label: "Full → Turtle (Separate)",
     desc: "One Turtle file per active producer module",
-    modules: [...LBD_MODULES, "neo-turtle-serializer", "neo-file-export"],
+    modules: [...PREPROCESS_MODULES, ...LBD_MODULES, "neo-turtle-serializer", "neo-file-export"],
     options: { "neo-turtle-serializer": { grouping: "streaming", layout: "separate" } },
   },
   {
-    id: "core-ifcowl-turtle-joined",
-    label: "Core+IfcOWL → Turtle (Joined)",
-    desc: "All active producers merged into a single Turtle file",
-    modules: [...LBD_MODULES, "neo-ifcowl-producer", "neo-turtle-serializer", "neo-file-export"],
+    id: "full-ifcowl-turtle-joined",
+    label: "Full+IfcOWL → Turtle (Joined)",
+    desc: "All producers including IfcOWL merged into a single Turtle file",
+    modules: [...PREPROCESS_MODULES, ...LBD_MODULES, "neo-ifcowl-producer", "neo-turtle-serializer", "neo-file-export"],
     options: { "neo-turtle-serializer": { grouping: "streaming", layout: "joined" } },
   },
   {
-    id: "core-ifcowl-turtle-separate",
-    label: "Core+IfcOWL → Turtle (Separate)",
-    desc: "Per-module Turtle files including IfcOWL",
-    modules: [...LBD_MODULES, "neo-ifcowl-producer", "neo-turtle-serializer", "neo-file-export"],
-    options: { "neo-turtle-serializer": { grouping: "streaming", layout: "separate" } },
-  },
-  {
-    id: "core-ifcowl-nq",
-    label: "Core+IfcOWL → N-Quads",
-    desc: "Merged named-graph N-Quads export",
-    modules: [...LBD_MODULES, "neo-ifcowl-producer", "neo-nquads-serializer", "neo-file-export"],
+    id: "full-ifcowl-nq",
+    label: "Full+IfcOWL → N-Quads",
+    desc: "Merged named-graph N-Quads export with all modules",
+    modules: [...PREPROCESS_MODULES, ...LBD_MODULES, "neo-ifcowl-producer", "neo-nquads-serializer", "neo-file-export"],
     options: {},
   },
   {
-    id: "core-ifcowl-nq-chunked",
-    label: "Core+IfcOWL → Chunked NQ",
+    id: "full-ifcowl-nq-chunked",
+    label: "Full+IfcOWL → Chunked NQ",
     desc: "Chunked N-Quads parts plus manifest",
-    modules: [...LBD_MODULES, "neo-ifcowl-producer", "neo-nquads-chunked-serializer", "neo-file-export"],
+    modules: [...PREPROCESS_MODULES, ...LBD_MODULES, "neo-ifcowl-producer", "neo-nquads-chunked-serializer", "neo-file-export"],
     options: { "neo-nquads-chunked-serializer": { chunking: "lines" } },
   },
   {
-    id: "core-turtle-streaming",
-    label: "Core → Turtle (Streaming)",
-    desc: "Low-memory incremental Turtle writer (no grouping)",
-    modules: [...LBD_MODULES, "neo-turtle-serializer", "neo-file-export"],
-    options: { "neo-turtle-serializer": { grouping: "streaming", layout: "joined" } },
+    id: "bot-only-turtle",
+    label: "BOT only → Turtle",
+    desc: "Minimal topology export, no preprocess",
+    modules: ["neo-bot-producer", "neo-turtle-serializer", "neo-file-export"],
+    options: {},
   },
 ];
 
@@ -372,6 +366,11 @@ async function init() {
   document.querySelector("#output-stem-input")?.addEventListener("change", (e) => update({ outputStem: e.target.value.trim() || "converted-model" }));
   document.querySelector("#toggle-preprocess")?.addEventListener("change", (e) => update({ showPreprocess: e.target.checked }));
   document.querySelector("#toggle-postprocess")?.addEventListener("change", (e) => update({ showPostprocess: e.target.checked }));
+  const { showPreprocess, showPostprocess } = getState();
+  const preEl = document.querySelector("#toggle-preprocess");
+  const postEl = document.querySelector("#toggle-postprocess");
+  if (preEl) preEl.checked = showPreprocess;
+  if (postEl) postEl.checked = showPostprocess;
   document.querySelector("#btn-load")?.addEventListener("click", loadConfig);
   document.querySelector("#btn-save")?.addEventListener("click", saveConfig);
   document.querySelector("#btn-cli-cmd")?.addEventListener("click", showCliCommand);
