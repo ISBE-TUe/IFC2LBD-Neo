@@ -79,10 +79,12 @@ pub fn inject(
         let report = &reports[*report_idx];
 
         // Determine which missing quantities we actually have values for.
+        // Skip zero/negative results — they mean the geometry couldn't be computed
+        // and must never appear in production output as misleading zeros.
         let injectable: Vec<(QuantityKind, f64)> = report
             .missing
             .iter()
-            .filter_map(|&kind| computed.get(kind).map(|v| (kind, v)))
+            .filter_map(|&kind| computed.get(kind).filter(|&v| v > 0.0).map(|v| (kind, v)))
             .collect();
 
         if injectable.is_empty() {

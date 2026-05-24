@@ -25,7 +25,7 @@ pub enum QuantityKind {
 }
 
 impl QuantityKind {
-    /// IFC quantity entity name, e.g. "IfcQuantityArea".
+    /// IFC quantity entity name in uppercase STEP form, e.g. "IFCQUANTITYAREA".
     pub fn ifc_entity_name(self) -> &'static str {
         match self {
             Self::Length
@@ -33,9 +33,9 @@ impl QuantityKind {
             | Self::Width
             | Self::Depth
             | Self::GrossPerimeter
-            | Self::Perimeter => "IfcQuantityLength",
+            | Self::Perimeter => "IFCQUANTITYLENGTH",
 
-            Self::GrossVolume | Self::NetVolume => "IfcQuantityVolume",
+            Self::GrossVolume | Self::NetVolume => "IFCQUANTITYVOLUME",
 
             Self::GrossArea
             | Self::NetArea
@@ -47,7 +47,7 @@ impl QuantityKind {
             | Self::GrossFloorArea
             | Self::NetFloorArea
             | Self::CrossSectionArea
-            | Self::OuterSurfaceArea => "IfcQuantityArea",
+            | Self::OuterSurfaceArea => "IFCQUANTITYAREA",
         }
     }
 
