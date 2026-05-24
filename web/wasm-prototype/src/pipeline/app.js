@@ -61,7 +61,7 @@ const TEMPLATES = [
     label: "BOT only → Turtle",
     desc: "Minimal topology export, no preprocess",
     modules: ["neo-bot-producer", "neo-turtle-serializer", "neo-file-export"],
-    options: {},
+    options: { "neo-turtle-serializer": { grouping: "streaming", layout: "joined" } },
   },
 ];
 
@@ -404,6 +404,7 @@ async function runConversion() {
     const moduleIds = [...activeModules];
     const moduleOptionsArr = [];
     for (const [pluginId, opts] of Object.entries(moduleOptions)) {
+      if (!activeModules.has(pluginId)) continue;
       for (const [key, value] of Object.entries(opts)) {
         if (value) moduleOptionsArr.push(`${pluginId}.${key}=${value}`);
       }
