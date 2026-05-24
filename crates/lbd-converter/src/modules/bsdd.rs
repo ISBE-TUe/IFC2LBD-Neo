@@ -1270,6 +1270,7 @@ pub fn stream_bsdd_with_cache(
                     &unit_by_type,
                     &generated_at,
                     sender,
+                    batch_size,
                 )
             })
             .collect();
@@ -1293,6 +1294,7 @@ pub fn stream_bsdd_with_cache(
             &unit_by_type,
             &generated_at,
             sender,
+            batch_size,
         )?;
         triples += elem_triples;
         for (k, v) in elem_unmatched {
@@ -1320,6 +1322,7 @@ pub fn stream_bsdd_with_cache(
                         &unit_by_type,
                         &generated_at,
                         sender,
+                        batch_size,
                     )
                 })
                 .collect();
@@ -1343,6 +1346,7 @@ pub fn stream_bsdd_with_cache(
             &unit_by_type,
             &generated_at,
             sender,
+            batch_size,
         )?;
         triples += elem_triples;
         for (k, v) in elem_unmatched {
@@ -1378,6 +1382,7 @@ fn process_element_psets(
     unit_by_type: &HashMap<String, String>,
     generated_at: &str,
     sender: &Sender<Vec<Triple>>,
+    batch_size: usize,
 ) -> Result<(u64, HashMap<String, u64>), StreamError> {
     let (subject, object_guid, class_name_like) =
         if let Some(element) = model.elements.get(&object_id) {
@@ -1418,7 +1423,7 @@ fn process_element_psets(
         push(
             &mut local_batch,
             sender,
-            usize::MAX,
+            batch_size,
             Triple {
                 subject: subject.clone(),
                 predicate: bsddm("hasPropertySet"),
@@ -1429,7 +1434,7 @@ fn process_element_psets(
         push(
             &mut local_batch,
             sender,
-            usize::MAX,
+            batch_size,
             Triple {
                 subject: pset_subject.clone(),
                 predicate: rdf_type(),
@@ -1441,7 +1446,7 @@ fn process_element_psets(
             push(
                 &mut local_batch,
                 sender,
-                usize::MAX,
+                batch_size,
                 Triple {
                     subject: pset_subject.clone(),
                     predicate: rdf_type(),
@@ -1453,7 +1458,7 @@ fn process_element_psets(
             push(
                 &mut local_batch,
                 sender,
-                usize::MAX,
+                batch_size,
                 Triple {
                     subject: pset_subject.clone(),
                     predicate: rdf_type(),
@@ -1466,7 +1471,7 @@ fn process_element_psets(
             push(
                 &mut local_batch,
                 sender,
-                usize::MAX,
+                batch_size,
                 Triple {
                     subject: pset_subject.clone(),
                     predicate: rdfs_label(),
@@ -1503,7 +1508,7 @@ fn process_element_psets(
                     &mut local_counter,
                     &mut local_batch,
                     sender,
-                    usize::MAX,
+                    batch_size,
                     &mut local_triples,
                 )?;
                 continue;
@@ -1531,7 +1536,7 @@ fn process_element_psets(
                         &mut local_counter,
                         &mut local_batch,
                         sender,
-                        usize::MAX,
+                        batch_size,
                         &mut local_triples,
                     )?;
                 }
@@ -1556,6 +1561,7 @@ fn process_element_quantities(
     unit_by_type: &HashMap<String, String>,
     generated_at: &str,
     sender: &Sender<Vec<Triple>>,
+    batch_size: usize,
 ) -> Result<(u64, HashMap<String, u64>), StreamError> {
     let (subject, object_guid, class_name_like) =
         if let Some(element) = model.elements.get(&object_id) {
@@ -1596,7 +1602,7 @@ fn process_element_quantities(
         push(
             &mut local_batch,
             sender,
-            usize::MAX,
+            batch_size,
             Triple {
                 subject: subject.clone(),
                 predicate: bsddm("hasQuantitySet"),
@@ -1607,7 +1613,7 @@ fn process_element_quantities(
         push(
             &mut local_batch,
             sender,
-            usize::MAX,
+            batch_size,
             Triple {
                 subject: quantity_set_subject.clone(),
                 predicate: rdf_type(),
@@ -1619,7 +1625,7 @@ fn process_element_quantities(
             push(
                 &mut local_batch,
                 sender,
-                usize::MAX,
+                batch_size,
                 Triple {
                     subject: quantity_set_subject.clone(),
                     predicate: rdf_type(),
@@ -1631,7 +1637,7 @@ fn process_element_quantities(
             push(
                 &mut local_batch,
                 sender,
-                usize::MAX,
+                batch_size,
                 Triple {
                     subject: quantity_set_subject.clone(),
                     predicate: rdf_type(),
@@ -1644,7 +1650,7 @@ fn process_element_quantities(
             push(
                 &mut local_batch,
                 sender,
-                usize::MAX,
+                batch_size,
                 Triple {
                     subject: quantity_set_subject.clone(),
                     predicate: rdfs_label(),
@@ -1682,7 +1688,7 @@ fn process_element_quantities(
                 &mut local_counter,
                 &mut local_batch,
                 sender,
-                usize::MAX,
+                batch_size,
                 &mut local_triples,
             )?;
         }
