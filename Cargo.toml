@@ -9,7 +9,6 @@ members = [
     "crates/lbd-converter",
     "crates/lbd-topology",
     "crates/lbd-geometry",
-    "crates/lbd-geometry-kernel",
     "crates/lbd-serializer",
     "crates/plugin-topology-full",
     "crates/plugin-template-preprocess",
@@ -17,6 +16,7 @@ members = [
     "crates/plugin-template-postprocess",
     "crates/plugin-template-export",
     "crates/plugin-property-preprocess",
+    "crates/plugin-qto-preprocess",
     "crates/ifc2lbd-cli",
     "crates/ifc2lbd-wasm",
     # "crates/ifc2lbd-python",  # enable when PyO3 bindings are needed
@@ -73,9 +73,6 @@ criterion = { version = "0.5", features = ["html_reports"] }
 # Compression
 flate2 = "1"
 
-# Vendored dependencies
-chijin = { path = "vendor/chijin" }
-
 # Workspace crate cross-references
 ifc-step = { path = "crates/ifc-step" }
 ifc-model = { path = "crates/ifc-model" }
@@ -88,3 +85,4 @@ lbd-geometry = { path = "crates/lbd-geometry" }
 lbd-serializer = { path = "crates/lbd-serializer" }
 plugin-topology-full = { path = "crates/plugin-topology-full" }
 plugin-property-preprocess = { path = "crates/plugin-property-preprocess" }
+plugin-qto-preprocess = { path = "crates/plugin-qto-preprocess" }

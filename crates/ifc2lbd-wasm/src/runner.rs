@@ -35,7 +35,7 @@ use lbd_pipeline::{
     FILE_EXPORT_ID, IFCOWL_PRODUCER_ID, LOG_EXPORT_ID,
     NQUADS_CHUNKED_SERIALIZER_ID, NQUADS_SERIALIZER_ID, OMG_FOG_PRODUCER_ID,
     PipelineContext, PipelineLogBundle, PipelineStage, PluginRegistry, ResourceLimits,
-    PROPS_OPM_PRODUCER_ID, STDOUT_EXPORT_ID, TURTLE_SERIALIZER_ID,
+    PROPS_OPM_PRODUCER_ID, QTO_PREPROCESS_ID, STDOUT_EXPORT_ID, TURTLE_SERIALIZER_ID,
     spawn_preprocessors_with, spawn_producers,
 };
 
@@ -1103,6 +1103,9 @@ fn turtle_to_sink_joined(
         step_arc.clone(),
         chan_cap,
     );
+    if settings.has(QTO_PREPROCESS_ID) {
+        ctx.insert(std::sync::Arc::new(plugin_qto_preprocess::QtoOptions::default()));
+    }
     let preprocess_ids: Vec<String> = registry
         .manifests_for_stage(PipelineStage::Preprocess)
         .into_iter()
@@ -1256,6 +1259,9 @@ fn turtle_to_sink_separate(
         step_arc.clone(),
         chan_cap,
     );
+    if settings.has(QTO_PREPROCESS_ID) {
+        ctx.insert(std::sync::Arc::new(plugin_qto_preprocess::QtoOptions::default()));
+    }
     let preprocess_ids: Vec<String> = registry
         .manifests_for_stage(PipelineStage::Preprocess)
         .into_iter()
@@ -1442,6 +1448,9 @@ fn nquads_to_sink(
         step_arc.clone(),
         chan_cap,
     );
+    if settings.has(QTO_PREPROCESS_ID) {
+        ctx.insert(std::sync::Arc::new(plugin_qto_preprocess::QtoOptions::default()));
+    }
     let preprocess_ids: Vec<String> = registry
         .manifests_for_stage(PipelineStage::Preprocess)
         .into_iter()

@@ -9,7 +9,7 @@ use ifc_schema::SpatialType;
 use ifc_step::{decode_ifc_unicode, StepSchema, StepValue};
 use lbd_ontology::{
     opm_current_property_state, opm_has_property_state, opm_property, prov_generated_at_time,
-    rdf_type, rdfs_class, rdfs_label, schema_value, smls_unit, Object, Triple, XSD,
+    rdf_type, rdfs_label, schema_value, smls_unit, Object, Triple, XSD,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -975,7 +975,10 @@ pub fn build_bsdd_match_cache(
 ) -> Result<BsddMatchCache, String> {
     let index = load_bsdd_index()?;
     let profile = load_active_profile(profile_name)?;
-    let mut by_key = HashMap::new();
+
+    // Pass 1 (sequential): collect all unique lookup tuples, deduplicating by cache key.
+    // This avoids redundant resolve_property calls for the same (class, pset, prop) combo.
+    let mut unique: HashMap<String, (String, String, String)> = HashMap::new();
 
     let mut object_ids: Vec<_> = model.property_sets_for_object.keys().copied().collect();
     object_ids.sort_unstable();
@@ -996,36 +999,57 @@ pub fn build_bsdd_match_cache(
             };
             let pset_name = pset.name.as_deref().unwrap_or_default();
             for prop_id in &pset.properties {
-                let try_cache = |name: &str, by_key: &mut HashMap<String, BsddPreparedMatch>| {
-                    let key =
-                        cache_key(model.schema, &class_name_like, pset_name, name, &profile);
-                    by_key.entry(key).or_insert_with(|| {
-                        let m = index.resolve_property(
-                            model.schema,
-                            &class_name_like,
-                            pset_name,
-                            name,
-                            &profile,
-                        );
-                        BsddPreparedMatch {
-                            status: m.status,
-                            property_code: m.property_code,
-                            ambiguous_candidates: m.ambiguous_candidates,
-                            exact_meta: m.exact_meta,
-                            method: m.method,
-                            confidence: m.confidence,
-                        }
+                let mut enqueue = |name: &str| {
+                    let key = cache_key(model.schema, &class_name_like, pset_name, name, &profile);
+                    unique.entry(key).or_insert_with(|| {
+                        (class_name_like.clone(), pset_name.to_string(), name.to_string())
                     });
                 };
                 if let Some(psv) = model.property_single_values.get(prop_id) {
-                    try_cache(psv.name.as_str(), &mut by_key);
+                    enqueue(psv.name.as_str());
                 }
                 if let Some(pev) = model.property_enumerated_values.get(prop_id) {
-                    try_cache(pev.name.as_str(), &mut by_key);
+                    enqueue(pev.name.as_str());
                 }
             }
         }
     }
+
+    // Pass 2: resolve each unique match — expensive fuzzy/exact lookup, done in parallel.
+    let schema = model.schema;
+    #[cfg(not(target_arch = "wasm32"))]
+    let by_key: HashMap<String, BsddPreparedMatch> = {
+        use rayon::prelude::*;
+        unique
+            .into_par_iter()
+            .map(|(key, (class_name, pset_name, prop_name))| {
+                let m = index.resolve_property(schema, &class_name, &pset_name, &prop_name, &profile);
+                (key, BsddPreparedMatch {
+                    status: m.status,
+                    property_code: m.property_code,
+                    ambiguous_candidates: m.ambiguous_candidates,
+                    exact_meta: m.exact_meta,
+                    method: m.method,
+                    confidence: m.confidence,
+                })
+            })
+            .collect()
+    };
+    #[cfg(target_arch = "wasm32")]
+    let by_key: HashMap<String, BsddPreparedMatch> = unique
+        .into_iter()
+        .map(|(key, (class_name, pset_name, prop_name))| {
+            let m = index.resolve_property(schema, &class_name, &pset_name, &prop_name, &profile);
+            (key, BsddPreparedMatch {
+                status: m.status,
+                property_code: m.property_code,
+                ambiguous_candidates: m.ambiguous_candidates,
+                exact_meta: m.exact_meta,
+                method: m.method,
+                confidence: m.confidence,
+            })
+        })
+        .collect();
 
     Ok(BsddMatchCache {
         by_key,
@@ -1188,113 +1212,7 @@ pub fn stream_bsdd_with_cache(
 
     let mut batch = Vec::with_capacity(batch_size);
     let mut triples = 0_u64;
-    let mut property_counter = 0_u64;
-    let mut quantity_counter = 0_u64;
     let mut unmatched_histogram: HashMap<String, u64> = HashMap::new();
-
-    // Phase 3: Provenance block — emit once per run
-    let run_iri = format!("{base}/bsdd_run");
-    push(
-        &mut batch,
-        sender,
-        batch_size,
-        Triple {
-            subject: run_iri.clone(),
-            predicate: rdf_type(),
-            object: Object::Iri(bsddm("ConversionRun")),
-        },
-        &mut triples,
-    )?;
-    push(
-        &mut batch,
-        sender,
-        batch_size,
-        Triple {
-            subject: run_iri.clone(),
-            predicate: bsddm("indexVersion"),
-            object: Object::Literal(index.dictionary_version.clone()),
-        },
-        &mut triples,
-    )?;
-    push(
-        &mut batch,
-        sender,
-        batch_size,
-        Triple {
-            subject: run_iri.clone(),
-            predicate: bsddm("profileId"),
-            object: Object::Literal(profile.profile_id.clone()),
-        },
-        &mut triples,
-    )?;
-    push(
-        &mut batch,
-        sender,
-        batch_size,
-        Triple {
-            subject: run_iri.clone(),
-            predicate: bsddm("profileVersion"),
-            object: Object::Literal(profile.profile_version.clone()),
-        },
-        &mut triples,
-    )?;
-    push(
-        &mut batch,
-        sender,
-        batch_size,
-        Triple {
-            subject: run_iri.clone(),
-            predicate: bsddm("fuzzyThreshold"),
-            object: Object::TypedLiteral {
-                value: format!("{}", profile.fuzzy.threshold),
-                datatype: format!("{XSD}double"),
-            },
-        },
-        &mut triples,
-    )?;
-    push(
-        &mut batch,
-        sender,
-        batch_size,
-        Triple {
-            subject: run_iri.clone(),
-            predicate: bsddm("fuzzyScope"),
-            object: Object::Literal(profile.fuzzy.scope.clone()),
-        },
-        &mut triples,
-    )?;
-
-    // MappingStatus vocabulary — five triples, enables SPARQL/SHACL over statuses
-    let mapping_status_class = bsddm("MappingStatus");
-    push(
-        &mut batch,
-        sender,
-        batch_size,
-        Triple {
-            subject: mapping_status_class.clone(),
-            predicate: rdf_type(),
-            object: Object::Iri(rdfs_class()),
-        },
-        &mut triples,
-    )?;
-    for status in [
-        bsddm("Mapped"),
-        bsddm("Normalized"),
-        bsddm("Ambiguous"),
-        bsddm("Unmapped"),
-    ] {
-        push(
-            &mut batch,
-            sender,
-            batch_size,
-            Triple {
-                subject: status,
-                predicate: rdf_type(),
-                object: Object::Iri(mapping_status_class.clone()),
-            },
-            &mut triples,
-        )?;
-    }
 
     // Element typing
     for element in sorted_values(&model.elements) {
@@ -1336,293 +1254,99 @@ pub fn stream_bsdd_with_cache(
     let mut object_ids: Vec<_> = model.property_sets_for_object.keys().copied().collect();
     object_ids.sort_unstable();
 
-    for object_id in object_ids {
-        let (subject, object_guid, class_name_like) =
-            if let Some(element) = model.elements.get(&object_id) {
-                (
-                    element_resource_iri(&base, element),
-                    element.guid.to_string(),
-                    element.entity_name.to_string(),
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use rayon::prelude::*;
+        let par_results: Result<Vec<(u64, HashMap<String, u64>)>, StreamError> = object_ids
+            .par_iter()
+            .map(|&object_id| {
+                process_element_psets(
+                    object_id,
+                    model,
+                    &base,
+                    index,
+                    &profile,
+                    effective_cache,
+                    &unit_by_type,
+                    &generated_at,
+                    sender,
                 )
-            } else if let Some(spatial) = model.spatial_nodes.get(&object_id) {
-                (
-                    spatial_resource_iri(&base, spatial.spatial_type, &spatial.guid),
-                    spatial.guid.to_string(),
-                    spatial_ifc_class(spatial.spatial_type).to_string(),
-                )
-            } else {
-                continue;
-            };
-
-        let mut pset_ids = model.property_sets_for_object[&object_id].clone();
-        pset_ids.sort_unstable();
-
-        for pset_id in pset_ids {
-            let Some(pset) = model.property_sets.get(&pset_id) else {
-                continue;
-            };
-            let pset_name = pset.name.as_deref().unwrap_or_default();
-            let pset_subject = bsdd_local_instance(
-                &base,
-                "pset",
-                &format!("{}_{}", sanitize(pset_name), sanitize(&object_guid)),
-            );
-
-            push(
-                &mut batch,
-                sender,
-                batch_size,
-                Triple {
-                    subject: subject.clone(),
-                    predicate: bsddm("hasPropertySet"),
-                    object: Object::Iri(pset_subject.clone()),
-                },
-                &mut triples,
-            )?;
-            push(
-                &mut batch,
-                sender,
-                batch_size,
-                Triple {
-                    subject: pset_subject.clone(),
-                    predicate: rdf_type(),
-                    object: Object::Iri(bsddm("PropertySet")),
-                },
-                &mut triples,
-            )?;
-            if let Some(pset_code) = index.resolve_class(pset_name) {
-                push(
-                    &mut batch,
-                    sender,
-                    batch_size,
-                    Triple {
-                        subject: pset_subject.clone(),
-                        predicate: rdf_type(),
-                        object: Object::Iri(bsdd_class(pset_code)),
-                    },
-                    &mut triples,
-                )?;
-            } else {
-                push(
-                    &mut batch,
-                    sender,
-                    batch_size,
-                    Triple {
-                        subject: pset_subject.clone(),
-                        predicate: rdf_type(),
-                        // Phase 1 semantics cleanup: PascalCase class names
-                        object: Object::Iri(bsddm("CustomPropertySet")),
-                    },
-                    &mut triples,
-                )?;
+            })
+            .collect();
+        for (elem_triples, elem_unmatched) in par_results? {
+            triples += elem_triples;
+            for (k, v) in elem_unmatched {
+                *unmatched_histogram.entry(k).or_insert(0) += v;
             }
-            if !pset_name.is_empty() {
-                push(
-                    &mut batch,
-                    sender,
-                    batch_size,
-                    Triple {
-                        subject: pset_subject.clone(),
-                        predicate: rdfs_label(),
-                        object: Object::Literal(pset_name.to_string()),
-                    },
-                    &mut triples,
-                )?;
-            }
+        }
+    }
 
-            for prop_id in &pset.properties {
-                if let Some(psv) = model.property_single_values.get(prop_id) {
-                    let Some(raw_value) =
-                        psv.nominal_value.as_ref().and_then(step_value_to_object)
-                    else {
-                        continue;
-                    };
-                    property_counter += 1;
-                    emit_property(
-                        &base,
-                        &subject,
-                        &object_guid,
-                        pset_name,
-                        &pset_subject,
-                        psv.name.as_str(),
-                        raw_value,
-                        model.schema,
-                        &class_name_like,
-                        index,
-                        &profile,
-                        effective_cache,
-                        resolve_property_unit(psv, &unit_by_type, model),
-                        &generated_at,
-                        &mut unmatched_histogram,
-                        &mut property_counter,
-                        &mut batch,
-                        sender,
-                        batch_size,
-                        &mut triples,
-                    )?;
-                    continue;
-                }
-
-                if let Some(pev) = model.property_enumerated_values.get(prop_id) {
-                    for enum_value in &pev.values {
-                        property_counter += 1;
-                        emit_property(
-                            &base,
-                            &subject,
-                            &object_guid,
-                            pset_name,
-                            &pset_subject,
-                            pev.name.as_str(),
-                            Object::Literal(enum_value.to_string()),
-                            model.schema,
-                            &class_name_like,
-                            index,
-                            &profile,
-                            effective_cache,
-                            None,
-                            &generated_at,
-                            &mut unmatched_histogram,
-                            &mut property_counter,
-                            &mut batch,
-                            sender,
-                            batch_size,
-                            &mut triples,
-                        )?;
-                    }
-                }
-            }
+    #[cfg(target_arch = "wasm32")]
+    for &object_id in &object_ids {
+        let (elem_triples, elem_unmatched) = process_element_psets(
+            object_id,
+            model,
+            &base,
+            index,
+            &profile,
+            effective_cache,
+            &unit_by_type,
+            &generated_at,
+            sender,
+        )?;
+        triples += elem_triples;
+        for (k, v) in elem_unmatched {
+            *unmatched_histogram.entry(k).or_insert(0) += v;
         }
     }
 
     let mut quantity_object_ids: Vec<_> = model.quantities_for_object.keys().copied().collect();
     quantity_object_ids.sort_unstable();
 
-    for object_id in quantity_object_ids {
-        let (subject, object_guid, class_name_like) =
-            if let Some(element) = model.elements.get(&object_id) {
-                (
-                    element_resource_iri(&base, element),
-                    element.guid.to_string(),
-                    element.entity_name.to_string(),
-                )
-            } else if let Some(spatial) = model.spatial_nodes.get(&object_id) {
-                (
-                    spatial_resource_iri(&base, spatial.spatial_type, &spatial.guid),
-                    spatial.guid.to_string(),
-                    spatial_ifc_class(spatial.spatial_type).to_string(),
-                )
-            } else {
-                continue;
-            };
-
-        let mut quantity_set_ids = model.quantities_for_object[&object_id].clone();
-        quantity_set_ids.sort_unstable();
-
-        for quantity_set_id in quantity_set_ids {
-            let Some(quantity_set) = model.element_quantities.get(&quantity_set_id) else {
-                continue;
-            };
-            let quantity_set_name = quantity_set.name.as_deref().unwrap_or_default();
-            let quantity_set_subject = bsdd_local_instance(
-                &base,
-                "qset",
-                &format!("{}_{}", sanitize(quantity_set_name), sanitize(&object_guid)),
-            );
-
-            push(
-                &mut batch,
-                sender,
-                batch_size,
-                Triple {
-                    subject: subject.clone(),
-                    predicate: bsddm("hasQuantitySet"),
-                    object: Object::Iri(quantity_set_subject.clone()),
-                },
-                &mut triples,
-            )?;
-            push(
-                &mut batch,
-                sender,
-                batch_size,
-                Triple {
-                    subject: quantity_set_subject.clone(),
-                    predicate: rdf_type(),
-                    object: Object::Iri(bsddm("QuantitySet")),
-                },
-                &mut triples,
-            )?;
-            if let Some(quantity_set_code) = index.resolve_class(quantity_set_name) {
-                push(
-                    &mut batch,
-                    sender,
-                    batch_size,
-                    Triple {
-                        subject: quantity_set_subject.clone(),
-                        predicate: rdf_type(),
-                        object: Object::Iri(bsdd_class(quantity_set_code)),
-                    },
-                    &mut triples,
-                )?;
-            } else {
-                push(
-                    &mut batch,
-                    sender,
-                    batch_size,
-                    Triple {
-                        subject: quantity_set_subject.clone(),
-                        predicate: rdf_type(),
-                        // Phase 1 semantics cleanup: PascalCase
-                        object: Object::Iri(bsddm("CustomQuantitySet")),
-                    },
-                    &mut triples,
-                )?;
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use rayon::prelude::*;
+        let par_results: Result<Vec<(u64, HashMap<String, u64>)>, StreamError> =
+            quantity_object_ids
+                .par_iter()
+                .map(|&object_id| {
+                    process_element_quantities(
+                        object_id,
+                        model,
+                        &base,
+                        index,
+                        &profile,
+                        effective_cache,
+                        &unit_by_type,
+                        &generated_at,
+                        sender,
+                    )
+                })
+                .collect();
+        for (elem_triples, elem_unmatched) in par_results? {
+            triples += elem_triples;
+            for (k, v) in elem_unmatched {
+                *unmatched_histogram.entry(k).or_insert(0) += v;
             }
-            if !quantity_set_name.is_empty() {
-                push(
-                    &mut batch,
-                    sender,
-                    batch_size,
-                    Triple {
-                        subject: quantity_set_subject.clone(),
-                        predicate: rdfs_label(),
-                        object: Object::Literal(quantity_set_name.to_string()),
-                    },
-                    &mut triples,
-                )?;
-            }
+        }
+    }
 
-            for quantity_id in &quantity_set.quantities {
-                let Some(quantity) = model.physical_quantities.get(quantity_id) else {
-                    continue;
-                };
-                let Some(raw_value) = quantity.value.as_ref().and_then(step_value_to_object)
-                else {
-                    continue;
-                };
-                quantity_counter += 1;
-                emit_property(
-                    &base,
-                    &subject,
-                    &object_guid,
-                    quantity_set_name,
-                    &quantity_set_subject,
-                    quantity.name.as_str(),
-                    raw_value,
-                    model.schema,
-                    &class_name_like,
-                    index,
-                    &profile,
-                    effective_cache,
-                    resolve_quantity_unit(quantity.entity_name.as_str(), &unit_by_type),
-                    &generated_at,
-                    &mut unmatched_histogram,
-                    &mut quantity_counter,
-                    &mut batch,
-                    sender,
-                    batch_size,
-                    &mut triples,
-                )?;
-            }
+    #[cfg(target_arch = "wasm32")]
+    for &object_id in &quantity_object_ids {
+        let (elem_triples, elem_unmatched) = process_element_quantities(
+            object_id,
+            model,
+            &base,
+            index,
+            &profile,
+            effective_cache,
+            &unit_by_type,
+            &generated_at,
+            sender,
+        )?;
+        triples += elem_triples;
+        for (k, v) in elem_unmatched {
+            *unmatched_histogram.entry(k).or_insert(0) += v;
         }
     }
 
@@ -1641,6 +1365,333 @@ pub fn stream_bsdd_with_cache(
         info!("bSDD unmatched top20: {preview}");
     }
     Ok(triples)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn process_element_psets(
+    object_id: u64,
+    model: &IfcModel,
+    base: &str,
+    index: &BsddIndex,
+    profile: &BsddProfile,
+    effective_cache: Option<&BsddMatchCache>,
+    unit_by_type: &HashMap<String, String>,
+    generated_at: &str,
+    sender: &Sender<Vec<Triple>>,
+) -> Result<(u64, HashMap<String, u64>), StreamError> {
+    let (subject, object_guid, class_name_like) =
+        if let Some(element) = model.elements.get(&object_id) {
+            (
+                element_resource_iri(base, element),
+                element.guid.to_string(),
+                element.entity_name.to_string(),
+            )
+        } else if let Some(spatial) = model.spatial_nodes.get(&object_id) {
+            (
+                spatial_resource_iri(base, spatial.spatial_type, &spatial.guid),
+                spatial.guid.to_string(),
+                spatial_ifc_class(spatial.spatial_type).to_string(),
+            )
+        } else {
+            return Ok((0, HashMap::new()));
+        };
+
+    let mut pset_ids = model.property_sets_for_object[&object_id].clone();
+    pset_ids.sort_unstable();
+
+    let mut local_batch: Vec<Triple> = Vec::new();
+    let mut local_triples = 0_u64;
+    let mut local_counter = 0_u64;
+    let mut local_unmatched: HashMap<String, u64> = HashMap::new();
+
+    for pset_id in pset_ids {
+        let Some(pset) = model.property_sets.get(&pset_id) else {
+            continue;
+        };
+        let pset_name = pset.name.as_deref().unwrap_or_default();
+        let pset_subject = bsdd_local_instance(
+            base,
+            "pset",
+            &format!("{}_{}", sanitize(pset_name), sanitize(&object_guid)),
+        );
+
+        push(
+            &mut local_batch,
+            sender,
+            usize::MAX,
+            Triple {
+                subject: subject.clone(),
+                predicate: bsddm("hasPropertySet"),
+                object: Object::Iri(pset_subject.clone()),
+            },
+            &mut local_triples,
+        )?;
+        push(
+            &mut local_batch,
+            sender,
+            usize::MAX,
+            Triple {
+                subject: pset_subject.clone(),
+                predicate: rdf_type(),
+                object: Object::Iri(bsddm("PropertySet")),
+            },
+            &mut local_triples,
+        )?;
+        if let Some(pset_code) = index.resolve_class(pset_name) {
+            push(
+                &mut local_batch,
+                sender,
+                usize::MAX,
+                Triple {
+                    subject: pset_subject.clone(),
+                    predicate: rdf_type(),
+                    object: Object::Iri(bsdd_class(pset_code)),
+                },
+                &mut local_triples,
+            )?;
+        } else {
+            push(
+                &mut local_batch,
+                sender,
+                usize::MAX,
+                Triple {
+                    subject: pset_subject.clone(),
+                    predicate: rdf_type(),
+                    object: Object::Iri(bsddm("CustomPropertySet")),
+                },
+                &mut local_triples,
+            )?;
+        }
+        if !pset_name.is_empty() {
+            push(
+                &mut local_batch,
+                sender,
+                usize::MAX,
+                Triple {
+                    subject: pset_subject.clone(),
+                    predicate: rdfs_label(),
+                    object: Object::Literal(pset_name.to_string()),
+                },
+                &mut local_triples,
+            )?;
+        }
+
+        for prop_id in &pset.properties {
+            if let Some(psv) = model.property_single_values.get(prop_id) {
+                let Some(raw_value) =
+                    psv.nominal_value.as_ref().and_then(step_value_to_object)
+                else {
+                    continue;
+                };
+                local_counter += 1;
+                emit_property(
+                    base,
+                    &subject,
+                    &object_guid,
+                    pset_name,
+                    &pset_subject,
+                    psv.name.as_str(),
+                    raw_value,
+                    model.schema,
+                    &class_name_like,
+                    index,
+                    profile,
+                    effective_cache,
+                    resolve_property_unit(psv, unit_by_type, model),
+                    generated_at,
+                    &mut local_unmatched,
+                    &mut local_counter,
+                    &mut local_batch,
+                    sender,
+                    usize::MAX,
+                    &mut local_triples,
+                )?;
+                continue;
+            }
+
+            if let Some(pev) = model.property_enumerated_values.get(prop_id) {
+                for enum_value in &pev.values {
+                    local_counter += 1;
+                    emit_property(
+                        base,
+                        &subject,
+                        &object_guid,
+                        pset_name,
+                        &pset_subject,
+                        pev.name.as_str(),
+                        Object::Literal(enum_value.to_string()),
+                        model.schema,
+                        &class_name_like,
+                        index,
+                        profile,
+                        effective_cache,
+                        None,
+                        generated_at,
+                        &mut local_unmatched,
+                        &mut local_counter,
+                        &mut local_batch,
+                        sender,
+                        usize::MAX,
+                        &mut local_triples,
+                    )?;
+                }
+            }
+        }
+    }
+
+    if !local_batch.is_empty() {
+        sender.send(local_batch).map_err(|_| StreamError::ChannelClosed)?;
+    }
+    Ok((local_triples, local_unmatched))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn process_element_quantities(
+    object_id: u64,
+    model: &IfcModel,
+    base: &str,
+    index: &BsddIndex,
+    profile: &BsddProfile,
+    effective_cache: Option<&BsddMatchCache>,
+    unit_by_type: &HashMap<String, String>,
+    generated_at: &str,
+    sender: &Sender<Vec<Triple>>,
+) -> Result<(u64, HashMap<String, u64>), StreamError> {
+    let (subject, object_guid, class_name_like) =
+        if let Some(element) = model.elements.get(&object_id) {
+            (
+                element_resource_iri(base, element),
+                element.guid.to_string(),
+                element.entity_name.to_string(),
+            )
+        } else if let Some(spatial) = model.spatial_nodes.get(&object_id) {
+            (
+                spatial_resource_iri(base, spatial.spatial_type, &spatial.guid),
+                spatial.guid.to_string(),
+                spatial_ifc_class(spatial.spatial_type).to_string(),
+            )
+        } else {
+            return Ok((0, HashMap::new()));
+        };
+
+    let mut quantity_set_ids = model.quantities_for_object[&object_id].clone();
+    quantity_set_ids.sort_unstable();
+
+    let mut local_batch: Vec<Triple> = Vec::new();
+    let mut local_triples = 0_u64;
+    let mut local_counter = 0_u64;
+    let mut local_unmatched: HashMap<String, u64> = HashMap::new();
+
+    for quantity_set_id in quantity_set_ids {
+        let Some(quantity_set) = model.element_quantities.get(&quantity_set_id) else {
+            continue;
+        };
+        let quantity_set_name = quantity_set.name.as_deref().unwrap_or_default();
+        let quantity_set_subject = bsdd_local_instance(
+            base,
+            "qset",
+            &format!("{}_{}", sanitize(quantity_set_name), sanitize(&object_guid)),
+        );
+
+        push(
+            &mut local_batch,
+            sender,
+            usize::MAX,
+            Triple {
+                subject: subject.clone(),
+                predicate: bsddm("hasQuantitySet"),
+                object: Object::Iri(quantity_set_subject.clone()),
+            },
+            &mut local_triples,
+        )?;
+        push(
+            &mut local_batch,
+            sender,
+            usize::MAX,
+            Triple {
+                subject: quantity_set_subject.clone(),
+                predicate: rdf_type(),
+                object: Object::Iri(bsddm("QuantitySet")),
+            },
+            &mut local_triples,
+        )?;
+        if let Some(quantity_set_code) = index.resolve_class(quantity_set_name) {
+            push(
+                &mut local_batch,
+                sender,
+                usize::MAX,
+                Triple {
+                    subject: quantity_set_subject.clone(),
+                    predicate: rdf_type(),
+                    object: Object::Iri(bsdd_class(quantity_set_code)),
+                },
+                &mut local_triples,
+            )?;
+        } else {
+            push(
+                &mut local_batch,
+                sender,
+                usize::MAX,
+                Triple {
+                    subject: quantity_set_subject.clone(),
+                    predicate: rdf_type(),
+                    object: Object::Iri(bsddm("CustomQuantitySet")),
+                },
+                &mut local_triples,
+            )?;
+        }
+        if !quantity_set_name.is_empty() {
+            push(
+                &mut local_batch,
+                sender,
+                usize::MAX,
+                Triple {
+                    subject: quantity_set_subject.clone(),
+                    predicate: rdfs_label(),
+                    object: Object::Literal(quantity_set_name.to_string()),
+                },
+                &mut local_triples,
+            )?;
+        }
+
+        for quantity_id in &quantity_set.quantities {
+            let Some(quantity) = model.physical_quantities.get(quantity_id) else {
+                continue;
+            };
+            let Some(raw_value) = quantity.value.as_ref().and_then(step_value_to_object)
+            else {
+                continue;
+            };
+            local_counter += 1;
+            emit_property(
+                base,
+                &subject,
+                &object_guid,
+                quantity_set_name,
+                &quantity_set_subject,
+                quantity.name.as_str(),
+                raw_value,
+                model.schema,
+                &class_name_like,
+                index,
+                profile,
+                effective_cache,
+                resolve_quantity_unit(quantity.entity_name.as_str(), unit_by_type),
+                generated_at,
+                &mut local_unmatched,
+                &mut local_counter,
+                &mut local_batch,
+                sender,
+                usize::MAX,
+                &mut local_triples,
+            )?;
+        }
+    }
+
+    if !local_batch.is_empty() {
+        sender.send(local_batch).map_err(|_| StreamError::ChannelClosed)?;
+    }
+    Ok((local_triples, local_unmatched))
 }
 
 /// Score how well a given profile maps the model's properties.

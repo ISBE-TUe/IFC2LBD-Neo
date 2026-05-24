@@ -1,0 +1,16 @@
+[package]
+name = "plugin-qto-preprocess"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ifc-model = { workspace = true }
+ifc-step = { workspace = true }
+ifc-schema = { workspace = true }
+lbd-pipeline = { workspace = true }
+smol_str = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+uuid = { version = "1.20.0", features = ["v4", "js"] }
+rayon = { workspace = true }
