@@ -17,7 +17,9 @@ const state = {
     "neo-turtle-serializer",
     "neo-file-export",
   ]),
-  moduleOptions: {},
+  moduleOptions: {
+    "neo-turtle-serializer": { grouping: "streaming", layout: "joined" },
+  },
   baseUri: "https://lbd.example.com/",
   outputStem: "converted-model",
   ifcFile: null,
