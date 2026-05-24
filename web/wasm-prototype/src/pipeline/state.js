@@ -7,11 +7,13 @@ const listeners = new Map();
 const state = {
   // Pipeline configuration
   activeModules: new Set([
+    "neo-bsdd-match-preprocess",
+    "neo-cleanup-preprocess",
+    "neo-qto-preprocess",
     "neo-bot-producer",
     "neo-beo-producer",
-    "neo-props-opm",
+    "neo-bsdd-producer",
     "neo-omg-fog",
-    "neo-ifcowl-producer",
     "neo-turtle-serializer",
     "neo-file-export",
   ]),
@@ -31,7 +33,7 @@ const state = {
   // UI state
   selectedPluginId: null,
   detailOpen: false,
-  showPreprocess: false,
+  showPreprocess: true,
   showPostprocess: false,
 };
 

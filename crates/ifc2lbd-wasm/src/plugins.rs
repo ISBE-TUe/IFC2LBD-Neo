@@ -16,6 +16,7 @@ use lbd_pipeline::{
 };
 use serde_json;
 use plugin_property_preprocess::{BsddMatchPreprocessPlugin, CleanupPreprocessPlugin};
+use plugin_qto_preprocess::QtoPreprocessPlugin;
 use wasm_bindgen::prelude::*;
 
 use crate::types::ModuleManifestView;
@@ -63,6 +64,7 @@ pub(crate) fn browser_registry() -> PluginRegistry {
     let mut registry = PluginRegistry::new();
     registry.register_preprocess(CleanupPreprocessPlugin).unwrap();
     registry.register_preprocess(BsddMatchPreprocessPlugin).unwrap();
+    registry.register_preprocess(QtoPreprocessPlugin).unwrap();
     // Modular LBD producers
     registry.register_producer(BotProducerPlugin).unwrap();
     registry.register_producer(BeoProducerPlugin).unwrap();
