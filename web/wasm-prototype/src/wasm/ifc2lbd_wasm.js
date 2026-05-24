@@ -253,6 +253,9 @@ function __wbg_get_imports(memory) {
             const ret = arg0.done;
             return ret;
         },
+        __wbg_getRandomValues_3fa1b8b12822faf0: function() { return handleError(function (arg0) {
+            globalThis.crypto.getRandomValues(arg0);
+        }, arguments); },
         __wbg_get_1affdbdd5573b16a: function() { return handleError(function (arg0, arg1) {
             const ret = Reflect.get(arg0, arg1);
             return ret;
@@ -335,6 +338,10 @@ function __wbg_get_imports(memory) {
             const ret = new Uint8Array(getArrayU8FromWasm0(arg0, arg1));
             return ret;
         },
+        __wbg_new_with_length_8c854e41ea4dae9b: function(arg0) {
+            const ret = new Uint8Array(arg0 >>> 0);
+            return ret;
+        },
         __wbg_next_0340c4ae324393c3: function() { return handleError(function (arg0) {
             const ret = arg0.next();
             return ret;
@@ -379,6 +386,10 @@ function __wbg_get_imports(memory) {
         __wbg_static_accessor_WINDOW_f20e8576ef1e0f17: function() {
             const ret = typeof window === 'undefined' ? null : window;
             return isLikeNone(ret) ? 0 : addToExternrefTable0(ret);
+        },
+        __wbg_subarray_f8ca46a25b1f5e0d: function(arg0, arg1, arg2) {
+            const ret = arg0.subarray(arg1 >>> 0, arg2 >>> 0);
+            return ret;
         },
         __wbg_toISOString_07c00b3614e865a1: function(arg0) {
             const ret = arg0.toISOString();
