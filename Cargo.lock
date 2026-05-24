@@ -962,6 +962,7 @@ dependencies = [
  "ifc-schema",
  "ifc-step",
  "lbd-pipeline",
+ "rayon",
  "serde_json",
  "smol_str",
  "tracing",

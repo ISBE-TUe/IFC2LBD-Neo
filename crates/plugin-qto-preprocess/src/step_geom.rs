@@ -143,6 +143,24 @@ fn collect_points_inner(
             return; // don't recurse into the point's own args
         }
     }
+    // IFC4 indexed point lists: points are embedded as nested coordinate tuples,
+    // not as entity references, so the generic ref traversal misses them.
+    if matches!(
+        entity.entity_name.as_str(),
+        "IFCCARTESIANPOINTLIST2D" | "IFCCARTESIANPOINTLIST3D"
+    ) {
+        if let Some(coord_lists) = entity.args.first().and_then(StepValue::as_list) {
+            for coord_val in coord_lists {
+                if let Some(coords) = coord_val.as_list() {
+                    let x = coords.first().and_then(real_from_step).unwrap_or(0.0);
+                    let y = coords.get(1).and_then(real_from_step).unwrap_or(0.0);
+                    let z = coords.get(2).and_then(real_from_step).unwrap_or(0.0);
+                    out.push([x, y, z]);
+                }
+            }
+        }
+        return;
+    }
     for arg in &entity.args {
         visit_value(step, arg, depth - 1, out);
     }

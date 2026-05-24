@@ -46,7 +46,7 @@ pub struct QtoOptions {
 
 impl Default for QtoOptions {
     fn default() -> Self {
-        Self { compute_mesh_volume: false }
+        Self { compute_mesh_volume: true }
     }
 }
 
@@ -103,14 +103,31 @@ impl PreprocessPlugin for QtoPreprocessPlugin {
         let elements_with_all_qto = elements_scanned.saturating_sub(elements_missing_qto);
 
         // --- Compute --------------------------------------------------------
+        // Compute geometry for each element independently — parallel-safe since
+        // StepFile and IfcModel are read-only through shared references.
+        #[cfg(not(target_arch = "wasm32"))]
+        let raw_results: Vec<(usize, ComputeOutput)> = {
+            use rayon::prelude::*;
+            reports
+                .par_iter()
+                .enumerate()
+                .map(|(idx, report)| (idx, compute_for_element(&step, &model, report, &options)))
+                .collect()
+        };
+        #[cfg(target_arch = "wasm32")]
+        let raw_results: Vec<(usize, ComputeOutput)> = reports
+            .iter()
+            .enumerate()
+            .map(|(idx, report)| (idx, compute_for_element(&step, &model, report, &options)))
+            .collect();
+
         let mut computed_pairs: Vec<(usize, ComputedValues)> = Vec::new();
         let mut tier_bbox: u32 = 0;
         let mut tier_rep: u32 = 0;
         let mut tier_mesh: u32 = 0;
         let mut skipped_no_geometry: u32 = 0;
 
-        for (idx, report) in reports.iter().enumerate() {
-            let cv = compute_for_element(&step, &model, report, &options);
+        for (idx, cv) in raw_results {
             if cv.is_none_all() {
                 skipped_no_geometry += 1;
                 continue;
@@ -256,9 +273,12 @@ fn compute_for_element(
                         if needs(QuantityKind::Height) {
                             cv.height = Some(h);
                         }
-                        if needs(QuantityKind::Width) {
-                            // profile_area / extrusion_depth approximates thickness
-                            // only if profile is rectangular; otherwise use bbox.
+                        if needs(QuantityKind::GrossFootprintArea) {
+                            // Profile area IS the footprint for a vertically-extruded wall.
+                            cv.gross_footprint_area = Some(rep.profile_area);
+                        }
+                        if needs(QuantityKind::NetFootprintArea) {
+                            cv.net_footprint_area = Some(rep.profile_area);
                         }
                         if needs(QuantityKind::GrossSideArea) {
                             cv.gross_side_area = Some(rep.outer_surface_area());
@@ -278,9 +298,13 @@ fn compute_for_element(
                     _ => {}
                 }
 
-                // NetVolume is universally derivable from any ExtrudedAreaSolid.
+                // Volume is universally derivable from any ExtrudedAreaSolid.
+                // GrossVolume uses the same formula (we can't subtract openings here).
                 if needs(QuantityKind::NetVolume) {
                     cv.net_volume = Some(rep.net_volume());
+                }
+                if needs(QuantityKind::GrossVolume) {
+                    cv.gross_volume = Some(rep.net_volume());
                 }
                 if needs(QuantityKind::CrossSectionArea) && cv.cross_section_area.is_none() {
                     cv.cross_section_area = Some(rep.profile_area);
