@@ -2,7 +2,6 @@
 //! Parses flags and module options, wires together parsing, modeling, conversion, and serialization.
 
 use std::collections::{HashMap, HashSet};
-use std::fs::File;
 use std::io::BufWriter;
 use std::path::Path;
 use std::path::PathBuf;
@@ -13,15 +12,18 @@ use anyhow::Context;
 use clap::{Parser, ValueEnum};
 use ifc_model::build_model;
 use ifc_step::parse_step_file;
-use lbd_converter::{normalize_base_uri, stream_beo, stream_bot, stream_ifcowl, stream_omg_fog, stream_props_opm, ConvertOptions};
+use lbd_converter::{list_embedded_profiles, score_profile_for_model, ConvertOptions, IfcowlMode};
 use lbd_serializer::{
     serialize_lbd_batches_incremental_to_writer, serialize_lbd_batches_to_writer,
     serialize_nquads_batches_to_writer, serialize_nquads_merged_batches_to_writer,
     serialize_turtle_batches_to_writer,
 };
 
+use crate::pipeline_plugins::OutputDir;
+
 mod chunk_writer;
 mod pipeline_plugins;
+mod session;
 
 const SERIALIZER_CHANNEL_CAPACITY: usize = 32;
 const SERIALIZER_BUFFER_BYTES: usize = 1024 * 1024;
@@ -96,6 +98,20 @@ struct Args {
     /// Show resolved module activation plan and exit.
     #[arg(long = "show-module-plan", default_value_t = false)]
     show_module_plan: bool,
+
+    /// Score bSDD mapping profiles against the input IFC file and print a ranked table.
+    /// Profiles: base, revit-dach, allplan-de, tekla-en (comma-separated, default: all).
+    /// Sampling is capped at `--analyze-bsdd-sample`.
+    #[arg(long = "analyze-bsdd", default_value_t = false)]
+    analyze_bsdd: bool,
+
+    /// Number of properties to sample for --analyze-bsdd (default 500).
+    #[arg(long = "analyze-bsdd-sample", default_value_t = 500)]
+    analyze_bsdd_sample: usize,
+
+    /// Comma-separated profiles to score in --analyze-bsdd (default: base,revit-dach,allplan-de,tekla-en).
+    #[arg(long = "analyze-bsdd-profiles", default_value = "base,revit-dach,allplan-de,tekla-en")]
+    analyze_bsdd_profiles: String,
 }
 
 #[derive(Clone, Debug)]
@@ -114,6 +130,8 @@ struct ExecutionSettings {
     emit_ifcowl: bool,
     nquads: NquadsModuleOptions,
     turtle_grouping: TurtleGrouping,
+    ifcowl_mode: IfcowlMode,
+    bsdd_profile: Option<String>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -131,6 +149,9 @@ fn main() -> anyhow::Result<()> {
     if args.list_modules {
         print_pipeline_modules(&built_in_registry);
         return Ok(());
+    }
+    if args.analyze_bsdd {
+        return run_analyze_bsdd(&args);
     }
     let requested_modules = build_requested_module_list(&args);
     let activation_plan = built_in_registry
@@ -154,26 +175,30 @@ fn main() -> anyhow::Result<()> {
     validate_args(&args, &settings)?;
     let input_file_size_bytes = std::fs::metadata(input_path).map(|m| m.len()).unwrap_or(0);
 
-    let active_plugins: HashSet<&str> = activation_plan
-        .enabled_ids
-        .iter()
-        .map(|id| id.as_str())
-        .collect();
-    let mut active_producer_ids: Vec<String> = activation_plan
+    let active_producer_ids: Vec<String> = activation_plan
         .enabled_ids
         .iter()
         .filter_map(|id| built_in_registry.plugin(id).map(|p| p.manifest()))
         .filter(|m| m.stage == lbd_pipeline::PipelineStage::Produce)
         .map(|m| m.id.to_string())
         .collect();
-    active_producer_ids.sort();
     tracing::info!(
         "active producer modules: {}",
         active_producer_ids.join(", ")
     );
     let output_format = settings.output_format;
     let emit_ifcowl = settings.emit_ifcowl;
-    let turtle_grouping = settings.turtle_grouping;
+    let turtle_grouping = if module_configs
+        .get(lbd_pipeline::TURTLE_SERIALIZER_ID)
+        .and_then(|m| m.get("grouping"))
+        .is_some()
+    {
+        settings.turtle_grouping
+    } else if input_file_size_bytes <= 20 * 1024 * 1024 {
+        TurtleGrouping::Sorted
+    } else {
+        TurtleGrouping::Streaming
+    };
     let normalized_base = normalize_base_for_graph_iri(&args.base_uri);
     let lbd_graph_iri = format!("{normalized_base}/lbd");
     let ifcowl_graph_iri = format!("{normalized_base}/ifcowl");
@@ -194,8 +219,6 @@ fn main() -> anyhow::Result<()> {
         build_start.elapsed().as_secs_f64()
     );
 
-    let topology_graph_iri = format!("{normalized_base}/topology");
-
     let base_options = ConvertOptions {
         base_uri: args.base_uri,
         emit_ifcowl_links: emit_ifcowl,
@@ -210,10 +233,10 @@ fn main() -> anyhow::Result<()> {
         low_memory_mode: false,
         stream_batch_size: 8 * 1024,
         ifcowl_max_workers: 16,
+        ifcowl_mode: settings.ifcowl_mode,
+        bsdd_profile: settings.bsdd_profile.clone(),
     };
 
-    // CLI producers use direct streaming (not spawn_producers), so we must
-    // explicitly run the preprocess stage here before those calls execute.
     let preprocess_ids: Vec<String> = activation_plan
         .enabled_ids
         .iter()
@@ -231,15 +254,28 @@ fn main() -> anyhow::Result<()> {
     ctx.insert(model.clone());
     ctx.insert(std::sync::Arc::new(base_options.clone()));
     ctx.insert(step.clone());
+
+    let (output_dir, lbd_filename) =
+        resolve_output_dir_and_filename(args.output_file.as_deref(), input_path, output_format);
+    ctx.insert(std::sync::Arc::new(OutputDir(output_dir.clone())));
+
+    let preprocess_start = Instant::now();
     lbd_pipeline::spawn_preprocessors(&preprocess_ids, &built_in_registry, &mut ctx)
         .map_err(|e| anyhow::anyhow!("preprocess stage failed: {:?}", e))?;
-    // Re-read model and step — preprocess plugins may have replaced them via ctx.replace().
-    let model = ctx
-        .get::<ifc_model::IfcModel>()
-        .ok_or_else(|| anyhow::anyhow!("IfcModel missing from context after preprocess"))?;
-    let step = ctx
-        .get::<ifc_step::StepFile>()
-        .ok_or_else(|| anyhow::anyhow!("StepFile missing from context after preprocess"))?;
+    tracing::info!(
+        "phase preprocess completed in {:.3}s",
+        preprocess_start.elapsed().as_secs_f64()
+    );
+
+    let export_plugin = built_in_registry
+        .resolve_active_export(&activation_plan.enabled_ids)
+        .map_err(|e| anyhow::anyhow!("export plugin resolution failed: {}", e))?;
+    let export_session = export_plugin
+        .start_session(&ctx)
+        .map_err(|e| anyhow::anyhow!("export start_session failed: {}", e))?;
+    let session = session::new_shared(export_session);
+
+    let ctx = std::sync::Arc::new(ctx);
 
     let (converter_lbd_sender, converter_lbd_receiver) =
         crossbeam::channel::bounded(SERIALIZER_CHANNEL_CAPACITY);
@@ -252,13 +288,15 @@ fn main() -> anyhow::Result<()> {
         (None, None)
     };
 
-    let lbd_target = args.output_file.clone();
     let lbd_base_uri = base_options.base_uri.clone();
     let lbd_graph_iri_thread = lbd_graph_iri.clone();
     let ifcowl_graph_iri_thread = ifcowl_graph_iri.clone();
-    let topology_graph_iri_thread = topology_graph_iri.clone();
+    let lbd_filename_thread = lbd_filename.clone();
+    let lbd_mime: &'static str = match output_format {
+        OutputFormat::Turtle => "text/turtle",
+        OutputFormat::Nquads => "application/n-quads",
+    };
     let quad_chunking_mode = settings.nquads.chunking;
-    let grafeo_direct_stream = active_plugins.contains(lbd_pipeline::GRAFEO_EXPORT_ID);
     let quad_chunk_size_lines = settings.nquads.chunk_size_lines;
     let quad_chunk_size_bytes = settings.nquads.chunk_size_bytes;
     let quad_chunk_prefix = settings.nquads.chunk_prefix.clone();
@@ -283,71 +321,35 @@ fn main() -> anyhow::Result<()> {
             lbd_chunk_core_count.unwrap_or(1),
         );
     }
+    // For N-Quads format, merge IfcOWL batches into the LBD output thread.
     let merged_ifcowl_receiver = if output_format == OutputFormat::Nquads {
         ifcowl_receiver.take()
     } else {
         None
     };
-    let merged_topology_receiver: Option<crossbeam::channel::Receiver<Vec<lbd_ontology::Triple>>> = None;
+    let lbd_session = session.clone();
     let lbd_thread = thread::spawn(move || -> anyhow::Result<()> {
         match output_format {
-            OutputFormat::Turtle => match lbd_target {
-                Some(path) => {
-                    let file = File::create(&path).with_context(|| {
-                        format!("failed to create output file {}", path.display())
-                    })?;
-                    let writer = BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, file);
-                    if turtle_grouping == TurtleGrouping::Sorted {
-                        serialize_lbd_batches_to_writer(lbd_receiver, writer, &lbd_base_uri)
-                            .with_context(|| {
-                                format!("failed to write Turtle to {}", path.display())
-                            })?;
-                    } else {
-                        serialize_lbd_batches_incremental_to_writer(
-                            lbd_receiver,
-                            writer,
-                            &lbd_base_uri,
-                        )
-                        .with_context(|| format!("failed to write Turtle to {}", path.display()))?;
-                    }
-                }
-                None => {
-                    let stdout = std::io::stdout();
-                    let handle = stdout.lock();
-                    let writer = BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, handle);
-                    if turtle_grouping == TurtleGrouping::Sorted {
-                        serialize_lbd_batches_to_writer(lbd_receiver, writer, &lbd_base_uri)
-                            .context("failed to write Turtle to stdout")?;
-                    } else {
-                        serialize_lbd_batches_incremental_to_writer(
-                            lbd_receiver,
-                            writer,
-                            &lbd_base_uri,
-                        )
-                        .context("failed to write Turtle to stdout")?;
-                    }
-                }
-            },
-            OutputFormat::Nquads => {
-                if grafeo_direct_stream {
-                    let stdout = std::io::stdout();
-                    let handle = stdout.lock();
-                    let writer = BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, handle);
-                    pipeline_plugins::stream_grafeo_batches_to_writer(
+            OutputFormat::Turtle => {
+                let sink = session::open_sink(&lbd_session, &lbd_filename_thread, lbd_mime, "data")
+                    .map_err(|e| anyhow::anyhow!("failed to open LBD output sink: {}", e))?;
+                let writer = BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, sink);
+                if turtle_grouping == TurtleGrouping::Sorted {
+                    serialize_lbd_batches_to_writer(lbd_receiver, writer, &lbd_base_uri)
+                        .with_context(|| format!("failed to write Turtle to {lbd_filename_thread}"))?;
+                } else {
+                    serialize_lbd_batches_incremental_to_writer(
                         lbd_receiver,
-                        merged_ifcowl_receiver,
-                        merged_topology_receiver,
                         writer,
-                        &lbd_graph_iri_thread,
-                        &ifcowl_graph_iri_thread,
-                        &topology_graph_iri_thread,
+                        &lbd_base_uri,
                     )
-                    .context("failed to write Grafeo direct RDF stream to stdout")?;
-                } else if quad_chunking_mode != chunk_writer::QuadChunkingMode::None {
-                    let output_dir =
-                        chunk_writer::resolve_quad_chunk_output_dir(lbd_target.as_deref());
+                    .with_context(|| format!("failed to write Turtle to {lbd_filename_thread}"))?;
+                }
+            }
+            OutputFormat::Nquads => {
+                if quad_chunking_mode != chunk_writer::QuadChunkingMode::None {
                     let mut lbd_chunk_writer = chunk_writer::QuadChunkWriter::new(
-                        output_dir,
+                        lbd_session.clone(),
                         format!("{}-lbd", quad_chunk_prefix),
                         quad_chunking_mode,
                         quad_chunk_size_lines,
@@ -357,7 +359,7 @@ fn main() -> anyhow::Result<()> {
                     )?;
                     let mut ifcowl_chunk_writer = if merged_ifcowl_receiver.is_some() {
                         Some(chunk_writer::QuadChunkWriter::new(
-                            chunk_writer::resolve_quad_chunk_output_dir(lbd_target.as_deref()),
+                            lbd_session.clone(),
                             format!("{}-ifcowl", quad_chunk_prefix),
                             quad_chunking_mode,
                             quad_chunk_size_lines,
@@ -368,7 +370,6 @@ fn main() -> anyhow::Result<()> {
                     } else {
                         None
                     };
-                    let mut topology_chunk_writer: Option<chunk_writer::QuadChunkWriter> = None;
 
                     let ifcowl_thread = if let Some(ifcowl_receiver) = merged_ifcowl_receiver {
                         let ifcowl_graph = ifcowl_graph_iri_thread.clone();
@@ -390,26 +391,6 @@ fn main() -> anyhow::Result<()> {
                     } else {
                         None
                     };
-                    let topology_thread = if let Some(receiver) = merged_topology_receiver {
-                        let topology_graph = topology_graph_iri_thread.clone();
-                        let mut writer = topology_chunk_writer
-                            .take()
-                            .ok_or_else(|| anyhow::anyhow!("missing topology chunk writer"))?;
-                        Some(thread::spawn(move || -> anyhow::Result<()> {
-                            serialize_nquads_batches_to_writer(
-                                receiver,
-                                &mut writer,
-                                &topology_graph,
-                            )
-                            .context("failed to write topology chunked N-Quads output")?;
-                            writer
-                                .finish()
-                                .context("failed to finalize topology quad chunk manifest")?;
-                            Ok(())
-                        }))
-                    } else {
-                        None
-                    };
 
                     serialize_nquads_batches_to_writer(
                         lbd_receiver,
@@ -426,85 +407,33 @@ fn main() -> anyhow::Result<()> {
                             anyhow::anyhow!("IfcOWL chunk writer thread panicked")
                         })??;
                     }
-                    if let Some(handle) = topology_thread {
-                        handle.join().map_err(|_| {
-                            anyhow::anyhow!("topology chunk writer thread panicked")
-                        })??;
-                    }
                 } else {
-                    match lbd_target {
-                        Some(path) => {
-                            let file = File::create(&path).with_context(|| {
-                                format!("failed to create output file {}", path.display())
+                    let sink =
+                        session::open_sink(&lbd_session, &lbd_filename_thread, lbd_mime, "data")
+                            .map_err(|e| {
+                                anyhow::anyhow!("failed to open LBD output sink: {}", e)
                             })?;
-                            let mut writer =
-                                BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, file);
-                            if let Some(ifcowl_receiver) = merged_ifcowl_receiver {
-                                serialize_nquads_merged_batches_to_writer(
-                                    lbd_receiver,
-                                    ifcowl_receiver,
-                                    &mut writer,
-                                    &lbd_graph_iri_thread,
-                                    &ifcowl_graph_iri_thread,
-                                )
-                                .with_context(|| {
-                                    format!("failed to write N-Quads to {}", path.display())
-                                })?;
-                            } else {
-                                serialize_nquads_batches_to_writer(
-                                    lbd_receiver,
-                                    &mut writer,
-                                    &lbd_graph_iri_thread,
-                                )
-                                .with_context(|| {
-                                    format!("failed to write N-Quads to {}", path.display())
-                                })?;
-                            }
-                            if let Some(topology_receiver) = merged_topology_receiver {
-                                serialize_nquads_batches_to_writer(
-                                    topology_receiver,
-                                    &mut writer,
-                                    &topology_graph_iri_thread,
-                                )
-                                .with_context(|| {
-                                    format!(
-                                        "failed to append topology N-Quads to {}",
-                                        path.display()
-                                    )
-                                })?;
-                            }
-                        }
-                        None => {
-                            let stdout = std::io::stdout();
-                            let handle = stdout.lock();
-                            let mut writer =
-                                BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, handle);
-                            if let Some(ifcowl_receiver) = merged_ifcowl_receiver {
-                                serialize_nquads_merged_batches_to_writer(
-                                    lbd_receiver,
-                                    ifcowl_receiver,
-                                    &mut writer,
-                                    &lbd_graph_iri_thread,
-                                    &ifcowl_graph_iri_thread,
-                                )
-                                .context("failed to write N-Quads to stdout")?;
-                            } else {
-                                serialize_nquads_batches_to_writer(
-                                    lbd_receiver,
-                                    &mut writer,
-                                    &lbd_graph_iri_thread,
-                                )
-                                .context("failed to write N-Quads to stdout")?;
-                            }
-                            if let Some(topology_receiver) = merged_topology_receiver {
-                                serialize_nquads_batches_to_writer(
-                                    topology_receiver,
-                                    &mut writer,
-                                    &topology_graph_iri_thread,
-                                )
-                                .context("failed to append topology N-Quads to stdout")?;
-                            }
-                        }
+                    let mut writer = BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, sink);
+                    if let Some(ifcowl_receiver) = merged_ifcowl_receiver {
+                        serialize_nquads_merged_batches_to_writer(
+                            lbd_receiver,
+                            ifcowl_receiver,
+                            &mut writer,
+                            &lbd_graph_iri_thread,
+                            &ifcowl_graph_iri_thread,
+                        )
+                        .with_context(|| {
+                            format!("failed to write N-Quads to {lbd_filename_thread}")
+                        })?;
+                    } else {
+                        serialize_nquads_batches_to_writer(
+                            lbd_receiver,
+                            &mut writer,
+                            &lbd_graph_iri_thread,
+                        )
+                        .with_context(|| {
+                            format!("failed to write N-Quads to {lbd_filename_thread}")
+                        })?;
                     }
                 }
             }
@@ -512,81 +441,70 @@ fn main() -> anyhow::Result<()> {
         Ok(())
     });
 
+    // For Turtle + IfcOWL: IfcOWL gets its own output file serialized in a
+    // separate thread. The bounded channel provides backpressure to cap memory.
     let mut ifcowl_thread = None;
     if output_format == OutputFormat::Turtle && emit_ifcowl {
         let receiver = ifcowl_receiver
             .take()
             .ok_or_else(|| anyhow::anyhow!("missing IfcOWL receiver for turtle sidecar mode"))?;
-        let path = resolve_ifcowl_path(args.output_file.as_deref(), input_path);
+        let ifcowl_filename = resolve_ifcowl_filename(&lbd_filename);
         let ifcowl_base = base_options.base_uri.clone();
+        let ifcowl_session = session.clone();
+        let ifcowl_filename_thread = ifcowl_filename.clone();
         ifcowl_thread = Some(thread::spawn(move || -> anyhow::Result<()> {
-            let file = File::create(&path).with_context(|| {
-                format!("failed to create IfcOWL output file {}", path.display())
-            })?;
-            let writer = BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, file);
+            let sink = session::open_sink(
+                &ifcowl_session,
+                &ifcowl_filename_thread,
+                "text/turtle",
+                "ifcowl-sidecar",
+            )
+            .map_err(|e| anyhow::anyhow!("failed to open IfcOWL output sink: {}", e))?;
+            let writer = BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, sink);
             serialize_turtle_batches_to_writer(receiver, writer, Some(&ifcowl_base))
-                .with_context(|| format!("failed to write IfcOWL Turtle to {}", path.display()))?;
+                .with_context(|| {
+                    format!("failed to write IfcOWL Turtle to {ifcowl_filename_thread}")
+                })?;
             Ok(())
         }));
     }
 
     let producer_start = Instant::now();
-    // Run IfcOWL in a background thread (if requested), then sequentially run the
-    // active LBD producer modules.  This mirrors the WASM path so both produce
-    // identical triples.
-    let lbd_base = normalize_base_uri(&base_options.base_uri);
-    let ifcowl_result: anyhow::Result<()> = if let Some(sender) = ifcowl_sender.as_ref() {
-        let sender = sender.clone();
-        let schema = step.header.schema;
-        let base_clone = lbd_base.clone();
-        let batch_size = base_options.stream_batch_size;
-        let max_workers = base_options.ifcowl_max_workers;
-        let step_ref = &step;
-        std::thread::scope(|scope| -> anyhow::Result<()> {
-            let ifcowl_handle = scope.spawn(move || {
-                stream_ifcowl(step_ref, &base_clone, schema, &sender, batch_size, max_workers)
-                    .map_err(|e| anyhow::anyhow!("ifcowl streaming failed: {:?}", e))
-            });
-            if active_plugins.contains(lbd_pipeline::BOT_PRODUCER_ID) {
-                stream_bot(&model, &base_options, &converter_lbd_sender)
-                    .map_err(|e| anyhow::anyhow!("bot streaming failed: {:?}", e))?;
-            }
-            if active_plugins.contains(lbd_pipeline::BEO_PRODUCER_ID) {
-                stream_beo(&model, &base_options, &converter_lbd_sender)
-                    .map_err(|e| anyhow::anyhow!("beo streaming failed: {:?}", e))?;
-            }
-            if active_plugins.contains(lbd_pipeline::PROPS_OPM_PRODUCER_ID) {
-                stream_props_opm(&model, &base_options, &converter_lbd_sender)
-                    .map_err(|e| anyhow::anyhow!("props-opm streaming failed: {:?}", e))?;
-            }
-            if active_plugins.contains(lbd_pipeline::OMG_FOG_PRODUCER_ID) {
-                stream_omg_fog(&model, &base_options, &converter_lbd_sender)
-                    .map_err(|e| anyhow::anyhow!("omg-fog streaming failed: {:?}", e))?;
-            }
-            ifcowl_handle
-                .join()
-                .map_err(|_| anyhow::anyhow!("ifcowl thread panicked"))?
+    // Dispatch all producers through the plugin system.
+    // Each producer gets its own bounded channel (backpressure per-producer).
+    // Routing threads forward batches to the appropriate serializer channel:
+    //   IfcOWL/alignment graph IRIs → ifcowl_sender (separate bounded channel, OOM safety)
+    //   All other graphs            → converter_lbd_sender
+    let producer_receivers = lbd_pipeline::spawn_producers(
+        &active_producer_ids,
+        &built_in_registry,
+        &ctx,
+        SERIALIZER_CHANNEL_CAPACITY,
+    );
+    let routing_handles: Vec<_> = producer_receivers
+        .into_iter()
+        .map(|(_id, rx)| {
+            let lbd_tx = converter_lbd_sender.clone();
+            let owl_tx = ifcowl_sender.clone();
+            thread::spawn(move || {
+                for batch in rx {
+                    let iri = batch.kind.iri();
+                    if iri.ends_with("/ifcowl") || iri.ends_with("/alignment") {
+                        if let Some(ref tx) = owl_tx {
+                            if tx.send(batch.triples).is_err() {
+                                break;
+                            }
+                        }
+                    } else if lbd_tx.send(batch.triples).is_err() {
+                        break;
+                    }
+                }
+            })
         })
-    } else {
-        if active_plugins.contains(lbd_pipeline::BOT_PRODUCER_ID) {
-            stream_bot(&model, &base_options, &converter_lbd_sender)
-                .map_err(|e| anyhow::anyhow!("bot streaming failed: {:?}", e))?;
-        }
-        if active_plugins.contains(lbd_pipeline::BEO_PRODUCER_ID) {
-            stream_beo(&model, &base_options, &converter_lbd_sender)
-                .map_err(|e| anyhow::anyhow!("beo streaming failed: {:?}", e))?;
-        }
-        if active_plugins.contains(lbd_pipeline::PROPS_OPM_PRODUCER_ID) {
-            stream_props_opm(&model, &base_options, &converter_lbd_sender)
-                .map_err(|e| anyhow::anyhow!("props-opm streaming failed: {:?}", e))?;
-        }
-        if active_plugins.contains(lbd_pipeline::OMG_FOG_PRODUCER_ID) {
-            stream_omg_fog(&model, &base_options, &converter_lbd_sender)
-                .map_err(|e| anyhow::anyhow!("omg-fog streaming failed: {:?}", e))?;
-        }
-        Ok(())
-    };
-    ifcowl_result.context("failed to run core conversion producer modules")?;
+        .collect();
+    for handle in routing_handles {
+        handle.join().map_err(|_| anyhow::anyhow!("producer routing thread panicked"))?;
+    }
     tracing::info!(
         "phase triple_production completed in {:.3}s",
         producer_start.elapsed().as_secs_f64()
@@ -608,9 +526,64 @@ fn main() -> anyhow::Result<()> {
         "phase serializer_join completed in {:.3}s",
         serializer_join_start.elapsed().as_secs_f64()
     );
+
+    let summaries = session::finalize(session)
+        .map_err(|e| anyhow::anyhow!("export finalize failed: {}", e))?;
+    for summary in &summaries {
+        tracing::info!(
+            "exported {} ({}, {} bytes, role={})",
+            summary.filename,
+            summary.mime_type,
+            summary.bytes,
+            summary.role
+        );
+    }
     tracing::info!("run completed in {:.3}s", run_start.elapsed().as_secs_f64());
 
     Ok(())
+}
+
+fn resolve_output_dir_and_filename(
+    output_file: Option<&Path>,
+    input_file: &Path,
+    format: OutputFormat,
+) -> (PathBuf, String) {
+    let extension = match format {
+        OutputFormat::Turtle => "ttl",
+        OutputFormat::Nquads => "nq",
+    };
+    if let Some(p) = output_file {
+        let dir = p
+            .parent()
+            .map(|d| {
+                if d.as_os_str().is_empty() {
+                    PathBuf::from(".")
+                } else {
+                    d.to_path_buf()
+                }
+            })
+            .unwrap_or_else(|| PathBuf::from("."));
+        let name = p
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map(String::from)
+            .unwrap_or_else(|| format!("output.{extension}"));
+        (dir, name)
+    } else {
+        let stem = input_file
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("ifc_output");
+        (PathBuf::from("."), format!("{stem}.{extension}"))
+    }
+}
+
+fn resolve_ifcowl_filename(lbd_filename: &str) -> String {
+    let stem = Path::new(lbd_filename)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("lbd_output");
+    format!("{stem}_ifcowl.ttl")
 }
 
 fn print_pipeline_modules(registry: &lbd_pipeline::PluginRegistry) {
@@ -724,6 +697,37 @@ fn validate_typed_module_configs(
         if module_id == lbd_pipeline::TURTLE_SERIALIZER_ID {
             validate_turtle_serializer_module_config(entries)?;
         }
+        if module_id == lbd_pipeline::IFCOWL_PRODUCER_ID {
+            validate_ifcowl_producer_module_config(entries)?;
+        }
+        if module_id == lbd_pipeline::BSDD_PRODUCER_ID {
+            validate_bsdd_producer_module_config(entries)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_bsdd_producer_module_config(
+    entries: &HashMap<String, String>,
+) -> Result<(), String> {
+    let known_profiles = ["base", "revit-dach", "allplan-de", "tekla-en"];
+    for (key, value) in entries {
+        match key.as_str() {
+            "profile" => {
+                if !known_profiles.contains(&value.as_str()) && !value.contains('/') && !value.ends_with(".json") {
+                    return Err(format!(
+                        "`neo-bsdd-producer.profile` must be one of {:?} or a path, got `{}`",
+                        known_profiles, value
+                    ));
+                }
+            }
+            other => {
+                return Err(format!(
+                    "unknown option `neo-bsdd-producer.{}` (supported: profile)",
+                    other
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -733,38 +737,30 @@ fn validate_activation_plan_with_args(
     settings: &ExecutionSettings,
 ) -> anyhow::Result<()> {
     let active: HashSet<&str> = plan.enabled_ids.iter().map(|id| id.as_str()).collect();
-    let output_format = settings.output_format;
-    if active.contains(lbd_pipeline::GRAFEO_EXPORT_ID) {
-        if output_format != OutputFormat::Nquads {
-            anyhow::bail!("grafeo export module requires `neo-nquads-serializer`");
-        }
-        if settings.nquads.chunking != chunk_writer::QuadChunkingMode::None {
-            anyhow::bail!("grafeo export module cannot be combined with N-Quads chunking");
-        }
-    }
     let has_any_producer = active.contains(lbd_pipeline::BOT_PRODUCER_ID)
         || active.contains(lbd_pipeline::BEO_PRODUCER_ID)
+        || active.contains(lbd_pipeline::BSDD_PRODUCER_ID)
         || active.contains(lbd_pipeline::PROPS_OPM_PRODUCER_ID)
-        || active.contains(lbd_pipeline::OMG_FOG_PRODUCER_ID);
+        || active.contains(lbd_pipeline::OMG_FOG_PRODUCER_ID)
+        || active.contains(lbd_pipeline::IFCOWL_PRODUCER_ID);
     if !has_any_producer {
         anyhow::bail!(
-            "module plan must include at least one LBD producer (`{}`, `{}`, or `{}`)",
+            "module plan must include at least one producer (`{}`, `{}`, `{}`, or similar)",
             lbd_pipeline::BOT_PRODUCER_ID,
-            lbd_pipeline::BEO_PRODUCER_ID,
+            lbd_pipeline::BSDD_PRODUCER_ID,
             lbd_pipeline::PROPS_OPM_PRODUCER_ID,
         );
     }
     let has_file_export = active.contains(lbd_pipeline::FILE_EXPORT_ID);
+    let has_log_export = active.contains(lbd_pipeline::LOG_EXPORT_ID);
     let has_stdout_export = active.contains(lbd_pipeline::STDOUT_EXPORT_ID);
-    let has_grafeo_export = active.contains(lbd_pipeline::GRAFEO_EXPORT_ID);
-    let export_count =
-        has_file_export as usize + has_stdout_export as usize + has_grafeo_export as usize;
+    let export_count = has_file_export as usize + has_log_export as usize + has_stdout_export as usize;
     if export_count != 1 {
         anyhow::bail!(
             "module plan must include exactly one export module (`{}`, `{}`, or `{}`)",
             lbd_pipeline::FILE_EXPORT_ID,
+            lbd_pipeline::LOG_EXPORT_ID,
             lbd_pipeline::STDOUT_EXPORT_ID,
-            lbd_pipeline::GRAFEO_EXPORT_ID
         );
     }
     Ok(())
@@ -821,7 +817,7 @@ fn resolve_execution_settings(
     let turtle_grouping = match turtle_entries
         .and_then(|e| e.get("grouping"))
         .map(String::as_str)
-        .unwrap_or("sorted")
+        .unwrap_or("streaming")
     {
         "sorted" => TurtleGrouping::Sorted,
         "streaming" => TurtleGrouping::Streaming,
@@ -830,6 +826,24 @@ fn resolve_execution_settings(
             other
         ),
     };
+    let ifcowl_entries = configs.get(lbd_pipeline::IFCOWL_PRODUCER_ID);
+    let ifcowl_mode = match ifcowl_entries
+        .and_then(|e| e.get("mode"))
+        .map(String::as_str)
+        .unwrap_or("full")
+    {
+        "full" => IfcowlMode::Full,
+        "projected" => IfcowlMode::Projected,
+        other => anyhow::bail!(
+            "invalid `neo-ifcowl-producer.mode={}` (expected full|projected)",
+            other
+        ),
+    };
+
+    let bsdd_profile = configs
+        .get(lbd_pipeline::BSDD_PRODUCER_ID)
+        .and_then(|e| e.get("profile"))
+        .cloned();
 
     Ok(ExecutionSettings {
         output_format,
@@ -843,6 +857,8 @@ fn resolve_execution_settings(
             chunk_core_count,
         },
         turtle_grouping,
+        ifcowl_mode,
+        bsdd_profile,
     })
 }
 
@@ -996,24 +1012,133 @@ fn validate_turtle_serializer_module_config(
     Ok(())
 }
 
-fn resolve_ifcowl_path(output_file: Option<&Path>, input_file: &Path) -> PathBuf {
-    if let Some(path) = output_file {
-        let parent = path.parent().unwrap_or_else(|| Path::new("."));
-        let stem = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("lbd_output");
-        return parent.join(format!("{stem}_ifcowl.ttl"));
+fn validate_ifcowl_producer_module_config(
+    entries: &HashMap<String, String>,
+) -> Result<(), String> {
+    for (key, value) in entries {
+        match key.as_str() {
+            "mode" => {
+                if !matches!(value.as_str(), "full" | "projected") {
+                    return Err(format!(
+                        "`neo-ifcowl-producer.mode` must be one of full|projected, got `{}`",
+                        value
+                    ));
+                }
+            }
+            other => {
+                return Err(format!(
+                    "unknown option `neo-ifcowl-producer.{}` (supported: mode)",
+                    other
+                ));
+            }
+        }
     }
-    let stem = input_file
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("ifc_output");
-    PathBuf::from(format!("{stem}_ifcowl.ttl"))
+    Ok(())
 }
 
 fn normalize_base_for_graph_iri(base_uri: &str) -> String {
     base_uri.trim_end_matches('/').to_string()
+}
+
+// ---------------------------------------------------------------------------
+// analyze-bsdd — Phase 4: profile scoring
+// ---------------------------------------------------------------------------
+
+fn run_analyze_bsdd(args: &Args) -> anyhow::Result<()> {
+    let input_path = args
+        .input
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("--analyze-bsdd requires an IFC input path"))?;
+
+    let step = parse_step_file(input_path)
+        .with_context(|| format!("failed to parse STEP file {}", input_path.display()))?;
+    let model = ifc_model::build_model(&step).context("failed to build IFC model")?;
+
+    let profiles: Vec<&str> = {
+        let requested: Vec<&str> = args.analyze_bsdd_profiles.split(',').map(str::trim).collect();
+        let embedded = list_embedded_profiles();
+        // Validate all requested profiles are known
+        for p in &requested {
+            if !embedded.contains(p) && !p.contains('/') && !p.ends_with(".json") {
+                anyhow::bail!(
+                    "unknown profile '{}'; embedded profiles: {:?}",
+                    p,
+                    embedded
+                );
+            }
+        }
+        requested
+    };
+
+    let sample = args.analyze_bsdd_sample;
+    eprintln!("Sampling up to {} properties per profile…", sample);
+    eprintln!();
+
+    let mut results: Vec<serde_json::Value> = Vec::new();
+    for profile in &profiles {
+        let score = score_profile_for_model(&model, profile, sample)
+            .map_err(|e| anyhow::anyhow!("profile '{}' failed: {e}", profile))?;
+        results.push(score);
+    }
+
+    // Sort by matched_ratio desc, then avg_confidence desc
+    results.sort_by(|a, b| {
+        let ar = a["matched_ratio"].as_f64().unwrap_or(0.0);
+        let br = b["matched_ratio"].as_f64().unwrap_or(0.0);
+        br.partial_cmp(&ar).unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    // Print table
+    let col_profile = 18usize;
+    let col_matched = 9usize;
+    let col_conf = 10usize;
+    let col_ambig = 9usize;
+    let col_unmapped = 10usize;
+    println!(
+        "{:<col_profile$}  {:>col_matched$}  {:>col_conf$}  {:>col_ambig$}  {:>col_unmapped$}",
+        "profile", "matched", "avg_conf", "ambig", "unmapped"
+    );
+    println!("{}", "-".repeat(col_profile + col_matched + col_conf + col_ambig + col_unmapped + 10));
+    for r in &results {
+        let pct = |key: &str| -> String {
+            let v = r[key].as_f64().unwrap_or(0.0) * 100.0;
+            format!("{:.1}%", v)
+        };
+        let conf = r["avg_confidence"].as_f64().unwrap_or(0.0);
+        println!(
+            "{:<col_profile$}  {:>col_matched$}  {:>col_conf$}  {:>col_ambig$}  {:>col_unmapped$}",
+            r["profile"].as_str().unwrap_or("?"),
+            pct("matched_ratio"),
+            format!("{:.3}", conf),
+            pct("ambiguous_ratio"),
+            pct("unmapped_ratio"),
+        );
+    }
+    eprintln!();
+
+    // Recommendation
+    if results.len() >= 2 {
+        let best = &results[0];
+        let second = &results[1];
+        let best_mr = best["matched_ratio"].as_f64().unwrap_or(0.0);
+        let second_mr = second["matched_ratio"].as_f64().unwrap_or(0.0);
+        let best_name = best["profile"].as_str().unwrap_or("?");
+        if best_mr - second_mr > 0.15 {
+            eprintln!(
+                "Recommendation: '{}' is clearly best (>{:.0}% margin). Use: --module-opt neo-bsdd-producer.profile={}",
+                best_name,
+                (best_mr - second_mr) * 100.0,
+                best_name
+            );
+        } else {
+            eprintln!(
+                "No clear winner (margin < 15%). Review the table and pick; or add '{}' as starting point.",
+                best_name
+            );
+        }
+    }
+
+    Ok(())
 }
 
 fn validate_args(args: &Args, settings: &ExecutionSettings) -> anyhow::Result<()> {
@@ -1062,6 +1187,7 @@ mod tests {
         parse_module_configs, validate_args, Args, ExecutionSettings, NquadsModuleOptions,
         OutputFormat, TurtleGrouping,
     };
+    use lbd_converter::IfcowlMode;
     use clap::Parser;
     use std::io::Write;
     use std::path::{Path, PathBuf};
@@ -1235,7 +1361,9 @@ mod tests {
                 chunk_min_count: 1,
                 chunk_core_count: None,
             },
-            turtle_grouping: TurtleGrouping::Sorted,
+            turtle_grouping: TurtleGrouping::Streaming,
+            ifcowl_mode: IfcowlMode::Full,
+            bsdd_profile: None,
         }
     }
 }

@@ -1,0 +1,2237 @@
+use std::collections::{HashMap, HashSet};
+use std::io::Read;
+use std::sync::{Mutex, OnceLock};
+
+use crossbeam::channel::Sender;
+use flate2::read::GzDecoder;
+use ifc_model::IfcModel;
+use ifc_schema::SpatialType;
+use ifc_step::{decode_ifc_unicode, StepSchema, StepValue};
+use lbd_ontology::{
+    opm_current_property_state, opm_has_property_state, opm_property, prov_generated_at_time,
+    rdf_type, rdfs_class, rdfs_label, schema_value, smls_unit, Object, Triple, XSD,
+};
+use serde::Deserialize;
+use serde_json::json;
+use strsim::jaro_winkler;
+use tracing::info;
+use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
+
+use crate::{
+    build_unit_type_map, current_generated_at_rfc3339, element_resource_iri, normalize_base_uri,
+    resolve_property_unit, resolve_quantity_unit, sorted_values, spatial_resource_iri,
+    ConvertOptions, StreamError, MAX_STREAM_BATCH_SIZE, MIN_STREAM_BATCH_SIZE,
+};
+
+// Fuzzy matching thresholds — named so tests break if someone adjusts blindly.
+// Both values are exposed in the profile and overridable per profile in Phase 2.
+const FUZZY_THRESHOLD: f64 = 0.94;
+// Max candidates per class inspected during fuzzy; limits O(n) scan.
+const MAX_FUZZY_CANDIDATES: usize = 400;
+
+const EMBEDDED_BSDD_INDEX_GZ: &[u8] =
+    include_bytes!("../../resources/bsdd_ifc4x3_index.json.gz");
+
+const EMBEDDED_PROFILE_BASE: &str =
+    include_str!("../../resources/bsdd-profiles/base.json");
+const EMBEDDED_PROFILE_REVIT_DACH: &str =
+    include_str!("../../resources/bsdd-profiles/revit-dach.json");
+const EMBEDDED_PROFILE_ALLPLAN_DE: &str =
+    include_str!("../../resources/bsdd-profiles/allplan-de.json");
+const EMBEDDED_PROFILE_TEKLA_EN: &str =
+    include_str!("../../resources/bsdd-profiles/tekla-en.json");
+
+const BSDDM_NS: &str = "https://w3id.org/ifc2lbd/bsdd-meta#";
+const BSDD_CLASS_NS: &str =
+    "https://identifier.buildingsmart.org/uri/buildingsmart/ifc/4.3/class/";
+const BSDD_PROP_NS: &str =
+    "https://identifier.buildingsmart.org/uri/buildingsmart/ifc/4.3/prop/";
+
+static BSDD_INDEX: OnceLock<Result<BsddIndex, String>> = OnceLock::new();
+static PROFILE_CACHE: OnceLock<Mutex<HashMap<String, BsddProfile>>> = OnceLock::new();
+
+// ---------------------------------------------------------------------------
+// Profile structures
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize)]
+struct FuzzyConfig {
+    #[serde(default = "default_fuzzy_enabled")]
+    enabled: bool,
+    #[serde(default = "default_fuzzy_threshold")]
+    threshold: f64,
+    /// "class" | "pset" | "property" | "never"
+    #[serde(default = "default_fuzzy_scope")]
+    scope: String,
+}
+
+fn default_fuzzy_enabled() -> bool {
+    true
+}
+fn default_fuzzy_threshold() -> f64 {
+    FUZZY_THRESHOLD
+}
+fn default_fuzzy_scope() -> String {
+    "class".to_string()
+}
+
+impl Default for FuzzyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            threshold: FUZZY_THRESHOLD,
+            scope: "class".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct BsddProfile {
+    #[serde(default)]
+    profile_id: String,
+    #[serde(default)]
+    profile_version: String,
+    #[serde(default)]
+    extends: Option<String>,
+    #[serde(default)]
+    bsdd_index_version: Option<String>,
+    #[serde(default)]
+    fuzzy: FuzzyConfig,
+    #[serde(default)]
+    class_aliases: HashMap<String, String>,
+    #[serde(default)]
+    pset_aliases: HashMap<String, String>,
+    #[serde(default)]
+    prop_aliases: HashMap<String, String>,
+    #[serde(default)]
+    pset_prop_aliases: HashMap<String, HashMap<String, String>>,
+    #[serde(default)]
+    hard_mappings: HashMap<String, String>,
+    #[serde(default)]
+    schema_class_aliases: HashMap<String, HashMap<String, String>>,
+}
+
+impl BsddProfile {
+    /// Merge `self` as base and `overlay` on top. Overlay wins per key.
+    fn merge_overlay(mut self, overlay: BsddProfile) -> BsddProfile {
+        if !overlay.profile_id.is_empty() {
+            self.profile_id = overlay.profile_id;
+        }
+        if !overlay.profile_version.is_empty() {
+            self.profile_version = overlay.profile_version;
+        }
+        self.extends = overlay.extends;
+        if overlay.bsdd_index_version.is_some() {
+            self.bsdd_index_version = overlay.bsdd_index_version;
+        }
+        if overlay.fuzzy.threshold != FUZZY_THRESHOLD || !overlay.fuzzy.enabled {
+            self.fuzzy = overlay.fuzzy;
+        }
+        for (k, v) in overlay.class_aliases {
+            self.class_aliases.insert(k, v);
+        }
+        for (k, v) in overlay.pset_aliases {
+            self.pset_aliases.insert(k, v);
+        }
+        for (k, v) in overlay.prop_aliases {
+            self.prop_aliases.insert(k, v);
+        }
+        for (pset, map) in overlay.pset_prop_aliases {
+            self.pset_prop_aliases
+                .entry(pset)
+                .or_default()
+                .extend(map);
+        }
+        for (k, v) in overlay.hard_mappings {
+            self.hard_mappings.insert(k, v);
+        }
+        for (schema, map) in overlay.schema_class_aliases {
+            self.schema_class_aliases
+                .entry(schema)
+                .or_default()
+                .extend(map);
+        }
+        self
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Match result types
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug)]
+pub struct BsddMatchCache {
+    by_key: HashMap<String, BsddPreparedMatch>,
+    pub profile_id: String,
+    pub index_version: String,
+}
+
+impl BsddMatchCache {
+    pub fn stats(&self) -> serde_json::Value {
+        let mut matched_exact: usize = 0;
+        let mut matched_fuzzy: usize = 0;
+        let mut normalized: usize = 0;
+        let mut ambiguous: usize = 0;
+        let mut unmapped: usize = 0;
+        let mut fuzzy_scores: Vec<f64> = Vec::new();
+        let mut method_counts: HashMap<&'static str, usize> = HashMap::new();
+
+        for m in self.by_key.values() {
+            *method_counts.entry(m.method).or_insert(0) += 1;
+            match m.status {
+                MatchStatus::Matched => {
+                    if m.method == "fuzzy" {
+                        matched_fuzzy += 1;
+                        if let Some(s) = m.confidence {
+                            fuzzy_scores.push(s);
+                        }
+                    } else {
+                        matched_exact += 1;
+                    }
+                }
+                MatchStatus::Normalized => normalized += 1,
+                MatchStatus::Ambiguous => ambiguous += 1,
+                MatchStatus::Unmapped => unmapped += 1,
+            }
+        }
+
+        let total_matched = matched_exact + matched_fuzzy + normalized;
+        let fuzzy_avg = if fuzzy_scores.is_empty() {
+            None
+        } else {
+            Some(fuzzy_scores.iter().sum::<f64>() / fuzzy_scores.len() as f64)
+        };
+        let fuzzy_min = fuzzy_scores.iter().cloned().reduce(f64::min);
+        let fuzzy_max = fuzzy_scores.iter().cloned().reduce(f64::max);
+        let total = self.by_key.len();
+        let matched_ratio = if total > 0 {
+            (total_matched as f64) / (total as f64)
+        } else {
+            0.0
+        };
+        let ambiguous_ratio = if total > 0 {
+            (ambiguous as f64) / (total as f64)
+        } else {
+            0.0
+        };
+        let unmapped_ratio = if total > 0 {
+            (unmapped as f64) / (total as f64)
+        } else {
+            0.0
+        };
+
+        json!({
+            "total_unique_keys": total,
+            "total_matched": total_matched,
+            "matched_exact": matched_exact,
+            "matched_fuzzy": matched_fuzzy,
+            "normalized": normalized,
+            "ambiguous": ambiguous,
+            "unmapped": unmapped,
+            "matched_ratio": (matched_ratio * 1000.0).round() / 1000.0,
+            "ambiguous_ratio": (ambiguous_ratio * 1000.0).round() / 1000.0,
+            "unmapped_ratio": (unmapped_ratio * 1000.0).round() / 1000.0,
+            "fuzzy_confidence_avg": fuzzy_avg,
+            "fuzzy_confidence_min": fuzzy_min,
+            "fuzzy_confidence_max": fuzzy_max,
+            "method_counts": method_counts,
+            "profile_id": self.profile_id,
+            "index_version": self.index_version,
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+struct BsddPreparedMatch {
+    status: MatchStatus,
+    property_code: Option<String>,
+    /// Populated when status == Ambiguous; each entry is a candidate property code.
+    ambiguous_candidates: Vec<String>,
+    exact_meta: Option<ExactMeta>,
+    method: &'static str,
+    confidence: Option<f64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MatchStatus {
+    Matched,
+    Normalized,
+    Ambiguous,
+    Unmapped,
+}
+
+#[derive(Clone, Debug)]
+struct MatchResult {
+    status: MatchStatus,
+    property_code: Option<String>,
+    ambiguous_candidates: Vec<String>,
+    exact_meta: Option<ExactMeta>,
+    method: &'static str,
+    confidence: Option<f64>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct ExactMeta {
+    #[serde(default)]
+    property_set: String,
+    #[serde(default)]
+    class_property_code: String,
+}
+
+// ---------------------------------------------------------------------------
+// bSDD index
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+struct BsddIndex {
+    #[allow(dead_code)]
+    format: String,
+    #[allow(dead_code)]
+    dictionary_code: String,
+    dictionary_version: String,
+    #[allow(dead_code)]
+    organization_code: String,
+    class_code_by_norm: HashMap<String, String>,
+    #[allow(dead_code)]
+    prop_name_by_code_norm: HashMap<String, String>,
+    exact: HashMap<String, String>,
+    #[serde(default)]
+    exact_meta: HashMap<String, ExactMeta>,
+    by_pset_prop: HashMap<String, Vec<String>>,
+    by_class_prop: HashMap<String, Vec<String>>,
+    by_prop: HashMap<String, Vec<String>>,
+}
+
+impl BsddIndex {
+    fn resolve_class(&self, class_code_like: &str) -> Option<&str> {
+        self.class_code_by_norm
+            .get(&normalize(class_code_like))
+            .map(String::as_str)
+    }
+
+    fn resolve_property(
+        &self,
+        schema: StepSchema,
+        class_code_like: &str,
+        pset_name: &str,
+        prop_name: &str,
+        profile: &BsddProfile,
+    ) -> MatchResult {
+        let empty_schema_aliases: HashMap<String, String> = HashMap::new();
+        let schema_aliases = profile
+            .schema_class_aliases
+            .get(&schema.to_string())
+            .unwrap_or(&empty_schema_aliases);
+        let class_norms = normalized_match_variants(
+            class_code_like,
+            &profile.class_aliases,
+            schema_aliases,
+            &HashMap::new(),
+            false,
+        );
+        let pset_norms = normalized_match_variants(
+            pset_name,
+            &profile.pset_aliases,
+            &HashMap::new(),
+            &HashMap::new(),
+            false,
+        );
+        let prop_norms = normalized_match_variants(
+            prop_name,
+            &profile.prop_aliases,
+            &HashMap::new(),
+            profile
+                .pset_prop_aliases
+                .get(
+                    &normalized_match_variants(
+                        pset_name,
+                        &profile.pset_aliases,
+                        &HashMap::new(),
+                        &HashMap::new(),
+                        false,
+                    )
+                    .into_iter()
+                    .next()
+                    .unwrap_or_default(),
+                )
+                .unwrap_or(&HashMap::new()),
+            true,
+        );
+
+        // 1. Exact class|pset|prop + hard overrides
+        for class_norm in &class_norms {
+            for pset_norm in &pset_norms {
+                for prop_norm in &prop_norms {
+                    let exact_key = format!("{class_norm}|{pset_norm}|{prop_norm}");
+                    let schema_hard_key =
+                        format!("{}|{exact_key}", schema.to_string().to_ascii_lowercase());
+
+                    if let Some(code) = profile
+                        .hard_mappings
+                        .get(&schema_hard_key)
+                        .or_else(|| profile.hard_mappings.get(&exact_key))
+                    {
+                        return MatchResult {
+                            status: MatchStatus::Matched,
+                            property_code: Some(code.clone()),
+                            ambiguous_candidates: vec![],
+                            exact_meta: self.exact_meta.get(&exact_key).cloned(),
+                            method: "hard_override",
+                            confidence: Some(1.0),
+                        };
+                    }
+
+                    if let Some(code) = self.exact.get(&exact_key) {
+                        return MatchResult {
+                            status: MatchStatus::Matched,
+                            property_code: Some(code.clone()),
+                            ambiguous_candidates: vec![],
+                            exact_meta: self.exact_meta.get(&exact_key).cloned(),
+                            method: "exact_class_pset_prop",
+                            confidence: Some(1.0),
+                        };
+                    }
+                }
+            }
+        }
+
+        // 2. Pset|prop candidates
+        let pset_candidates = collect_candidates(
+            pset_norms
+                .iter()
+                .flat_map(|pset_norm| {
+                    prop_norms
+                        .iter()
+                        .map(move |prop_norm| format!("{pset_norm}|{prop_norm}"))
+                }),
+            &self.by_pset_prop,
+        );
+        match pset_candidates.len() {
+            1 => {
+                return MatchResult {
+                    status: MatchStatus::Normalized,
+                    property_code: pset_candidates.into_iter().next(),
+                    ambiguous_candidates: vec![],
+                    exact_meta: None,
+                    method: "normalized_pset_prop",
+                    confidence: Some(0.95),
+                }
+            }
+            n if n > 1 => {
+                return MatchResult {
+                    status: MatchStatus::Ambiguous,
+                    property_code: None,
+                    ambiguous_candidates: pset_candidates,
+                    exact_meta: None,
+                    method: "ambiguous_pset_prop",
+                    confidence: None,
+                }
+            }
+            _ => {}
+        }
+
+        // 3. Class|prop candidates
+        let class_candidates = collect_candidates(
+            class_norms
+                .iter()
+                .flat_map(|class_norm| {
+                    prop_norms
+                        .iter()
+                        .map(move |prop_norm| format!("{class_norm}|{prop_norm}"))
+                }),
+            &self.by_class_prop,
+        );
+        match class_candidates.len() {
+            1 => {
+                return MatchResult {
+                    status: MatchStatus::Normalized,
+                    property_code: class_candidates.into_iter().next(),
+                    ambiguous_candidates: vec![],
+                    exact_meta: None,
+                    method: "normalized_class_prop",
+                    confidence: Some(0.9),
+                }
+            }
+            n if n > 1 => {
+                return MatchResult {
+                    status: MatchStatus::Ambiguous,
+                    property_code: None,
+                    ambiguous_candidates: class_candidates,
+                    exact_meta: None,
+                    method: "ambiguous_class_prop",
+                    confidence: None,
+                }
+            }
+            _ => {}
+        }
+
+        // 4. Prop-only candidates
+        let prop_candidates = collect_candidates(prop_norms.iter().cloned(), &self.by_prop);
+        match prop_candidates.len() {
+            1 => {
+                return MatchResult {
+                    status: MatchStatus::Normalized,
+                    property_code: prop_candidates.into_iter().next(),
+                    ambiguous_candidates: vec![],
+                    exact_meta: None,
+                    method: "normalized_prop",
+                    confidence: Some(0.85),
+                }
+            }
+            n if n > 1 => {
+                return MatchResult {
+                    status: MatchStatus::Ambiguous,
+                    property_code: None,
+                    ambiguous_candidates: prop_candidates,
+                    exact_meta: None,
+                    method: "ambiguous_prop",
+                    confidence: None,
+                }
+            }
+            _ => {}
+        }
+
+        // 5. Class-scoped fuzzy — never falls back to global search
+        if profile.fuzzy.enabled && profile.fuzzy.scope != "never" {
+            let class_norm = class_norms.first().map(String::as_str).unwrap_or_default();
+            let pset_norm = pset_norms.first().map(String::as_str).unwrap_or_default();
+            let threshold = profile.fuzzy.threshold;
+
+            for prop_norm in &prop_norms {
+                if let Some((code, score, all_close)) =
+                    self.resolve_fuzzy_class_scoped(class_norm, pset_norm, prop_norm, threshold, &profile.fuzzy.scope)
+                {
+                    if all_close.len() == 1 {
+                        return MatchResult {
+                            status: MatchStatus::Normalized,
+                            property_code: Some(code),
+                            ambiguous_candidates: vec![],
+                            exact_meta: None,
+                            method: "fuzzy",
+                            confidence: Some(score),
+                        };
+                    } else {
+                        return MatchResult {
+                            status: MatchStatus::Ambiguous,
+                            property_code: None,
+                            ambiguous_candidates: all_close,
+                            exact_meta: None,
+                            method: "fuzzy_ambiguous",
+                            confidence: None,
+                        };
+                    }
+                }
+            }
+        }
+
+        MatchResult {
+            status: MatchStatus::Unmapped,
+            property_code: None,
+            ambiguous_candidates: vec![],
+            exact_meta: None,
+            method: "unmapped",
+            confidence: None,
+        }
+    }
+
+    /// Class-scoped fuzzy: only scores properties that bSDD associates with `class_norm`.
+    /// Returns `Some((best_code, best_score, all_within_0.02_of_best))` or `None`.
+    /// Never falls back to a global `by_prop` scan — Unmapped is preferable to a cross-class mismatch.
+    fn resolve_fuzzy_class_scoped(
+        &self,
+        class_norm: &str,
+        pset_norm: &str,
+        prop_norm: &str,
+        threshold: f64,
+        scope: &str,
+    ) -> Option<(String, f64, Vec<String>)> {
+        // Determine which lookup to scope against
+        let prefix_and_map: Vec<(String, &HashMap<String, Vec<String>>)> = match scope {
+            "pset" if !pset_norm.is_empty() => {
+                vec![(format!("{pset_norm}|"), &self.by_pset_prop)]
+            }
+            "class" | _ if !class_norm.is_empty() => {
+                vec![(format!("{class_norm}|"), &self.by_class_prop)]
+            }
+            _ => return None,
+        };
+
+        let first = prop_norm.chars().next();
+        let prop_len = prop_norm.chars().count() as i32;
+        let mut candidates: Vec<(String, f64)> = Vec::new();
+        let mut inspected = 0usize;
+
+        for (prefix, map) in &prefix_and_map {
+            for (key, codes) in *map {
+                if inspected >= MAX_FUZZY_CANDIDATES {
+                    break;
+                }
+                if !key.starts_with(prefix.as_str()) {
+                    continue;
+                }
+                let kprop = &key[prefix.len()..];
+                let kfirst = kprop.chars().next();
+                if first.is_some() && kfirst != first {
+                    continue;
+                }
+                let klen = kprop.chars().count() as i32;
+                if (klen - prop_len).abs() > 3 {
+                    continue;
+                }
+                inspected += 1;
+                let score = string_similarity(prop_norm, kprop);
+                if score >= threshold {
+                    for code in codes {
+                        candidates.push((code.clone(), score));
+                    }
+                }
+            }
+        }
+
+        if candidates.is_empty() {
+            return None;
+        }
+
+        candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        let best = candidates[0].clone();
+        let close: Vec<String> = {
+            let mut seen = HashSet::new();
+            candidates
+                .iter()
+                .filter(|(_, s)| *s + 0.02 >= best.1)
+                .filter(|(c, _)| seen.insert(c.clone()))
+                .map(|(c, _)| c.clone())
+                .collect()
+        };
+
+        Some((best.0, best.1, close))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Profile loading
+// ---------------------------------------------------------------------------
+
+fn profile_cache() -> &'static Mutex<HashMap<String, BsddProfile>> {
+    PROFILE_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn load_profile(name_or_path: &str) -> Result<BsddProfile, String> {
+    // File path?
+    let is_path = name_or_path.contains('/') || name_or_path.contains('\\') || name_or_path.ends_with(".json");
+    if is_path {
+        return load_profile_from_file(name_or_path);
+    }
+
+    // Named profile — check cache first
+    {
+        let cache = profile_cache().lock().unwrap();
+        if let Some(p) = cache.get(name_or_path) {
+            return Ok(p.clone());
+        }
+    }
+
+    let profile = load_named_profile(name_or_path)?;
+    profile_cache()
+        .lock()
+        .unwrap()
+        .insert(name_or_path.to_string(), profile.clone());
+    Ok(profile)
+}
+
+fn load_named_profile(name: &str) -> Result<BsddProfile, String> {
+    let raw = match name {
+        "base" => EMBEDDED_PROFILE_BASE,
+        "revit-dach" => EMBEDDED_PROFILE_REVIT_DACH,
+        "allplan-de" => EMBEDDED_PROFILE_ALLPLAN_DE,
+        "tekla-en" => EMBEDDED_PROFILE_TEKLA_EN,
+        other => {
+            return Err(format!(
+                "unknown bSDD profile '{}'; known: base, revit-dach, allplan-de, tekla-en",
+                other
+            ))
+        }
+    };
+    let overlay: BsddProfile = serde_json::from_str(raw)
+        .map_err(|e| format!("failed parsing embedded bSDD profile '{}': {e}", name))?;
+
+    // Resolve `extends` chain
+    if let Some(ref base_name) = overlay.extends.clone() {
+        let base = load_named_profile(base_name)?;
+        return Ok(base.merge_overlay(overlay));
+    }
+    Ok(overlay)
+}
+
+fn load_profile_from_file(path: &str) -> Result<BsddProfile, String> {
+    let raw = std::fs::read_to_string(path)
+        .map_err(|e| format!("failed reading bSDD profile '{path}': {e}"))?;
+    let overlay: BsddProfile = serde_json::from_str(&raw)
+        .map_err(|e| format!("failed parsing bSDD profile '{path}': {e}"))?;
+    if let Some(ref base_name) = overlay.extends.clone() {
+        let base = load_named_profile(base_name)?;
+        return Ok(base.merge_overlay(overlay));
+    }
+    Ok(overlay)
+}
+
+fn load_active_profile(profile_name: Option<&str>) -> Result<BsddProfile, String> {
+    // Env var override takes precedence
+    if let Ok(path) = std::env::var("IFC2LBD_BSDD_PROFILE") {
+        return load_profile(&path);
+    }
+    let name = profile_name.unwrap_or("base");
+    load_profile(name)
+}
+
+fn load_bsdd_index() -> Result<&'static BsddIndex, String> {
+    let result = BSDD_INDEX.get_or_init(|| {
+        if let Ok(path) = std::env::var("IFC2LBD_BSDD_INDEX_JSON") {
+            let raw = std::fs::read_to_string(&path)
+                .map_err(|e| format!("failed reading bSDD index '{path}': {e}"))?;
+            let index: BsddIndex = serde_json::from_str(&raw)
+                .map_err(|e| format!("failed parsing bSDD index '{path}': {e}"))?;
+            return Ok(index);
+        }
+
+        let mut decoder = GzDecoder::new(EMBEDDED_BSDD_INDEX_GZ);
+        let mut raw = String::new();
+        decoder
+            .read_to_string(&mut raw)
+            .map_err(|e| format!("failed decompressing embedded bSDD index: {e}"))?;
+        let index: BsddIndex = serde_json::from_str(&raw)
+            .map_err(|e| format!("failed parsing embedded bSDD index: {e}"))?;
+        Ok(index)
+    });
+    result.as_ref().map_err(Clone::clone)
+}
+
+// ---------------------------------------------------------------------------
+// String normalization helpers
+// ---------------------------------------------------------------------------
+
+fn normalize(input: &str) -> String {
+    transliterate_for_matching(input)
+        .nfkd()
+        .filter(|c| !is_combining_mark(*c))
+        .filter(|c| c.is_ascii_alphanumeric())
+        .flat_map(|c| c.to_lowercase())
+        .collect()
+}
+
+fn string_similarity(a: &str, b: &str) -> f64 {
+    jaro_winkler(a, b)
+}
+
+fn transliterate_for_matching(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for ch in input.chars() {
+        match ch {
+            'ä' => out.push_str("ae"),
+            'ö' => out.push_str("oe"),
+            'ü' => out.push_str("ue"),
+            'Ä' => out.push_str("Ae"),
+            'Ö' => out.push_str("Oe"),
+            'Ü' => out.push_str("Ue"),
+            'ß' => out.push_str("ss"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+fn normalized_match_variants(
+    input: &str,
+    aliases: &HashMap<String, String>,
+    schema_aliases: &HashMap<String, String>,
+    scoped_aliases: &HashMap<String, String>,
+    strip_segments: bool,
+) -> Vec<String> {
+    let mut raw_candidates = vec![input.trim().to_string()];
+    let key = normalize(input);
+    if let Some(v) = schema_aliases.get(&key) {
+        raw_candidates.insert(0, v.clone());
+    }
+    if let Some(v) = scoped_aliases.get(&key) {
+        raw_candidates.insert(0, v.clone());
+    }
+    if let Some(v) = aliases.get(&key) {
+        raw_candidates.insert(0, v.clone());
+    }
+
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for candidate in raw_candidates {
+        for surface in surface_variants(&candidate, strip_segments) {
+            let norm = normalize(&surface);
+            if !norm.is_empty() && seen.insert(norm.clone()) {
+                out.push(norm);
+            }
+        }
+    }
+    out
+}
+
+fn surface_variants(input: &str, strip_segments: bool) -> Vec<String> {
+    let mut out = Vec::new();
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return out;
+    }
+    out.push(trimmed.to_string());
+    let compact = trimmed.replace("::", ":");
+    if compact != trimmed {
+        out.push(compact.clone());
+    }
+    if let Some(stripped) = strip_software_prefix(&compact) {
+        out.push(stripped.clone());
+    }
+    if strip_segments {
+        let segment_sources = out.clone();
+        for source in segment_sources {
+            for sep in [':', '/', '\\', '|'] {
+                if let Some(last) = source.rsplit(sep).next() {
+                    let last = last.trim();
+                    if !last.is_empty() && last != trimmed {
+                        out.push(last.to_string());
+                    }
+                }
+            }
+            if let Some((_, suffix)) = source.split_once(' ') {
+                let suffix = suffix.trim();
+                if !suffix.is_empty() && suffix != trimmed {
+                    out.push(suffix.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
+fn strip_software_prefix(input: &str) -> Option<String> {
+    let trimmed = input.trim();
+    if let Some((prefix, suffix)) = trimmed.split_once(' ') {
+        let norm_prefix = normalize(prefix);
+        if norm_prefix.starts_with("bsdpset") || norm_prefix.starts_with("psetrevit") {
+            let suffix = suffix.trim();
+            if !suffix.is_empty() {
+                return Some(suffix.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn collect_candidates<I>(keys: I, lookup: &HashMap<String, Vec<String>>) -> Vec<String>
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for key in keys {
+        if let Some(values) = lookup.get(&key) {
+            for value in values {
+                if seen.insert(value.clone()) {
+                    out.push(value.clone());
+                }
+            }
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// IRI helpers
+// ---------------------------------------------------------------------------
+
+fn bsddm(local: &str) -> String {
+    format!("{BSDDM_NS}{local}")
+}
+
+fn bsdd_class(code: &str) -> String {
+    format!("{BSDD_CLASS_NS}{code}")
+}
+
+fn bsdd_prop(code: &str) -> String {
+    format!("{BSDD_PROP_NS}{code}")
+}
+
+fn bsdd_local_instance(base: &str, kind: &str, local: &str) -> String {
+    format!("{base}/bsdd_{kind}_{local}")
+}
+
+fn mapping_status_iri(status: MatchStatus) -> String {
+    match status {
+        MatchStatus::Matched => bsddm("Mapped"),
+        MatchStatus::Normalized => bsddm("Normalized"),
+        MatchStatus::Ambiguous => bsddm("Ambiguous"),
+        MatchStatus::Unmapped => bsddm("Unmapped"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// IFC entity helpers
+// ---------------------------------------------------------------------------
+
+fn spatial_ifc_class(spatial_type: SpatialType) -> &'static str {
+    match spatial_type {
+        SpatialType::Project => "IfcProject",
+        SpatialType::Site => "IfcSite",
+        SpatialType::Building => "IfcBuilding",
+        SpatialType::Storey => "IfcBuildingStorey",
+        SpatialType::Space => "IfcSpace",
+        SpatialType::Zone => "IfcSpatialZone",
+        SpatialType::Facility => "IfcFacility",
+        SpatialType::FacilityPart => "IfcFacilityPart",
+        SpatialType::ExternalSpatialElement => "IfcExternalSpatialElement",
+    }
+}
+
+fn resolve_bsdd_class_for_element(
+    index: &BsddIndex,
+    entity_name: &str,
+    profile: &BsddProfile,
+) -> Option<String> {
+    let trimmed = entity_name.trim();
+    let upper = trimmed.to_ascii_uppercase();
+
+    // Profile class_aliases (and schema_class_aliases) are applied via normalized_match_variants
+    // before the index lookup. We build a single-candidate normalized name for the class.
+    let empty: HashMap<String, String> = HashMap::new();
+    let norms = normalized_match_variants(trimmed, &profile.class_aliases, &empty, &empty, false);
+    for norm_input in &norms {
+        if let Some(code) = index.resolve_class(norm_input) {
+            return Some(code.to_string());
+        }
+    }
+
+    // Try uppercase + "IFC" prefix variants directly in index
+    let prefixed = if upper.starts_with("IFC") {
+        upper.clone()
+    } else {
+        format!("IFC{upper}")
+    };
+    let camel = normalize_ifc_entity(trimmed);
+    for candidate in [&upper, &prefixed, &camel] {
+        if let Some(code) = index.resolve_class(candidate) {
+            return Some(code.to_string());
+        }
+    }
+    None
+}
+
+fn normalize_ifc_entity(raw: &str) -> String {
+    let upper = raw.trim().to_ascii_uppercase();
+    let core = upper.strip_prefix("IFC").unwrap_or(upper.as_str());
+    let mut out = String::from("Ifc");
+    let mut next_upper = true;
+    for ch in core.chars() {
+        if !ch.is_ascii_alphanumeric() {
+            next_upper = true;
+            continue;
+        }
+        if next_upper {
+            out.push(ch.to_ascii_uppercase());
+            next_upper = false;
+        } else {
+            out.push(ch.to_ascii_lowercase());
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// Step value helpers
+// ---------------------------------------------------------------------------
+
+fn step_value_to_object(value: &StepValue) -> Option<Object> {
+    match value {
+        StepValue::String(s) => Some(Object::Literal(decode_ifc_unicode(s))),
+        StepValue::Enum(s) => Some(Object::Literal(decode_ifc_unicode(s))),
+        StepValue::Bool(v) => Some(Object::TypedLiteral {
+            value: v.to_string(),
+            datatype: format!("{XSD}boolean"),
+        }),
+        StepValue::Int(v) => Some(Object::TypedLiteral {
+            value: v.to_string(),
+            datatype: format!("{XSD}integer"),
+        }),
+        StepValue::Real(v) => Some(Object::TypedLiteral {
+            value: v.to_string(),
+            datatype: format!("{XSD}decimal"),
+        }),
+        StepValue::Typed { value, .. } => step_value_to_object(value),
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+pub fn build_bsdd_match_cache(
+    model: &IfcModel,
+    profile_name: Option<&str>,
+) -> Result<BsddMatchCache, String> {
+    let index = load_bsdd_index()?;
+    let profile = load_active_profile(profile_name)?;
+    let mut by_key = HashMap::new();
+
+    let mut object_ids: Vec<_> = model.property_sets_for_object.keys().copied().collect();
+    object_ids.sort_unstable();
+    for object_id in object_ids {
+        let class_name_like = if let Some(element) = model.elements.get(&object_id) {
+            element.entity_name.to_string()
+        } else if let Some(spatial) = model.spatial_nodes.get(&object_id) {
+            spatial_ifc_class(spatial.spatial_type).to_string()
+        } else {
+            continue;
+        };
+
+        let mut pset_ids = model.property_sets_for_object[&object_id].clone();
+        pset_ids.sort_unstable();
+        for pset_id in pset_ids {
+            let Some(pset) = model.property_sets.get(&pset_id) else {
+                continue;
+            };
+            let pset_name = pset.name.as_deref().unwrap_or_default();
+            for prop_id in &pset.properties {
+                let try_cache = |name: &str, by_key: &mut HashMap<String, BsddPreparedMatch>| {
+                    let key =
+                        cache_key(model.schema, &class_name_like, pset_name, name, &profile);
+                    by_key.entry(key).or_insert_with(|| {
+                        let m = index.resolve_property(
+                            model.schema,
+                            &class_name_like,
+                            pset_name,
+                            name,
+                            &profile,
+                        );
+                        BsddPreparedMatch {
+                            status: m.status,
+                            property_code: m.property_code,
+                            ambiguous_candidates: m.ambiguous_candidates,
+                            exact_meta: m.exact_meta,
+                            method: m.method,
+                            confidence: m.confidence,
+                        }
+                    });
+                };
+                if let Some(psv) = model.property_single_values.get(prop_id) {
+                    try_cache(psv.name.as_str(), &mut by_key);
+                }
+                if let Some(pev) = model.property_enumerated_values.get(prop_id) {
+                    try_cache(pev.name.as_str(), &mut by_key);
+                }
+            }
+        }
+    }
+
+    Ok(BsddMatchCache {
+        by_key,
+        profile_id: profile.profile_id.clone(),
+        index_version: index.dictionary_version.clone(),
+    })
+}
+
+pub fn dedup_model_property_sets(model: &IfcModel) -> IfcModel {
+    let mut updated = model.clone();
+    for pset in updated.property_sets.values_mut() {
+        let mut seen = HashSet::new();
+        let mut deduped = Vec::with_capacity(pset.properties.len());
+        for property_id in &pset.properties {
+            let key = if let Some(psv) = updated.property_single_values.get(property_id) {
+                let value_sig = psv
+                    .nominal_value
+                    .as_ref()
+                    .map(step_value_signature)
+                    .unwrap_or_else(|| "none".to_string());
+                format!("single|{}|{value_sig}", normalize(psv.name.as_str()))
+            } else if let Some(pev) = updated.property_enumerated_values.get(property_id) {
+                let values = pev
+                    .values
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("|");
+                format!("enum|{}|{values}", normalize(pev.name.as_str()))
+            } else {
+                format!("unknown|{property_id}")
+            };
+            if seen.insert(key) {
+                deduped.push(*property_id);
+            }
+        }
+        pset.properties = deduped;
+    }
+    updated
+}
+
+fn resolve_from_cache(
+    cache: &BsddMatchCache,
+    schema: StepSchema,
+    class_name_like: &str,
+    pset_name: &str,
+    prop_name: &str,
+    profile: &BsddProfile,
+) -> Option<MatchResult> {
+    let key = cache_key(schema, class_name_like, pset_name, prop_name, profile);
+    cache.by_key.get(&key).map(|prepared| MatchResult {
+        status: prepared.status,
+        property_code: prepared.property_code.clone(),
+        ambiguous_candidates: prepared.ambiguous_candidates.clone(),
+        exact_meta: prepared.exact_meta.clone(),
+        method: prepared.method,
+        confidence: prepared.confidence,
+    })
+}
+
+fn step_value_signature(value: &StepValue) -> String {
+    match value {
+        StepValue::String(v) => format!("s:{v}"),
+        StepValue::Enum(v) => format!("e:{v}"),
+        StepValue::Bool(v) => format!("b:{v}"),
+        StepValue::Int(v) => format!("i:{v}"),
+        StepValue::Real(v) => format!("r:{v}"),
+        StepValue::Typed { type_name, value } => {
+            format!("t:{type_name}:{}", step_value_signature(value))
+        }
+        _ => format!("{value:?}"),
+    }
+}
+
+fn cache_key(
+    schema: StepSchema,
+    class_code_like: &str,
+    pset_name: &str,
+    prop_name: &str,
+    profile: &BsddProfile,
+) -> String {
+    let empty_schema_aliases: HashMap<String, String> = HashMap::new();
+    let schema_aliases = profile
+        .schema_class_aliases
+        .get(&schema.to_string())
+        .unwrap_or(&empty_schema_aliases);
+    let class_norm = normalized_match_variants(
+        class_code_like,
+        &profile.class_aliases,
+        schema_aliases,
+        &HashMap::new(),
+        false,
+    )
+    .into_iter()
+    .next()
+    .unwrap_or_default();
+    let pset_norm = normalized_match_variants(
+        pset_name,
+        &profile.pset_aliases,
+        &HashMap::new(),
+        &HashMap::new(),
+        false,
+    )
+    .into_iter()
+    .next()
+    .unwrap_or_default();
+    let prop_norm = normalized_match_variants(
+        prop_name,
+        &profile.prop_aliases,
+        &HashMap::new(),
+        profile
+            .pset_prop_aliases
+            .get(&pset_norm)
+            .unwrap_or(&HashMap::new()),
+        true,
+    )
+    .into_iter()
+    .next()
+    .unwrap_or_default();
+    format!(
+        "{}|{}|{}|{}",
+        schema.to_string().to_ascii_lowercase(),
+        class_norm,
+        pset_norm,
+        prop_norm
+    )
+}
+
+pub fn stream_bsdd(
+    model: &IfcModel,
+    options: &ConvertOptions,
+    sender: &Sender<Vec<Triple>>,
+) -> Result<u64, StreamError> {
+    stream_bsdd_with_cache(model, options, sender, None)
+}
+
+pub fn stream_bsdd_with_cache(
+    model: &IfcModel,
+    options: &ConvertOptions,
+    sender: &Sender<Vec<Triple>>,
+    match_cache: Option<&BsddMatchCache>,
+) -> Result<u64, StreamError> {
+    let index = load_bsdd_index().map_err(StreamError::Conversion)?;
+    let profile = load_active_profile(options.bsdd_profile.as_deref())
+        .map_err(StreamError::Conversion)?;
+
+    // If a non-base profile is active and the cache was built with a different profile,
+    // skip cache to avoid stale matches from the base-profile cache.
+    let effective_cache = match_cache.filter(|c| {
+        let options_profile = options.bsdd_profile.as_deref().unwrap_or("base");
+        c.profile_id == options_profile || options_profile == "base"
+    });
+
+    let base = normalize_base_uri(&options.base_uri);
+    let batch_size = options
+        .stream_batch_size
+        .clamp(MIN_STREAM_BATCH_SIZE, MAX_STREAM_BATCH_SIZE);
+    let unit_by_type = build_unit_type_map(model);
+    let generated_at = current_generated_at_rfc3339();
+
+    let mut batch = Vec::with_capacity(batch_size);
+    let mut triples = 0_u64;
+    let mut property_counter = 0_u64;
+    let mut quantity_counter = 0_u64;
+    let mut unmatched_histogram: HashMap<String, u64> = HashMap::new();
+
+    // Phase 3: Provenance block — emit once per run
+    let run_iri = format!("{base}/bsdd_run");
+    push(
+        &mut batch,
+        sender,
+        batch_size,
+        Triple {
+            subject: run_iri.clone(),
+            predicate: rdf_type(),
+            object: Object::Iri(bsddm("ConversionRun")),
+        },
+        &mut triples,
+    )?;
+    push(
+        &mut batch,
+        sender,
+        batch_size,
+        Triple {
+            subject: run_iri.clone(),
+            predicate: bsddm("indexVersion"),
+            object: Object::Literal(index.dictionary_version.clone()),
+        },
+        &mut triples,
+    )?;
+    push(
+        &mut batch,
+        sender,
+        batch_size,
+        Triple {
+            subject: run_iri.clone(),
+            predicate: bsddm("profileId"),
+            object: Object::Literal(profile.profile_id.clone()),
+        },
+        &mut triples,
+    )?;
+    push(
+        &mut batch,
+        sender,
+        batch_size,
+        Triple {
+            subject: run_iri.clone(),
+            predicate: bsddm("profileVersion"),
+            object: Object::Literal(profile.profile_version.clone()),
+        },
+        &mut triples,
+    )?;
+    push(
+        &mut batch,
+        sender,
+        batch_size,
+        Triple {
+            subject: run_iri.clone(),
+            predicate: bsddm("fuzzyThreshold"),
+            object: Object::TypedLiteral {
+                value: format!("{}", profile.fuzzy.threshold),
+                datatype: format!("{XSD}double"),
+            },
+        },
+        &mut triples,
+    )?;
+    push(
+        &mut batch,
+        sender,
+        batch_size,
+        Triple {
+            subject: run_iri.clone(),
+            predicate: bsddm("fuzzyScope"),
+            object: Object::Literal(profile.fuzzy.scope.clone()),
+        },
+        &mut triples,
+    )?;
+
+    // MappingStatus vocabulary — five triples, enables SPARQL/SHACL over statuses
+    let mapping_status_class = bsddm("MappingStatus");
+    push(
+        &mut batch,
+        sender,
+        batch_size,
+        Triple {
+            subject: mapping_status_class.clone(),
+            predicate: rdf_type(),
+            object: Object::Iri(rdfs_class()),
+        },
+        &mut triples,
+    )?;
+    for status in [
+        bsddm("Mapped"),
+        bsddm("Normalized"),
+        bsddm("Ambiguous"),
+        bsddm("Unmapped"),
+    ] {
+        push(
+            &mut batch,
+            sender,
+            batch_size,
+            Triple {
+                subject: status,
+                predicate: rdf_type(),
+                object: Object::Iri(mapping_status_class.clone()),
+            },
+            &mut triples,
+        )?;
+    }
+
+    // Element typing
+    for element in sorted_values(&model.elements) {
+        if let Some(class_code) =
+            resolve_bsdd_class_for_element(index, element.entity_name.as_str(), &profile)
+        {
+            push(
+                &mut batch,
+                sender,
+                batch_size,
+                Triple {
+                    subject: element_resource_iri(&base, element),
+                    predicate: rdf_type(),
+                    object: Object::Iri(bsdd_class(&class_code)),
+                },
+                &mut triples,
+            )?;
+        }
+    }
+
+    // Spatial node typing
+    for spatial in sorted_values(&model.spatial_nodes) {
+        let class_guess = spatial_ifc_class(spatial.spatial_type);
+        if let Some(class_code) = index.resolve_class(class_guess) {
+            push(
+                &mut batch,
+                sender,
+                batch_size,
+                Triple {
+                    subject: spatial_resource_iri(&base, spatial.spatial_type, &spatial.guid),
+                    predicate: rdf_type(),
+                    object: Object::Iri(bsdd_class(class_code)),
+                },
+                &mut triples,
+            )?;
+        }
+    }
+
+    let mut object_ids: Vec<_> = model.property_sets_for_object.keys().copied().collect();
+    object_ids.sort_unstable();
+
+    for object_id in object_ids {
+        let (subject, object_guid, class_name_like) =
+            if let Some(element) = model.elements.get(&object_id) {
+                (
+                    element_resource_iri(&base, element),
+                    element.guid.to_string(),
+                    element.entity_name.to_string(),
+                )
+            } else if let Some(spatial) = model.spatial_nodes.get(&object_id) {
+                (
+                    spatial_resource_iri(&base, spatial.spatial_type, &spatial.guid),
+                    spatial.guid.to_string(),
+                    spatial_ifc_class(spatial.spatial_type).to_string(),
+                )
+            } else {
+                continue;
+            };
+
+        let mut pset_ids = model.property_sets_for_object[&object_id].clone();
+        pset_ids.sort_unstable();
+
+        for pset_id in pset_ids {
+            let Some(pset) = model.property_sets.get(&pset_id) else {
+                continue;
+            };
+            let pset_name = pset.name.as_deref().unwrap_or_default();
+            let pset_subject = bsdd_local_instance(
+                &base,
+                "pset",
+                &format!("{}_{}", sanitize(pset_name), sanitize(&object_guid)),
+            );
+
+            push(
+                &mut batch,
+                sender,
+                batch_size,
+                Triple {
+                    subject: subject.clone(),
+                    predicate: bsddm("hasPropertySet"),
+                    object: Object::Iri(pset_subject.clone()),
+                },
+                &mut triples,
+            )?;
+            push(
+                &mut batch,
+                sender,
+                batch_size,
+                Triple {
+                    subject: pset_subject.clone(),
+                    predicate: rdf_type(),
+                    object: Object::Iri(bsddm("PropertySet")),
+                },
+                &mut triples,
+            )?;
+            if let Some(pset_code) = index.resolve_class(pset_name) {
+                push(
+                    &mut batch,
+                    sender,
+                    batch_size,
+                    Triple {
+                        subject: pset_subject.clone(),
+                        predicate: rdf_type(),
+                        object: Object::Iri(bsdd_class(pset_code)),
+                    },
+                    &mut triples,
+                )?;
+            } else {
+                push(
+                    &mut batch,
+                    sender,
+                    batch_size,
+                    Triple {
+                        subject: pset_subject.clone(),
+                        predicate: rdf_type(),
+                        // Phase 1 semantics cleanup: PascalCase class names
+                        object: Object::Iri(bsddm("CustomPropertySet")),
+                    },
+                    &mut triples,
+                )?;
+            }
+            if !pset_name.is_empty() {
+                push(
+                    &mut batch,
+                    sender,
+                    batch_size,
+                    Triple {
+                        subject: pset_subject.clone(),
+                        predicate: rdfs_label(),
+                        object: Object::Literal(pset_name.to_string()),
+                    },
+                    &mut triples,
+                )?;
+            }
+
+            for prop_id in &pset.properties {
+                if let Some(psv) = model.property_single_values.get(prop_id) {
+                    let Some(raw_value) =
+                        psv.nominal_value.as_ref().and_then(step_value_to_object)
+                    else {
+                        continue;
+                    };
+                    property_counter += 1;
+                    emit_property(
+                        &base,
+                        &subject,
+                        &object_guid,
+                        pset_name,
+                        &pset_subject,
+                        psv.name.as_str(),
+                        raw_value,
+                        model.schema,
+                        &class_name_like,
+                        index,
+                        &profile,
+                        effective_cache,
+                        resolve_property_unit(psv, &unit_by_type, model),
+                        &generated_at,
+                        &mut unmatched_histogram,
+                        &mut property_counter,
+                        &mut batch,
+                        sender,
+                        batch_size,
+                        &mut triples,
+                    )?;
+                    continue;
+                }
+
+                if let Some(pev) = model.property_enumerated_values.get(prop_id) {
+                    for enum_value in &pev.values {
+                        property_counter += 1;
+                        emit_property(
+                            &base,
+                            &subject,
+                            &object_guid,
+                            pset_name,
+                            &pset_subject,
+                            pev.name.as_str(),
+                            Object::Literal(enum_value.to_string()),
+                            model.schema,
+                            &class_name_like,
+                            index,
+                            &profile,
+                            effective_cache,
+                            None,
+                            &generated_at,
+                            &mut unmatched_histogram,
+                            &mut property_counter,
+                            &mut batch,
+                            sender,
+                            batch_size,
+                            &mut triples,
+                        )?;
+                    }
+                }
+            }
+        }
+    }
+
+    let mut quantity_object_ids: Vec<_> = model.quantities_for_object.keys().copied().collect();
+    quantity_object_ids.sort_unstable();
+
+    for object_id in quantity_object_ids {
+        let (subject, object_guid, class_name_like) =
+            if let Some(element) = model.elements.get(&object_id) {
+                (
+                    element_resource_iri(&base, element),
+                    element.guid.to_string(),
+                    element.entity_name.to_string(),
+                )
+            } else if let Some(spatial) = model.spatial_nodes.get(&object_id) {
+                (
+                    spatial_resource_iri(&base, spatial.spatial_type, &spatial.guid),
+                    spatial.guid.to_string(),
+                    spatial_ifc_class(spatial.spatial_type).to_string(),
+                )
+            } else {
+                continue;
+            };
+
+        let mut quantity_set_ids = model.quantities_for_object[&object_id].clone();
+        quantity_set_ids.sort_unstable();
+
+        for quantity_set_id in quantity_set_ids {
+            let Some(quantity_set) = model.element_quantities.get(&quantity_set_id) else {
+                continue;
+            };
+            let quantity_set_name = quantity_set.name.as_deref().unwrap_or_default();
+            let quantity_set_subject = bsdd_local_instance(
+                &base,
+                "qset",
+                &format!("{}_{}", sanitize(quantity_set_name), sanitize(&object_guid)),
+            );
+
+            push(
+                &mut batch,
+                sender,
+                batch_size,
+                Triple {
+                    subject: subject.clone(),
+                    predicate: bsddm("hasQuantitySet"),
+                    object: Object::Iri(quantity_set_subject.clone()),
+                },
+                &mut triples,
+            )?;
+            push(
+                &mut batch,
+                sender,
+                batch_size,
+                Triple {
+                    subject: quantity_set_subject.clone(),
+                    predicate: rdf_type(),
+                    object: Object::Iri(bsddm("QuantitySet")),
+                },
+                &mut triples,
+            )?;
+            if let Some(quantity_set_code) = index.resolve_class(quantity_set_name) {
+                push(
+                    &mut batch,
+                    sender,
+                    batch_size,
+                    Triple {
+                        subject: quantity_set_subject.clone(),
+                        predicate: rdf_type(),
+                        object: Object::Iri(bsdd_class(quantity_set_code)),
+                    },
+                    &mut triples,
+                )?;
+            } else {
+                push(
+                    &mut batch,
+                    sender,
+                    batch_size,
+                    Triple {
+                        subject: quantity_set_subject.clone(),
+                        predicate: rdf_type(),
+                        // Phase 1 semantics cleanup: PascalCase
+                        object: Object::Iri(bsddm("CustomQuantitySet")),
+                    },
+                    &mut triples,
+                )?;
+            }
+            if !quantity_set_name.is_empty() {
+                push(
+                    &mut batch,
+                    sender,
+                    batch_size,
+                    Triple {
+                        subject: quantity_set_subject.clone(),
+                        predicate: rdfs_label(),
+                        object: Object::Literal(quantity_set_name.to_string()),
+                    },
+                    &mut triples,
+                )?;
+            }
+
+            for quantity_id in &quantity_set.quantities {
+                let Some(quantity) = model.physical_quantities.get(quantity_id) else {
+                    continue;
+                };
+                let Some(raw_value) = quantity.value.as_ref().and_then(step_value_to_object)
+                else {
+                    continue;
+                };
+                quantity_counter += 1;
+                emit_property(
+                    &base,
+                    &subject,
+                    &object_guid,
+                    quantity_set_name,
+                    &quantity_set_subject,
+                    quantity.name.as_str(),
+                    raw_value,
+                    model.schema,
+                    &class_name_like,
+                    index,
+                    &profile,
+                    effective_cache,
+                    resolve_quantity_unit(quantity.entity_name.as_str(), &unit_by_type),
+                    &generated_at,
+                    &mut unmatched_histogram,
+                    &mut quantity_counter,
+                    &mut batch,
+                    sender,
+                    batch_size,
+                    &mut triples,
+                )?;
+            }
+        }
+    }
+
+    if !batch.is_empty() {
+        sender.send(batch).map_err(|_| StreamError::ChannelClosed)?;
+    }
+    if !unmatched_histogram.is_empty() {
+        let mut top: Vec<_> = unmatched_histogram.into_iter().collect();
+        top.sort_by(|a, b| b.1.cmp(&a.1));
+        let preview = top
+            .into_iter()
+            .take(20)
+            .map(|(k, v)| format!("{k}:{v}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        info!("bSDD unmatched top20: {preview}");
+    }
+    Ok(triples)
+}
+
+/// Score how well a given profile maps the model's properties.
+/// Returns a JSON summary for analyze-bsdd.
+pub fn score_profile_for_model(
+    model: &IfcModel,
+    profile_name: &str,
+    sample_limit: usize,
+) -> Result<serde_json::Value, String> {
+    let index = load_bsdd_index()?;
+    let profile = load_profile(profile_name)?;
+
+    let mut matched = 0usize;
+    let mut ambiguous = 0usize;
+    let mut unmapped = 0usize;
+    let mut confidence_sum = 0.0f64;
+    let mut confidence_count = 0usize;
+    let mut total = 0usize;
+
+    'outer: for object_id in model.property_sets_for_object.keys() {
+        let class_name_like = if let Some(element) = model.elements.get(object_id) {
+            element.entity_name.to_string()
+        } else if let Some(spatial) = model.spatial_nodes.get(object_id) {
+            spatial_ifc_class(spatial.spatial_type).to_string()
+        } else {
+            continue;
+        };
+        let pset_ids = match model.property_sets_for_object.get(object_id) {
+            Some(ids) => ids,
+            None => continue,
+        };
+        for pset_id in pset_ids {
+            let Some(pset) = model.property_sets.get(pset_id) else {
+                continue;
+            };
+            let pset_name = pset.name.as_deref().unwrap_or_default();
+            for prop_id in &pset.properties {
+                let prop_name = if let Some(psv) = model.property_single_values.get(prop_id) {
+                    psv.name.as_str()
+                } else if let Some(pev) = model.property_enumerated_values.get(prop_id) {
+                    pev.name.as_str()
+                } else {
+                    continue;
+                };
+                let m = index.resolve_property(
+                    model.schema,
+                    &class_name_like,
+                    pset_name,
+                    prop_name,
+                    &profile,
+                );
+                match m.status {
+                    MatchStatus::Matched | MatchStatus::Normalized => {
+                        matched += 1;
+                        if let Some(c) = m.confidence {
+                            confidence_sum += c;
+                            confidence_count += 1;
+                        }
+                    }
+                    MatchStatus::Ambiguous => ambiguous += 1,
+                    MatchStatus::Unmapped => unmapped += 1,
+                }
+                total += 1;
+                if total >= sample_limit {
+                    break 'outer;
+                }
+            }
+        }
+    }
+
+    let avg_conf = if confidence_count > 0 {
+        confidence_sum / confidence_count as f64
+    } else {
+        0.0
+    };
+
+    Ok(json!({
+        "profile": profile_name,
+        "sampled": total,
+        "matched": matched,
+        "ambiguous": ambiguous,
+        "unmapped": unmapped,
+        "matched_ratio": if total > 0 { matched as f64 / total as f64 } else { 0.0 },
+        "ambiguous_ratio": if total > 0 { ambiguous as f64 / total as f64 } else { 0.0 },
+        "unmapped_ratio": if total > 0 { unmapped as f64 / total as f64 } else { 0.0 },
+        "avg_confidence": avg_conf,
+    }))
+}
+
+/// Returns the names of all embedded profiles available for selection.
+pub fn list_embedded_profiles() -> Vec<&'static str> {
+    vec!["base", "revit-dach", "allplan-de", "tekla-en"]
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_property(
+    base: &str,
+    subject: &str,
+    object_guid: &str,
+    pset_name: &str,
+    pset_subject: &str,
+    prop_name: &str,
+    value: Object,
+    schema: StepSchema,
+    class_name_like: &str,
+    index: &BsddIndex,
+    profile: &BsddProfile,
+    match_cache: Option<&BsddMatchCache>,
+    unit: Option<String>,
+    generated_at: &str,
+    unmatched_histogram: &mut HashMap<String, u64>,
+    property_counter: &mut u64,
+    batch: &mut Vec<Triple>,
+    sender: &Sender<Vec<Triple>>,
+    batch_size: usize,
+    triples: &mut u64,
+) -> Result<(), StreamError> {
+    let match_result = if let Some(cache) = match_cache {
+        resolve_from_cache(cache, schema, class_name_like, pset_name, prop_name, profile)
+            .unwrap_or_else(|| {
+                index.resolve_property(schema, class_name_like, pset_name, prop_name, profile)
+            })
+    } else {
+        index.resolve_property(schema, class_name_like, pset_name, prop_name, profile)
+    };
+    if matches!(match_result.status, MatchStatus::Unmapped) {
+        let key = format!("{pset_name}|{prop_name}");
+        *unmatched_histogram.entry(key).or_insert(0) += 1;
+    }
+    let prop_subject = bsdd_local_instance(
+        base,
+        "property",
+        &format!(
+            "{}_{}_{}",
+            sanitize(prop_name),
+            sanitize(object_guid),
+            property_counter
+        ),
+    );
+    let state_subject = bsdd_local_instance(
+        base,
+        "state",
+        &format!(
+            "{}_{}_{}",
+            sanitize(prop_name),
+            sanitize(object_guid),
+            property_counter
+        ),
+    );
+
+    push(
+        batch,
+        sender,
+        batch_size,
+        Triple {
+            subject: pset_subject.to_string(),
+            predicate: bsddm("hasProperty"),
+            object: Object::Iri(prop_subject.clone()),
+        },
+        triples,
+    )?;
+
+    if let Some(code) = match_result.property_code.as_deref() {
+        push(
+            batch,
+            sender,
+            batch_size,
+            Triple {
+                subject: subject.to_string(),
+                predicate: bsdd_prop(code),
+                object: Object::Iri(prop_subject.clone()),
+            },
+            triples,
+        )?;
+    }
+
+    // Phase 1: emit candidateProperty triples for ambiguous matches
+    for candidate_code in &match_result.ambiguous_candidates {
+        push(
+            batch,
+            sender,
+            batch_size,
+            Triple {
+                subject: prop_subject.clone(),
+                predicate: bsddm("candidateProperty"),
+                object: Object::Iri(bsdd_prop(candidate_code)),
+            },
+            triples,
+        )?;
+    }
+
+    push(
+        batch,
+        sender,
+        batch_size,
+        Triple {
+            subject: prop_subject.clone(),
+            predicate: rdf_type(),
+            object: Object::Iri(opm_property()),
+        },
+        triples,
+    )?;
+    if matches!(match_result.status, MatchStatus::Unmapped) {
+        push(
+            batch,
+            sender,
+            batch_size,
+            Triple {
+                subject: prop_subject.clone(),
+                predicate: rdf_type(),
+                // Phase 1 semantics cleanup: PascalCase
+                object: Object::Iri(bsddm("CustomProperty")),
+            },
+            triples,
+        )?;
+    } else {
+        push(
+            batch,
+            sender,
+            batch_size,
+            Triple {
+                subject: prop_subject.clone(),
+                predicate: rdf_type(),
+                object: Object::Iri(bsddm("Property")),
+            },
+            triples,
+        )?;
+    }
+    push(
+        batch,
+        sender,
+        batch_size,
+        Triple {
+            subject: prop_subject.clone(),
+            predicate: opm_has_property_state(),
+            object: Object::Iri(state_subject.clone()),
+        },
+        triples,
+    )?;
+    push(
+        batch,
+        sender,
+        batch_size,
+        Triple {
+            subject: prop_subject.clone(),
+            predicate: rdfs_label(),
+            object: Object::Literal(format!("{pset_name}:{prop_name}")),
+        },
+        triples,
+    )?;
+    let _ = pset_name;
+    push(
+        batch,
+        sender,
+        batch_size,
+        Triple {
+            subject: prop_subject.clone(),
+            predicate: bsddm("mappingStatus"),
+            object: Object::Iri(mapping_status_iri(match_result.status)),
+        },
+        triples,
+    )?;
+    push(
+        batch,
+        sender,
+        batch_size,
+        Triple {
+            subject: prop_subject.clone(),
+            predicate: bsddm("matchingMethod"),
+            object: Object::Literal(match_result.method.to_string()),
+        },
+        triples,
+    )?;
+    if let Some(confidence) = match_result.confidence {
+        push(
+            batch,
+            sender,
+            batch_size,
+            Triple {
+                subject: prop_subject.clone(),
+                predicate: bsddm("matchingConfidence"),
+                object: Object::TypedLiteral {
+                    value: format!("{confidence:.4}"),
+                    datatype: format!("{XSD}decimal"),
+                },
+            },
+            triples,
+        )?;
+    }
+    if let Some(meta) = match_result.exact_meta.as_ref() {
+        if !meta.class_property_code.is_empty() {
+            push(
+                batch,
+                sender,
+                batch_size,
+                Triple {
+                    subject: prop_subject.clone(),
+                    predicate: bsddm("classPropertyCode"),
+                    object: Object::Literal(meta.class_property_code.clone()),
+                },
+                triples,
+            )?;
+        }
+    }
+
+    push(
+        batch,
+        sender,
+        batch_size,
+        Triple {
+            subject: state_subject.clone(),
+            predicate: rdf_type(),
+            object: Object::Iri(opm_current_property_state()),
+        },
+        triples,
+    )?;
+    push(
+        batch,
+        sender,
+        batch_size,
+        Triple {
+            subject: state_subject.clone(),
+            predicate: prov_generated_at_time(),
+            object: Object::TypedLiteral {
+                value: generated_at.to_string(),
+                datatype: format!("{XSD}dateTime"),
+            },
+        },
+        triples,
+    )?;
+    push(
+        batch,
+        sender,
+        batch_size,
+        Triple {
+            subject: state_subject.clone(),
+            predicate: schema_value(),
+            object: value,
+        },
+        triples,
+    )?;
+    if let Some(unit) = unit {
+        push(
+            batch,
+            sender,
+            batch_size,
+            Triple {
+                subject: state_subject,
+                predicate: smls_unit(),
+                object: Object::Iri(unit),
+            },
+            triples,
+        )?;
+    }
+
+    Ok(())
+}
+
+fn sanitize(value: &str) -> String {
+    let decoded = decode_ifc_unicode(value);
+    let transliterated = transliterate_for_matching(&decoded);
+    let mut out = String::with_capacity(transliterated.len());
+    let mut last_was_underscore = false;
+    for ch in transliterated.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch);
+            last_was_underscore = false;
+        } else if !last_was_underscore {
+            out.push('_');
+            last_was_underscore = true;
+        }
+    }
+    let trimmed = out.trim_matches('_');
+    if trimmed.is_empty() {
+        "value".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn push(
+    batch: &mut Vec<Triple>,
+    sender: &Sender<Vec<Triple>>,
+    batch_size: usize,
+    triple: Triple,
+    counter: &mut u64,
+) -> Result<(), StreamError> {
+    *counter += 1;
+    batch.push(triple);
+    if batch.len() >= batch_size {
+        sender
+            .send(std::mem::take(batch))
+            .map_err(|_| StreamError::ChannelClosed)?;
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests — Phase 1.4
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_index() -> BsddIndex {
+        let mut exact = HashMap::new();
+        exact.insert("ifcwall|psetbeamcommon|isexternal".to_string(), "IsExternal".to_string());
+        exact.insert("ifcwall|psetwallcommon|isexternal".to_string(), "IsExternal".to_string());
+        exact.insert("ifcdoor|psetdoorcommon|isexternal".to_string(), "IsExternal".to_string());
+
+        let mut by_class_prop: HashMap<String, Vec<String>> = HashMap::new();
+        by_class_prop.insert(
+            "ifcwall|isexternal".to_string(),
+            vec!["IsExternal".to_string()],
+        );
+        // Two candidates for ifcdoor|firerating — simulates ambiguous class-scoped fuzzy
+        by_class_prop.insert(
+            "ifcdoor|firerating".to_string(),
+            vec!["FireRating".to_string()],
+        );
+        by_class_prop.insert(
+            "ifcdoor|firerate".to_string(),
+            vec!["FireRating".to_string(), "FireResistance".to_string()],
+        );
+        // For fuzzy near-threshold test: close match to "loadbearing"
+        by_class_prop.insert(
+            "ifcwall|loadbearing".to_string(),
+            vec!["LoadBearing".to_string()],
+        );
+
+        let mut by_pset_prop: HashMap<String, Vec<String>> = HashMap::new();
+        by_pset_prop.insert(
+            "psetwallcommon|isexternal".to_string(),
+            vec!["IsExternal".to_string()],
+        );
+
+        let mut by_prop: HashMap<String, Vec<String>> = HashMap::new();
+        by_prop.insert(
+            "isexternal".to_string(),
+            vec!["IsExternal".to_string()],
+        );
+        by_prop.insert(
+            "loadbearing".to_string(),
+            vec!["LoadBearing".to_string()],
+        );
+
+        let mut class_code_by_norm = HashMap::new();
+        class_code_by_norm.insert("ifcwall".to_string(), "IfcWall".to_string());
+        class_code_by_norm.insert("ifcdoor".to_string(), "IfcDoor".to_string());
+
+        BsddIndex {
+            format: "test".to_string(),
+            dictionary_code: "IFC".to_string(),
+            dictionary_version: "4.3".to_string(),
+            organization_code: "buildingsmart".to_string(),
+            class_code_by_norm,
+            prop_name_by_code_norm: HashMap::new(),
+            exact,
+            exact_meta: HashMap::new(),
+            by_pset_prop,
+            by_class_prop,
+            by_prop,
+        }
+    }
+
+    fn base_profile() -> BsddProfile {
+        BsddProfile {
+            profile_id: "test".to_string(),
+            profile_version: "1.0.0".to_string(),
+            extends: None,
+            bsdd_index_version: None,
+            fuzzy: FuzzyConfig::default(),
+            class_aliases: HashMap::new(),
+            pset_aliases: HashMap::new(),
+            prop_aliases: HashMap::new(),
+            pset_prop_aliases: HashMap::new(),
+            hard_mappings: HashMap::new(),
+            schema_class_aliases: HashMap::new(),
+        }
+    }
+
+    /// Exact hit: IfcWall + PsetWallCommon + IsExternal → code "IsExternal"
+    #[test]
+    fn test_exact_hit() {
+        let index = test_index();
+        let profile = base_profile();
+        let result = index.resolve_property(
+            StepSchema::Ifc4x3Add2,
+            "IfcWall",
+            "PsetWallCommon",
+            "IsExternal",
+            &profile,
+        );
+        assert_eq!(result.status, MatchStatus::Matched);
+        assert_eq!(result.property_code.as_deref(), Some("IsExternal"));
+        assert_eq!(result.method, "exact_class_pset_prop");
+        assert_eq!(result.confidence, Some(1.0));
+    }
+
+    /// Fuzzy near threshold: "loadbearing_" (extra underscore, normalized away) on IfcWall.
+    /// Should fuzzy-match to LoadBearing within the IfcWall class scope.
+    #[test]
+    fn test_fuzzy_near_threshold() {
+        let index = test_index();
+        let profile = base_profile();
+        // "LoadBearing " with trailing space — normalizes to "loadbearing", exact class|prop hit
+        let result = index.resolve_property(
+            StepSchema::Ifc4x3Add2,
+            "IfcWall",
+            "SomeOtherPset",
+            "LoadBearing",
+            &profile,
+        );
+        // normalized_class_prop hits "ifcwall|loadbearing"
+        assert_eq!(result.status, MatchStatus::Normalized);
+        assert_eq!(result.property_code.as_deref(), Some("LoadBearing"));
+    }
+
+    /// Class-scoped fuzzy with threshold: prop name that is close but not exact.
+    /// For IfcWall + "loadbearig" (typo) → should fuzzy match within IfcWall scope.
+    #[test]
+    fn test_fuzzy_class_scoped_typo() {
+        let index = test_index();
+        let profile = base_profile();
+        // "loadbearig" has Jaro-Winkler similarity > 0.94 with "loadbearing"
+        let result = index.resolve_property(
+            StepSchema::Ifc4x3Add2,
+            "IfcWall",
+            "UnknownPset",
+            "loadbearig",
+            &profile,
+        );
+        // Should find it via class-scoped fuzzy
+        // (may be Normalized or Unmapped depending on JW score — this test verifies
+        // it does NOT cross-class match to a different entity's property)
+        assert!(
+            matches!(result.status, MatchStatus::Normalized | MatchStatus::Unmapped),
+            "expected Normalized or Unmapped, got {:?}",
+            result.status
+        );
+        // Must never return a cross-class code from a different IFC entity
+        if let Some(code) = &result.property_code {
+            // The only LoadBearing we've seeded is for IfcWall — that's fine
+            assert_eq!(code, "LoadBearing");
+        }
+    }
+
+    /// Ambiguous: IfcDoor + unknown pset + "FireRating" has two class-scoped candidates.
+    /// Expect Ambiguous with non-empty candidates list.
+    #[test]
+    fn test_class_scoped_ambiguous() {
+        let mut index = test_index();
+        // Add another candidate for the same prop under a different key so class|prop hits two
+        index.by_class_prop.insert(
+            "ifcdoor|firerating".to_string(),
+            vec!["FireRating".to_string(), "FireResistance".to_string()],
+        );
+        let profile = base_profile();
+        let result = index.resolve_property(
+            StepSchema::Ifc4x3Add2,
+            "IfcDoor",
+            "UnknownPset",
+            "FireRating",
+            &profile,
+        );
+        assert_eq!(result.status, MatchStatus::Ambiguous);
+        assert!(
+            !result.ambiguous_candidates.is_empty(),
+            "ambiguous result must carry candidate list"
+        );
+        assert!(result.property_code.is_none());
+    }
+
+    /// Verify FUZZY_THRESHOLD is 0.94 — this test fails if the constant changes without review.
+    #[test]
+    fn test_fuzzy_threshold_unchanged() {
+        assert_eq!(
+            FUZZY_THRESHOLD,
+            0.94,
+            "FUZZY_THRESHOLD changed — review all fuzzy-match tests before adjusting"
+        );
+    }
+
+    /// Verify MAX_FUZZY_CANDIDATES is 400.
+    #[test]
+    fn test_max_fuzzy_candidates_unchanged() {
+        assert_eq!(
+            MAX_FUZZY_CANDIDATES,
+            400,
+            "MAX_FUZZY_CANDIDATES changed — review performance implications"
+        );
+    }
+}

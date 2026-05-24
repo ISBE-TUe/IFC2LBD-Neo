@@ -46,6 +46,22 @@ for registration and `conflicts_with` resolution.
 `ExportPlugin::start_session(ctx)` returns `Box<dyn ExportSession>`. All output goes through the
 session's `open_sink()` / `accept_derived_file()` / `finalize()`. Never bypass the session.
 
+**CLI**: `main.rs` resolves the active export plugin via
+`registry.resolve_active_export(&plan.enabled_ids)`, opens a session, wraps it in
+`Arc<Mutex<Option<Box<dyn ExportSession>>>>`, and every file-writing thread (LBD serializer,
+IfcOWL sidecar, `QuadChunkWriter` for chunked N-Quads, manifest writer) requests its writer
+through `session::open_sink()`. After all writer threads join, `session::finalize()` returns the
+per-file summaries which are logged.
+
+**WASM**: the streaming runner (`run_to_sink`) emits bytes via a `js_sys::Function` JS callback
+which is `!Send`. The `ExportSession` trait requires `Send` for CLI-side mutex sharing, so the
+streaming path cannot use the trait directly — `SinkChunkWriter` writes straight to the JS
+callback. The runner still honors the activation plan: it checks `settings.has(LOG_EXPORT_ID)`
+before emitting per-module log sidecars, so plugin-driven dispatch decisions are respected even
+though the delivery mechanism (JS callback) is platform-fixed. The `run_memory` in-memory path
+uses `WasmFileExportSession` / `WasmLogExportSession` directly because buffered byte vectors
+are `Send`.
+
 ---
 
 ## 3. `PipelineContext` rules
@@ -175,7 +191,6 @@ The CLI (`ifc2lbd-cli`) and WASM (`ifc2lbd-wasm`) runners must expose equivalent
 
 ## 13. Further reading
 
-- Plugin authoring guide: `docs/current/plugin-authoring-and-activation.md`
-- Pipeline architecture: `docs/current/converter-pipeline.md`
-- WASM vs CLI differences: `docs/current/wasm-vs-cli-comparison.md`
+- Plugin authoring guide: `docs/plugin-authoring-and-activation.md`
+- Pipeline architecture: `docs/converter-pipeline.md`
 - Topology plugin example: `crates/plugin-topology-full/`

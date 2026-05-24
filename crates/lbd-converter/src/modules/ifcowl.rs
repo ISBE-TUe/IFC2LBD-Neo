@@ -4,9 +4,14 @@ use crossbeam::channel::Sender;
 use ifc_step::{StepFile, StepSchema};
 use lbd_ontology::Triple;
 
-use crate::{ifcowl_entity_subjects, ifcowl_lookup, ifcowl_namespace, IfcOwlEmitter, StreamError};
+use crate::{ifcowl_entity_subjects, ifcowl_lookup, ifcowl_namespace, IfcOwlEmitter, IfcowlMode, StreamError};
 
-pub(crate) fn convert_ifcowl(step: &StepFile, base: &str, schema: StepSchema) -> Vec<Triple> {
+pub(crate) fn convert_ifcowl(
+    step: &StepFile,
+    base: &str,
+    schema: StepSchema,
+    mode: IfcowlMode,
+) -> Vec<Triple> {
     let mut ids: Vec<_> = step.entities.keys().copied().collect();
     ids.sort_unstable();
     let namespace = ifcowl_namespace(schema);
@@ -19,7 +24,8 @@ pub(crate) fn convert_ifcowl(step: &StepFile, base: &str, schema: StepSchema) ->
         lookup,
         max_entity_id,
         &entity_subjects,
-        true,
+        matches!(mode, IfcowlMode::Full),
+        mode,
     );
 
     for id in ids {
@@ -37,6 +43,7 @@ pub fn stream_ifcowl(
     sender: &Sender<Vec<Triple>>,
     _stream_batch_size: usize,
     max_workers_override: usize,
+    mode: IfcowlMode,
 ) -> Result<(), StreamError> {
     let mut ids: Vec<_> = step.entities.keys().copied().collect();
     ids.sort_unstable();
@@ -61,7 +68,8 @@ pub fn stream_ifcowl(
             lookup,
             max_entity_id,
             &entity_subjects,
-            true,
+            matches!(mode, IfcowlMode::Full),
+            mode,
         );
         for id in ids {
             let entity = &step.entities[&id];
@@ -99,7 +107,8 @@ pub fn stream_ifcowl(
                         lookup_ref,
                         node_start,
                         subjects_ref,
-                        worker_index == 0,
+                        worker_index == 0 && matches!(mode, IfcowlMode::Full),
+                        mode,
                     );
                     for id in chunk {
                         let entity = &step_ref.entities[id];

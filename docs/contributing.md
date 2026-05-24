@@ -40,9 +40,9 @@ This guide defines contribution standards for maintainable, predictable converte
 
 ## Documentation Required by Change Type
 
-- Any converter pipeline change: update `docs/current/converter-pipeline.md`.
+- Any converter pipeline change: update `docs/converter-pipeline.md`.
 - Any new flag or changed flag semantics: update `README.md` and CLI docs.
-- Any new benchmark workflow: update `docs/current/testing-and-benchmarking.md`.
+- Any new benchmark workflow: update `docs/testing-and-benchmarking.md`.
 
 ## Review Checklist
 

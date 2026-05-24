@@ -84,7 +84,6 @@ impl PipelinePlugin for TemplateExportPlugin {
             conflicts_with: vec![
                 lbd_pipeline::FILE_EXPORT_ID,
                 lbd_pipeline::STDOUT_EXPORT_ID,
-                lbd_pipeline::GRAFEO_EXPORT_ID,
             ],
             failure_policy: FailurePolicy::Required,
             parallelism: ParallelismMode::Serial,
