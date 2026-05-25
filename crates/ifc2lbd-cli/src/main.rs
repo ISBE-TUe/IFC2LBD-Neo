@@ -254,6 +254,9 @@ fn main() -> anyhow::Result<()> {
     ctx.insert(model.clone());
     ctx.insert(std::sync::Arc::new(base_options.clone()));
     ctx.insert(step.clone());
+    if preprocess_ids.iter().any(|id| id == lbd_pipeline::QTO_PREPROCESS_ID) {
+        ctx.insert(std::sync::Arc::new(plugin_qto_preprocess::QtoOptions::default()));
+    }
 
     let (output_dir, lbd_filename) =
         resolve_output_dir_and_filename(args.output_file.as_deref(), input_path, output_format);
