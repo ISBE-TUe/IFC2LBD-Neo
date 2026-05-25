@@ -17,6 +17,9 @@ pub enum SolidKind {
     /// IFCTRIANGULATEDFACESET — pre-tessellated mesh (IFC4).
     /// `faceset_id` is the entity containing both Coordinates and CoordIndex.
     TriangulatedFaceSet { faceset_id: EntityId },
+    /// IFCFACEBASEDSURFACEMODEL — open/closed surface model (IFC2x3 Revit exports).
+    /// `model_id` is the IfcFaceBasedSurfaceModel entity.
+    FaceBasedSurfaceModel { model_id: EntityId },
     Unknown,
 }
 
@@ -78,7 +81,8 @@ pub fn best_solid(step: &StepFile, element_id: EntityId) -> SolidKind {
         match &solid {
             SolidKind::ExtrudedAreaSolid { .. }
             | SolidKind::FacetedBrep { .. }
-            | SolidKind::TriangulatedFaceSet { .. } => return solid,
+            | SolidKind::TriangulatedFaceSet { .. }
+            | SolidKind::FaceBasedSurfaceModel { .. } => return solid,
             SolidKind::BoundingBox { .. } => {
                 if bbox_fallback.is_none() {
                     bbox_fallback = Some(solid);
@@ -108,8 +112,40 @@ fn solid_from_entity(step: &StepFile, entity_id: EntityId) -> Option<SolidKind> 
             let shell_id = e.args.get(0)?.as_ref()?;
             Some(SolidKind::FacetedBrep { shell_id })
         }
-        "IFCTRIANGULATEDFACESET" => {
+        "IFCTRIANGULATEDFACESET" | "IFCPOLYGONALFACES" => {
             Some(SolidKind::TriangulatedFaceSet { faceset_id: entity_id })
+        }
+        "IFCFACEBASEDSURFACEMODEL" => {
+            Some(SolidKind::FaceBasedSurfaceModel { model_id: entity_id })
+        }
+        // Boolean operations: walk into FirstOperand to find the base solid.
+        // args[0]=Operator, args[1]=FirstOperand, args[2]=SecondOperand.
+        // IFCBOOLEANCLIPPINGRESULT clips against half-spaces (doors/windows in walls).
+        // IFCBOOLEANRESULT is the general case.
+        "IFCBOOLEANCLIPPINGRESULT" | "IFCBOOLEANRESULT" => {
+            let first_operand_id = e.args.get(1)?.as_ref()?;
+            solid_from_entity(step, first_operand_id)
+        }
+        // Mapped item: follow MappingSource → IfcRepresentationMap → MappedRepresentation.
+        // args[0]=MappingSource (IfcRepresentationMap), args[1]=MappingTarget (transform).
+        // IfcRepresentationMap: args[1]=MappedRepresentation (IfcShapeRepresentation).
+        // Mapped item: follow MappingSource → IfcRepresentationMap → MappedRepresentation.
+        // args[0]=MappingSource (IfcRepresentationMap), args[1]=MappingTarget (transform).
+        // IfcRepresentationMap: args[0]=MappingOrigin, args[1]=MappedRepresentation.
+        "IFCMAPPEDITEM" => {
+            let map_source_id = e.args.get(0)?.as_ref()?;
+            let map_source = step.entities.get(&map_source_id)?;
+            let mapped_rep_id = map_source.args.get(1)?.as_ref()?;
+            let mapped_rep = step.entities.get(&mapped_rep_id)?;
+            let items = mapped_rep.args.get(3)?.as_list()?;
+            for item_val in items {
+                if let Some(item_id) = item_val.as_ref() {
+                    if let Some(solid) = solid_from_entity(step, item_id) {
+                        return Some(solid);
+                    }
+                }
+            }
+            None
         }
         _ => None,
     }

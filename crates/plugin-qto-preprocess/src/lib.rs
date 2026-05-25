@@ -15,7 +15,7 @@ mod step_geom;
 
 use std::sync::Arc;
 
-use ifc_model::IfcModel;
+use ifc_model::{IfcModel, Unit};
 use ifc_step::StepFile;
 use lbd_pipeline::{
     FailurePolicy, ParallelismMode, PipelineContext, PipelineLogBundle, PipelinePlugin,
@@ -28,6 +28,35 @@ use audit::MissingQuantityReport;
 use inject::{inject, ComputedValues};
 use qto_names::QuantityKind;
 use step_geom::SolidKind;
+
+/// Sum the volumes of all IFCOPENINGELEMENT entities that void `element_id`.
+/// `element_cross_section_max_depth` caps the effective opening depth to the element's own
+/// cross-section dimension — openings are modelled to extend beyond the element on both sides
+/// for clean boolean cuts, so their full extrusion depth overcounts the actual subtraction.
+fn sum_opening_volumes(
+    step: &ifc_step::StepFile,
+    model: &IfcModel,
+    element_id: ifc_step::EntityId,
+    element_cross_section_max_depth: f64,
+) -> f64 {
+    model
+        .rel_voids
+        .iter()
+        .filter(|rv| rv.element == element_id)
+        .filter_map(|rv| {
+            match step_geom::best_solid(step, rv.opening) {
+                SolidKind::ExtrudedAreaSolid { profile_id, depth } => {
+                    rep_parser::from_extruded_solid(step, profile_id, depth)
+                        .map(|r| r.profile_area * depth.min(element_cross_section_max_depth))
+                }
+                SolidKind::BoundingBox { x_dim, y_dim, z_dim } => {
+                    Some(x_dim * y_dim * z_dim.min(element_cross_section_max_depth))
+                }
+                _ => None,
+            }
+        })
+        .sum()
+}
 
 // ---------------------------------------------------------------------------
 // Options
@@ -105,20 +134,21 @@ impl PreprocessPlugin for QtoPreprocessPlugin {
         // --- Compute --------------------------------------------------------
         // Compute geometry for each element independently — parallel-safe since
         // StepFile and IfcModel are read-only through shared references.
+        let length_scale = length_scale_factor(&model);
         #[cfg(not(target_arch = "wasm32"))]
         let raw_results: Vec<(usize, ComputeOutput)> = {
             use rayon::prelude::*;
             reports
                 .par_iter()
                 .enumerate()
-                .map(|(idx, report)| (idx, compute_for_element(&step, &model, report, &options)))
+                .map(|(idx, report)| (idx, compute_for_element(&step, &model, report, &options, length_scale)))
                 .collect()
         };
         #[cfg(target_arch = "wasm32")]
         let raw_results: Vec<(usize, ComputeOutput)> = reports
             .iter()
             .enumerate()
-            .map(|(idx, report)| (idx, compute_for_element(&step, &model, report, &options)))
+            .map(|(idx, report)| (idx, compute_for_element(&step, &model, report, &options, length_scale)))
             .collect();
 
         let mut computed_pairs: Vec<(usize, ComputedValues)> = Vec::new();
@@ -223,11 +253,58 @@ impl ComputeOutput {
     }
 }
 
+/// Returns the factor to convert model length units → metres.
+/// e.g. MILLI METRE → 0.001, bare METRE → 1.0.
+fn length_scale_factor(model: &IfcModel) -> f64 {
+    let length_unit = model.unit_assignments.values().find_map(|ua| {
+        ua.units.iter().find_map(|&uid| {
+            match model.units.get(&uid) {
+                Some(Unit::Si { unit_type, .. })
+                    if unit_type.as_deref() == Some("LENGTHUNIT") =>
+                {
+                    model.units.get(&uid)
+                }
+                _ => None,
+            }
+        })
+    });
+    match length_unit {
+        Some(Unit::Si { prefix, .. }) => match prefix.as_deref() {
+            Some("MILLI") => 0.001,
+            Some("CENTI") => 0.01,
+            Some("DECI") => 0.1,
+            Some("KILO") => 1_000.0,
+            _ => 1.0,
+        },
+        _ => 1.0,
+    }
+}
+
+/// Scale all computed values from model-native units to SI metres/m²/m³.
+fn scale_computed_values(cv: &mut ComputedValues, scale: f64) {
+    let s2 = scale * scale;
+    let s3 = scale * scale * scale;
+    macro_rules! sc {
+        ($f:ident, $s:expr) => {
+            if let Some(v) = cv.$f { cv.$f = Some(v * $s); }
+        };
+    }
+    sc!(length, scale); sc!(height, scale); sc!(width, scale); sc!(depth, scale);
+    sc!(perimeter, scale); sc!(gross_perimeter, scale);
+    sc!(gross_area, s2); sc!(net_area, s2); sc!(area, s2);
+    sc!(gross_footprint_area, s2); sc!(net_footprint_area, s2);
+    sc!(gross_side_area, s2); sc!(net_side_area, s2);
+    sc!(gross_floor_area, s2); sc!(net_floor_area, s2);
+    sc!(cross_section_area, s2); sc!(outer_surface_area, s2);
+    sc!(gross_volume, s3); sc!(net_volume, s3);
+}
+
 fn compute_for_element(
     step: &StepFile,
     model: &IfcModel,
     report: &MissingQuantityReport,
     options: &QtoOptions,
+    length_scale: f64,
 ) -> ComputeOutput {
     let element_id = report.element_id;
     let mut cv = ComputedValues::default();
@@ -299,12 +376,18 @@ fn compute_for_element(
                 }
 
                 // Volume is universally derivable from any ExtrudedAreaSolid.
-                // GrossVolume uses the same formula (we can't subtract openings here).
-                if needs(QuantityKind::NetVolume) {
-                    cv.net_volume = Some(rep.net_volume());
-                }
+                // GrossVolume is the full extrusion; NetVolume subtracts openings.
+                // For the opening cap: openings are extruded beyond the element face on both
+                // sides (Revit style), so cap their effective depth at the element's own
+                // cross-section thickness (profile_min_span). For beams/columns the cap is
+                // their minor axis; for walls it is the wall thickness.
+                let gross_vol = rep.net_volume();
                 if needs(QuantityKind::GrossVolume) {
-                    cv.gross_volume = Some(rep.net_volume());
+                    cv.gross_volume = Some(gross_vol);
+                }
+                if needs(QuantityKind::NetVolume) {
+                    let opening_vol = sum_opening_volumes(step, model, element_id, rep.profile_min_span);
+                    cv.net_volume = Some((gross_vol - opening_vol).max(0.0));
                 }
                 if needs(QuantityKind::CrossSectionArea) && cv.cross_section_area.is_none() {
                     cv.cross_section_area = Some(rep.profile_area);
@@ -322,6 +405,9 @@ fn compute_for_element(
                 if needs(QuantityKind::NetVolume) {
                     cv.net_volume = Some(mesh.net_volume);
                 }
+                if needs(QuantityKind::GrossVolume) {
+                    cv.gross_volume = Some(mesh.net_volume);
+                }
                 if needs(QuantityKind::OuterSurfaceArea) {
                     cv.outer_surface_area = Some(mesh.net_surface_area);
                 }
@@ -333,6 +419,21 @@ fn compute_for_element(
                 let needs = |k: QuantityKind| report.missing.contains(&k);
                 if needs(QuantityKind::NetVolume) {
                     cv.net_volume = Some(mesh.net_volume);
+                }
+                if needs(QuantityKind::OuterSurfaceArea) {
+                    cv.outer_surface_area = Some(mesh.net_surface_area);
+                }
+            }
+        }
+        SolidKind::FaceBasedSurfaceModel { model_id } if options.compute_mesh_volume => {
+            if let Some(mesh) = mesh_volume::from_face_based_surface_model(step, *model_id) {
+                tier = ComputeTier::Mesh;
+                let needs = |k: QuantityKind| report.missing.contains(&k);
+                if needs(QuantityKind::NetVolume) {
+                    cv.net_volume = Some(mesh.net_volume);
+                }
+                if needs(QuantityKind::GrossVolume) {
+                    cv.gross_volume = Some(mesh.net_volume);
                 }
                 if needs(QuantityKind::OuterSurfaceArea) {
                     cv.outer_surface_area = Some(mesh.net_surface_area);
@@ -384,6 +485,10 @@ fn compute_for_element(
             if needs(QuantityKind::Area) { cv.area = Some(h * w); }
             if needs(QuantityKind::Perimeter) { cv.perimeter = Some(2.0 * (h + w)); }
         }
+    }
+
+    if length_scale != 1.0 {
+        scale_computed_values(&mut cv, length_scale);
     }
 
     ComputeOutput { values: cv, tier }

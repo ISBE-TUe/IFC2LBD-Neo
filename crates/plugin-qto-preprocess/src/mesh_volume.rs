@@ -23,6 +23,30 @@ pub fn from_faceted_brep(step: &StepFile, shell_id: EntityId) -> Option<MeshResu
     Some(metrics_from_triangles(&triangles))
 }
 
+/// Attempt to compute mesh metrics from an IFCFACEBASEDSURFACEMODEL.
+/// The model has a list of IfcConnectedFaceSet (FbsmFaces), each of which
+/// contains IfcFace entities — same structure as IfcClosedShell.
+pub fn from_face_based_surface_model(step: &StepFile, model_id: EntityId) -> Option<MeshResult> {
+    let model = step.entities.get(&model_id)?;
+    // FbsmFaces is args[0]: list of IfcConnectedFaceSet refs.
+    let face_sets = model.args.first()?.as_list()?;
+    let mut triangles = Vec::new();
+    for set_val in face_sets {
+        if let Some(set_id) = set_val.as_ref() {
+            let set = step.entities.get(&set_id)?;
+            // CfsFaces is args[0]: list of IfcFace refs.
+            if let Some(faces) = set.args.first().and_then(StepValue::as_list) {
+                for face_val in faces {
+                    if let Some(face_id) = face_val.as_ref() {
+                        tessellate_face(step, face_id, &mut triangles);
+                    }
+                }
+            }
+        }
+    }
+    if triangles.is_empty() { None } else { Some(metrics_from_triangles(&triangles)) }
+}
+
 /// Attempt to compute mesh metrics from an IFCTRIANGULATEDFACESET.
 pub fn from_triangulated_faceset(step: &StepFile, faceset_id: EntityId) -> Option<MeshResult> {
     let triangles = parse_triangulated_faceset(step, faceset_id)?;
@@ -87,8 +111,9 @@ fn tessellate_closed_shell(step: &StepFile, shell_id: EntityId) -> Option<Vec<Tr
     let face_list = shell.args.first()?.as_list()?;
     let mut triangles = Vec::new();
     for face_val in face_list {
-        let face_id = face_val.as_ref()?;
-        tessellate_face(step, face_id, &mut triangles);
+        if let Some(face_id) = face_val.as_ref() {
+            tessellate_face(step, face_id, &mut triangles);
+        }
     }
     if triangles.is_empty() { None } else { Some(triangles) }
 }

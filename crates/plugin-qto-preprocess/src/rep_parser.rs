@@ -17,6 +17,9 @@ pub struct RepResult {
     pub profile_area: f64,
     /// Cross-section profile perimeter.
     pub profile_perimeter: f64,
+    /// Minimum bounding dimension of the profile (thickness for walls, min side for beams).
+    /// Used to cap opening subtraction depth so it never exceeds the element's own cross section.
+    pub profile_min_span: f64,
 }
 
 impl RepResult {
@@ -31,23 +34,25 @@ impl RepResult {
 
 /// Try to parse an IFCEXTRUDEDAREASOLID entity into a `RepResult`.
 pub fn from_extruded_solid(step: &StepFile, profile_id: EntityId, depth: f64) -> Option<RepResult> {
-    let (area, perimeter) = profile_area_perimeter(step, profile_id)?;
+    let (area, perimeter, min_span) = profile_area_perimeter_span(step, profile_id)?;
     Some(RepResult {
         extrusion_depth: depth,
         profile_area: area,
         profile_perimeter: perimeter,
+        profile_min_span: min_span,
     })
 }
 
-/// Compute (area, perimeter) for a profile definition entity.
-fn profile_area_perimeter(step: &StepFile, profile_id: EntityId) -> Option<(f64, f64)> {
+/// Compute (area, perimeter, min_span) for a profile definition entity.
+/// min_span is the minimum bounding dimension (e.g. wall thickness, beam minor axis).
+fn profile_area_perimeter_span(step: &StepFile, profile_id: EntityId) -> Option<(f64, f64, f64)> {
     let e = step.entities.get(&profile_id)?;
     match e.entity_name.as_str() {
         "IFCRECTANGLEPROFILEDEF" => {
             // args: (ProfileType, ProfileName, Position, XDim, YDim)
             let x = real_from_step(e.args.get(3)?)?;
             let y = real_from_step(e.args.get(4)?)?;
-            Some((x * y, 2.0 * (x + y)))
+            Some((x * y, 2.0 * (x + y), x.min(y)))
         }
         "IFCRECTANGLEHOLLOWPROFILEDEF" => {
             // outer XDim/YDim at args[3..4], wall thickness at args[5]
@@ -57,27 +62,26 @@ fn profile_area_perimeter(step: &StepFile, profile_id: EntityId) -> Option<(f64,
             let outer_area = x * y;
             let inner_x = (x - 2.0 * t).max(0.0);
             let inner_y = (y - 2.0 * t).max(0.0);
-            Some((outer_area - inner_x * inner_y, 2.0 * (x + y)))
+            Some((outer_area - inner_x * inner_y, 2.0 * (x + y), x.min(y)))
         }
         "IFCCIRCLEPROFILEDEF" => {
             // args: (ProfileType, ProfileName, Position, Radius)
             let r = real_from_step(e.args.get(3)?)?;
-            Some((PI * r * r, 2.0 * PI * r))
+            Some((PI * r * r, 2.0 * PI * r, 2.0 * r))
         }
         "IFCCIRCLEHOLLOWPROFILEDEF" => {
             // args: (ProfileType, ProfileName, Position, Radius, WallThickness)
             let r = real_from_step(e.args.get(3)?)?;
             let t = real_from_step(e.args.get(4)?).unwrap_or(0.0);
             let r_inner = (r - t).max(0.0);
-            Some((PI * (r * r - r_inner * r_inner), 2.0 * PI * r))
+            Some((PI * (r * r - r_inner * r_inner), 2.0 * PI * r, 2.0 * r))
         }
         "IFCELLIPSEPROFILEDEF" => {
             // args: (ProfileType, ProfileName, Position, SemiAxis1, SemiAxis2)
             let a = real_from_step(e.args.get(3)?)?;
             let b = real_from_step(e.args.get(4)?)?;
-            // Ramanujan approximation for perimeter
             let perimeter = PI * (3.0 * (a + b) - ((3.0 * a + b) * (a + 3.0 * b)).sqrt());
-            Some((PI * a * b, perimeter))
+            Some((PI * a * b, perimeter, 2.0 * a.min(b)))
         }
         "IFCISHAPEPROFILEDEF" => {
             // args: (ProfileType, ProfileName, Position, OverallWidth, OverallDepth,
@@ -87,8 +91,8 @@ fn profile_area_perimeter(step: &StepFile, profile_id: EntityId) -> Option<(f64,
             let tw = real_from_step(e.args.get(5)?)?;
             let tf = real_from_step(e.args.get(6)?)?;
             let area = 2.0 * w * tf + (d - 2.0 * tf) * tw;
-            let perimeter = 2.0 * (w + d); // approx outer perimeter
-            Some((area, perimeter))
+            let perimeter = 2.0 * (w + d);
+            Some((area, perimeter, w.min(d)))
         }
         "IFCTSHAPEPROFILEDEF" => {
             // args: (ProfileType, ProfileName, Position, Depth, FlangeWidth,
@@ -98,8 +102,8 @@ fn profile_area_perimeter(step: &StepFile, profile_id: EntityId) -> Option<(f64,
             let tw = real_from_step(e.args.get(5)?)?;
             let tf = real_from_step(e.args.get(6)?)?;
             let area = fw * tf + (d - tf) * tw;
-            let perimeter = fw + 2.0 * d + tw; // rough approx
-            Some((area, perimeter))
+            let perimeter = fw + 2.0 * d + tw;
+            Some((area, perimeter, tw.min(tf)))
         }
         "IFCLSHAPEPROFILEDEF" => {
             // args: (ProfileType, ProfileName, Position, Depth, Width, Thickness, ...)
@@ -108,39 +112,69 @@ fn profile_area_perimeter(step: &StepFile, profile_id: EntityId) -> Option<(f64,
             let t = real_from_step(e.args.get(5)?)?;
             let area = depth * t + (width - t) * t;
             let perimeter = depth + width + depth - t + width - t;
-            Some((area, perimeter))
+            Some((area, perimeter, t))
         }
         "IFCARBITRARYCLOSEDPROFILEDEF" => {
             // args: (ProfileType, ProfileName, OuterCurve)
             let curve_id = e.args.get(2)?.as_ref()?;
-            arbitrary_closed_profile(step, curve_id)
+            let (area, perimeter, pts) = arbitrary_closed_profile_with_pts(step, curve_id)?;
+            let min_span = bbox_min_span(&pts);
+            Some((area, perimeter, min_span))
         }
         "IFCARBITRARYPROFILEDEFWITHVOIDS" => {
             // args: (ProfileType, ProfileName, OuterCurve, InnerCurves)
             let outer_id = e.args.get(2)?.as_ref()?;
-            let (outer_area, outer_perimeter) = arbitrary_closed_profile(step, outer_id)?;
-            // Subtract inner voids
+            let (outer_area, outer_perimeter, outer_pts) = arbitrary_closed_profile_with_pts(step, outer_id)?;
+            let min_span = bbox_min_span(&outer_pts);
             let mut net_area = outer_area;
             if let Some(inners) = e.args.get(3).and_then(StepValue::as_list) {
                 for inner_val in inners {
                     if let Some(inner_id) = inner_val.as_ref() {
-                        if let Some((inner_area, _)) = arbitrary_closed_profile(step, inner_id) {
+                        if let Some((inner_area, _, _)) = arbitrary_closed_profile_with_pts(step, inner_id) {
                             net_area -= inner_area;
                         }
                     }
                 }
             }
-            Some((net_area.max(0.0), outer_perimeter))
+            Some((net_area.max(0.0), outer_perimeter, min_span))
         }
         _ => None,
     }
 }
 
-/// Compute (area, perimeter) for a closed curve via shoelace formula.
-fn arbitrary_closed_profile(
+fn bbox_min_span(pts: &[[f64; 3]]) -> f64 {
+    if pts.is_empty() {
+        return 0.0;
+    }
+    let (mut xmin, mut xmax) = (f64::INFINITY, f64::NEG_INFINITY);
+    let (mut ymin, mut ymax) = (f64::INFINITY, f64::NEG_INFINITY);
+    for &[x, y, _] in pts {
+        xmin = xmin.min(x); xmax = xmax.max(x);
+        ymin = ymin.min(y); ymax = ymax.max(y);
+    }
+    let x_span = (xmax - xmin).abs();
+    let y_span = (ymax - ymin).abs();
+    x_span.min(y_span).max(0.001) // floor at 1mm to avoid zero
+}
+
+/// Compute (area, perimeter, points) for a closed curve via shoelace formula.
+fn arbitrary_closed_profile_with_pts(
     step: &StepFile,
     curve_id: EntityId,
-) -> Option<(f64, f64)> {
+) -> Option<(f64, f64, Vec<[f64; 3]>)> {
+    let (area, perimeter, pts) = arbitrary_closed_profile_inner(step, curve_id)?;
+    Some((area, perimeter, pts))
+}
+
+fn arbitrary_closed_profile(step: &StepFile, curve_id: EntityId) -> Option<(f64, f64)> {
+    let (area, perimeter, _) = arbitrary_closed_profile_inner(step, curve_id)?;
+    Some((area, perimeter))
+}
+
+fn arbitrary_closed_profile_inner(
+    step: &StepFile,
+    curve_id: EntityId,
+) -> Option<(f64, f64, Vec<[f64; 3]>)> {
     let curve = step.entities.get(&curve_id)?;
     let points = match curve.entity_name.as_str() {
         "IFCPOLYLINE" => {
@@ -199,7 +233,7 @@ fn arbitrary_closed_profile(
                         None
                     } else {
                         let (area, perimeter) = shoelace_2d(&ordered);
-                        Some((area.abs(), perimeter))
+                        Some((area.abs(), perimeter, ordered))
                     };
                 }
             }
@@ -220,7 +254,7 @@ fn arbitrary_closed_profile(
 
     // Shoelace in XY plane (profile def is always in local 2D / XY).
     let (area, perimeter) = shoelace_2d(&points);
-    Some((area.abs(), perimeter))
+    Some((area.abs(), perimeter, points))
 }
 
 fn shoelace_2d(pts: &[[f64; 3]]) -> (f64, f64) {

@@ -160,8 +160,10 @@ pub fn qto_spec_for(entity_name: &str) -> QtoSpec {
                 QuantityKind::NetVolume,
             ],
         },
-        "IFCSTAIR" => QtoSpec {
-            set_name: "Qto_StairBaseQuantities",
+        // bSDD IFC4x3 has no Qto_StairBaseQuantities for IfcStair itself.
+        // IfcStairFlight has its own quantity set per bSDD.
+        "IFCSTAIRFLIGHT" => QtoSpec {
+            set_name: "Qto_StairFlightBaseQuantities",
             quantities: &[
                 QuantityKind::Length,
                 QuantityKind::GrossVolume,
@@ -170,10 +172,15 @@ pub fn qto_spec_for(entity_name: &str) -> QtoSpec {
         },
         "IFCROOF" => QtoSpec {
             set_name: "Qto_RoofBaseQuantities",
-            quantities: &[QuantityKind::GrossArea, QuantityKind::NetArea],
+            // bSDD: GrossArea, NetArea, ProjectedArea only — no volumes
+            quantities: &[
+                QuantityKind::GrossArea,
+                QuantityKind::NetArea,
+            ],
         },
         "IFCCOVERING" => QtoSpec {
             set_name: "Qto_CoveringBaseQuantities",
+            // bSDD: GrossArea, NetArea, Width only — no volumes
             quantities: &[
                 QuantityKind::GrossArea,
                 QuantityKind::NetArea,
