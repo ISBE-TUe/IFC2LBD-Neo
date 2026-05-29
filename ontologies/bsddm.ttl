@@ -102,7 +102,21 @@ bsddm:hasQuantitySet
 bsddm:hasProperty
     a owl:ObjectProperty ;
     rdfs:label "hasProperty"@en ;
-    rdfs:comment "Links a bsddm:PropertySet or bsddm:QuantitySet to an individual property node."@en ;
+    rdfs:comment "Direct attribution link from an IFC element or spatial node to a property node. Universal navigation predicate — covers all properties regardless of match status."@en ;
+    rdfs:range opm:Property .
+
+bsddm:containsProperty
+    a owl:ObjectProperty ;
+    rdfs:label "containsProperty"@en ;
+    rdfs:comment "Membership link from a bsddm:PropertySet to its member property nodes. Enables pset-scoped queries."@en ;
+    rdfs:domain bsddm:PropertySet ;
+    rdfs:range opm:Property .
+
+bsddm:containsQuantity
+    a owl:ObjectProperty ;
+    rdfs:label "containsQuantity"@en ;
+    rdfs:comment "Membership link from a bsddm:QuantitySet to its member quantity nodes."@en ;
+    rdfs:domain bsddm:QuantitySet ;
     rdfs:range opm:Property .
 
 bsddm:mappingStatus
@@ -115,7 +129,7 @@ bsddm:mappingStatus
 bsddm:candidateProperty
     a owl:ObjectProperty ;
     rdfs:label "candidateProperty"@en ;
-    rdfs:comment "A candidate bSDD property URI for a property whose mapping is ambiguous."@en ;
+    rdfs:comment "Points to candidate bSDD property class IRIs for a property whose mapping is ambiguous. The targets are bSDD dictionary identifiers (bsddp: namespace), not confirmed types."@en ;
     rdfs:domain opm:Property .
 
 # ---------------------------------------------------------------------------
