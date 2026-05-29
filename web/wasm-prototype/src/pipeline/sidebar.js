@@ -178,6 +178,28 @@ function optionControl(pluginId, key) {
         </select>
       </div>`;
   }
+  if (key === "compact") {
+    const compactVal = current || "false";
+    return `
+      <div class="detail-row">
+        <span class="detail-label">compact</span>
+        <select data-option-key="compact" class="detail-select">
+          <option value="false" ${compactVal === "false" ? "selected" : ""}>Off — full provenance metadata</option>
+          <option value="true" ${compactVal === "true" ? "selected" : ""}>On — skip mapping metadata triples</option>
+        </select>
+      </div>`;
+  }
+  if (key === "include_standard_attrs") {
+    const attrsVal = current || "true";
+    return `
+      <div class="detail-row">
+        <span class="detail-label">standard attrs</span>
+        <select data-option-key="include_standard_attrs" class="detail-select">
+          <option value="true" ${attrsVal === "true" ? "selected" : ""}>On — emit GlobalId, Name, etc.</option>
+          <option value="false" ${attrsVal === "false" ? "selected" : ""}>Off — bSDD types and props only</option>
+        </select>
+      </div>`;
+  }
   // Default: text input with contextual placeholder
   const placeholders = {
     chunk_size_lines: "2000000 (2M lines)",
