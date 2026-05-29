@@ -11,7 +11,7 @@ import { initLogPanel, log } from "./log-panel.js";
 import { saveConfig, loadConfig } from "./config.js";
 import { showCliCommand } from "./cli-command.js";
 
-const RUNTIME_BUILD = "pipeline-v10-2026-05-23T18:25Z";
+const RUNTIME_BUILD = "pipeline-v11-2026-05-29T00:00Z";
 
 // ---------------------------------------------------------------------------
 // Pipeline Templates
@@ -378,7 +378,7 @@ async function init() {
   initMusic();
   setupOutputDirectoryUiSupport();
 
-  log("WASM ready. Pipeline dashboard v10.");
+  log("WASM ready. Pipeline dashboard v11.");
   log(`Build: ${RUNTIME_BUILD}`);
 }
 
