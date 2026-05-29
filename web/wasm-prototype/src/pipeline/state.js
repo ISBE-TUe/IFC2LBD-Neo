@@ -7,7 +7,6 @@ const listeners = new Map();
 const state = {
   // Pipeline configuration
   activeModules: new Set([
-    "neo-bsdd-match-preprocess",
     "neo-cleanup-preprocess",
     "neo-qto-preprocess",
     "neo-bot-producer",
