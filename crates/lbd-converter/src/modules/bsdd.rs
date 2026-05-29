@@ -1835,8 +1835,8 @@ fn emit_property(
     object_guid: &str,
     pset_name: &str,
     pset_subject: &str,
-    container_predicate: &str, // "containsProperty" for psets, "containsQuantity" for qsets
     pset_guid: &str,
+    container_predicate: &str, // "containsProperty" for psets, "containsQuantity" for qsets
     prop_name: &str,
     value: Object,
     schema: StepSchema,
@@ -2275,18 +2275,32 @@ fn emit_std_attr(
     batch_size: usize,
     triples: &mut u64,
 ) -> Result<(), StreamError> {
-    let prop_iri = format!("{base}/bsdd_attr_{}_{}", sanitize(attr_local), sanitize(guid));
-    let state_iri = format!("{base}/bsdd_attrstate_{}_{}", sanitize(attr_local), sanitize(guid));
+    // Same IRI scheme as regular properties — aligned so triplestore merges them correctly.
+    let prop_iri = crate::property_resource_iri(base, attr_local, guid, "standardAttributes");
+    let state_key = format!("{attr_local}|standardAttributes|{guid}|bsdd");
+    let state_iri = format!("{base}/s_{:016x}_sa", crate::fnv1a64(state_key.as_bytes()));
 
+    // Universal navigation — same shape as regular bSDD properties.
+    // No named direct predicate (bsddm:batid etc.) — identity carried by rdfs:label.
     push(batch, sender, batch_size, Triple {
         subject: subject.to_string(),
-        predicate: bsddm(attr_local),
+        predicate: bsddm("hasProperty"),
         object: Object::Iri(prop_iri.clone()),
     }, triples)?;
     push(batch, sender, batch_size, Triple {
         subject: prop_iri.clone(),
         predicate: rdf_type(),
         object: Object::Iri(opm_property()),
+    }, triples)?;
+    push(batch, sender, batch_size, Triple {
+        subject: prop_iri.clone(),
+        predicate: rdf_type(),
+        object: Object::Iri(bsddm("StandardAttribute")),
+    }, triples)?;
+    push(batch, sender, batch_size, Triple {
+        subject: prop_iri.clone(),
+        predicate: rdfs_label(),
+        object: Object::Literal(attr_local.to_string()),
     }, triples)?;
     push(batch, sender, batch_size, Triple {
         subject: prop_iri.clone(),

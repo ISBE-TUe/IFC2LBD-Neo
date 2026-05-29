@@ -7,11 +7,11 @@ use crate::{
     MIN_STREAM_BATCH_SIZE, MAX_STREAM_BATCH_SIZE,
 };
 
-/// Stream OPM property sets, quantity sets and standard-attribute triples in bounded batches.
+/// Stream direct OPM property and quantity triples in bounded batches.
 ///
-/// Emits all property and quantity set triples attached to IFC elements and
-/// spatial nodes, using the OPM (Object Property Model) pattern. This is the
-/// `neo-props-opm` named-graph producer.
+/// Emits flat direct links: element → props:predicate → property_node → OPM state.
+/// No PropertySet or QuantitySet container nodes — those belong to the bSDD named graph.
+/// This is the `neo-props-opm` named-graph producer.
 pub fn stream_props_opm(
     model: &IfcModel,
     options: &ConvertOptions,

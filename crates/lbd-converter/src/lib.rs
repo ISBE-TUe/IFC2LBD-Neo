@@ -543,10 +543,10 @@ where
     Ok(())
 }
 
-/// Emit OPM property sets, quantity sets and standard-attribute triples.
+/// Emit direct OPM property and quantity triples plus standard-attribute triples.
 ///
-/// Called both by the monolithic `emit_lbd` and directly by `modules::props_opm`
-/// when only the PROPS-OPM named graph is being produced.
+/// Props emits flat direct links only: element → props:predicate → property_node → state.
+/// No PropertySet or QuantitySet container nodes — those belong to the bSDD named graph.
 pub(crate) fn emit_props_opm_inner<E, F>(
     model: &IfcModel,
     options: &ConvertOptions,
@@ -564,38 +564,6 @@ where
     let mut attribute_state_counter = 0_u64;
     let mut declared_standard_attributes = HashSet::new();
     let mut declared_standard_attribute_comments = HashSet::new();
-    let mut emitted_lbd_property_sets = HashSet::new();
-    let mut emitted_lbd_quantity_sets = HashSet::new();
-
-    // Build lookup: property_set_id → PropertySetTemplate (from IfcRelDefinesByTemplate)
-    let pset_to_template: HashMap<EntityId, EntityId> = model
-        .rel_defines_by_template
-        .iter()
-        .flat_map(|rel| {
-            rel.related_property_sets
-                .iter()
-                .map(move |&pset_id| (pset_id, rel.relating_template))
-        })
-        .collect();
-    // Build lookup: template_id → HashMap<name, SimplePropertyTemplate>
-    let template_props: HashMap<EntityId, HashMap<&str, &ifc_model::SimplePropertyTemplate>> =
-        model
-            .property_set_templates
-            .iter()
-            .map(|(&tmpl_id, tmpl)| {
-                let props: HashMap<&str, &ifc_model::SimplePropertyTemplate> = tmpl
-                    .property_template_ids
-                    .iter()
-                    .filter_map(|id| {
-                        model
-                            .simple_property_templates
-                            .get(id)
-                            .map(|st| (st.name.as_str(), st))
-                    })
-                    .collect();
-                (tmpl_id, props)
-            })
-            .collect();
 
     let mut property_object_ids: Vec<_> = model.property_sets_for_object.keys().copied().collect();
     property_object_ids.sort_unstable();
@@ -609,41 +577,6 @@ where
             let Some(property_set) = model.property_sets.get(&property_set_id) else {
                 continue;
             };
-            let set_subject = property_set_resource_iri(base, &property_set.guid);
-            emit(Triple {
-                subject: subject.clone(),
-                predicate: lbd_has_property_set(),
-                object: Object::Iri(set_subject.clone()),
-            })?;
-            let pset_template_id = pset_to_template.get(&property_set.id).copied();
-            if emitted_lbd_property_sets.insert(property_set.id) {
-                emit(Triple {
-                    subject: set_subject.clone(),
-                    predicate: rdf_type(),
-                    object: Object::Iri(lbd_property_set()),
-                })?;
-                if let Some(name) = property_set.name.as_ref() {
-                    emit(Triple {
-                        subject: set_subject.clone(),
-                        predicate: rdfs_label(),
-                        object: Object::Literal(name.to_string()),
-                    })?;
-                }
-                // Emit schema:applicableType from template if available
-                if let Some(tmpl_id) = pset_template_id {
-                    if let Some(tmpl) = model.property_set_templates.get(&tmpl_id) {
-                        if let Some(applicable) = tmpl.applicable_entity.as_ref() {
-                            emit(Triple {
-                                subject: set_subject.clone(),
-                                predicate: schema_applicable_type(),
-                                object: Object::Literal(applicable.to_string()),
-                            })?;
-                        }
-                    }
-                }
-            }
-            let active_template_props = pset_template_id
-                .and_then(|id| template_props.get(&id));
             for property_id in &property_set.properties {
                 // --- IfcPropertySingleValue ---
                 if let Some(property) = model.property_single_values.get(property_id) {
@@ -657,7 +590,7 @@ where
                                 property_set.name.as_deref().unwrap_or_default(),
                                 &mut emit,
                             )?;
-                            let property_subject = emit_property_state(
+                            emit_property_state(
                                 &subject,
                                 base,
                                 &predicate_local,
@@ -674,23 +607,6 @@ where
                                 &generated_at,
                                 &mut emit,
                             )?;
-                            emit(Triple {
-                                subject: set_subject.clone(),
-                                predicate: rdf_member(),
-                                object: Object::Iri(property_subject.clone()),
-                            })?;
-                            // Emit rdfs:comment from SimplePropertyTemplate if available
-                            if let Some(tmpl_props) = active_template_props {
-                                if let Some(st) = tmpl_props.get(property.name.as_str()) {
-                                    if let Some(desc) = st.description.as_ref() {
-                                        emit(Triple {
-                                            subject: property_subject,
-                                            predicate: rdfs_comment(),
-                                            object: Object::Literal(desc.to_string()),
-                                        })?;
-                                    }
-                                }
-                            }
                         }
                     }
                     continue;
@@ -707,7 +623,7 @@ where
                             property_set.name.as_deref().unwrap_or_default(),
                             &mut emit,
                         )?;
-                        let property_subject = emit_property_state(
+                        emit_property_state(
                             &subject,
                             base,
                             &predicate_local,
@@ -720,15 +636,10 @@ where
                             'p',
                             &mut property_state_counter,
                             value,
-                            None, // enumerated values have no unit
+                            None,
                             &generated_at,
                             &mut emit,
                         )?;
-                        emit(Triple {
-                            subject: set_subject.clone(),
-                            predicate: rdf_member(),
-                            object: Object::Iri(property_subject),
-                        })?;
                     }
                 }
             }
@@ -747,26 +658,6 @@ where
             let Some(quantity_set) = model.element_quantities.get(&quantity_set_id) else {
                 continue;
             };
-            let set_subject = quantity_set_resource_iri(base, &quantity_set.guid);
-            emit(Triple {
-                subject: subject.clone(),
-                predicate: lbd_has_quantity_set(),
-                object: Object::Iri(set_subject.clone()),
-            })?;
-            if emitted_lbd_quantity_sets.insert(quantity_set.id) {
-                emit(Triple {
-                    subject: set_subject.clone(),
-                    predicate: rdf_type(),
-                    object: Object::Iri(lbd_quantity_set()),
-                })?;
-                if let Some(name) = quantity_set.name.as_ref() {
-                    emit(Triple {
-                        subject: set_subject.clone(),
-                        predicate: rdfs_label(),
-                        object: Object::Literal(name.to_string()),
-                    })?;
-                }
-            }
             for quantity_id in &quantity_set.quantities {
                 let Some(quantity) = model.physical_quantities.get(quantity_id) else {
                     continue;
@@ -783,7 +674,7 @@ where
                         quantity_set.name.as_deref().unwrap_or_default(),
                         &mut emit,
                     )?;
-                    let property_subject = emit_property_state(
+                    emit_property_state(
                         &subject,
                         base,
                         &predicate_local,
@@ -800,11 +691,6 @@ where
                         &generated_at,
                         &mut emit,
                     )?;
-                    emit(Triple {
-                        subject: set_subject.clone(),
-                        predicate: rdf_member(),
-                        object: Object::Iri(property_subject),
-                    })?;
                 }
             }
         }
