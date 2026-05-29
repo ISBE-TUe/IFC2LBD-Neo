@@ -1432,11 +1432,7 @@ fn process_element_psets(
             continue;
         };
         let pset_name = pset.name.as_deref().unwrap_or_default();
-        let pset_subject = bsdd_local_instance(
-            base,
-            "pset",
-            &format!("{}_{}", sanitize(pset_name), sanitize(&object_guid)),
-        );
+        let pset_subject = crate::property_set_resource_iri(base, &pset.guid);
 
         push(
             &mut local_batch,
@@ -1513,6 +1509,8 @@ fn process_element_psets(
                     &object_guid,
                     pset_name,
                     &pset_subject,
+                    &pset.guid,
+                    "containsProperty",
                     psv.name.as_str(),
                     raw_value,
                     model.schema,
@@ -1542,6 +1540,8 @@ fn process_element_psets(
                         &object_guid,
                         pset_name,
                         &pset_subject,
+                        &pset.guid,
+                        "containsProperty",
                         pev.name.as_str(),
                         Object::Literal(enum_value.to_string()),
                         model.schema,
@@ -1614,11 +1614,7 @@ fn process_element_quantities(
             continue;
         };
         let quantity_set_name = quantity_set.name.as_deref().unwrap_or_default();
-        let quantity_set_subject = bsdd_local_instance(
-            base,
-            "qset",
-            &format!("{}_{}", sanitize(quantity_set_name), sanitize(&object_guid)),
-        );
+        let quantity_set_subject = crate::quantity_set_resource_iri(base, &quantity_set.guid);
 
         push(
             &mut local_batch,
@@ -1696,6 +1692,8 @@ fn process_element_quantities(
                 &object_guid,
                 quantity_set_name,
                 &quantity_set_subject,
+                &quantity_set.guid,
+                "containsQuantity",
                 quantity.name.as_str(),
                 raw_value,
                 model.schema,
@@ -1821,6 +1819,8 @@ fn emit_property(
     object_guid: &str,
     pset_name: &str,
     pset_subject: &str,
+    container_predicate: &str, // "containsProperty" for psets, "containsQuantity" for qsets
+    pset_guid: &str,
     prop_name: &str,
     value: Object,
     schema: StepSchema,
@@ -1850,54 +1850,62 @@ fn emit_property(
         let key = format!("{pset_name}|{prop_name}");
         *unmatched_histogram.entry(key).or_insert(0) += 1;
     }
-    let prop_subject = bsdd_local_instance(
-        base,
-        "property",
-        &format!(
-            "{}_{}_{}",
-            sanitize(prop_name),
-            sanitize(object_guid),
-            property_counter
-        ),
-    );
+    let predicate_local = crate::property_local_name(prop_name);
+    let prop_subject = crate::property_resource_iri(base, &predicate_local, object_guid, pset_guid);
+    // bSDD state node is graph-specific (bsdd named graph carries different provenance than props)
     let state_subject = bsdd_local_instance(
         base,
-        "state",
+        "s",
         &format!(
-            "{}_{}_{}",
-            sanitize(prop_name),
-            sanitize(object_guid),
+            "{:016x}_b{}",
+            crate::fnv1a64(format!("{predicate_local}|{pset_guid}|{object_guid}|bsdd").as_bytes()),
             property_counter
         ),
     );
 
+    // Universal direct link: element → property (all properties, regardless of match status)
     push(
         batch,
         sender,
         batch_size,
         Triple {
-            subject: pset_subject.to_string(),
+            subject: subject.to_string(),
             predicate: bsddm("hasProperty"),
             object: Object::Iri(prop_subject.clone()),
         },
         triples,
     )?;
 
+    // Container grouping link: pset/qset → property (containsProperty or containsQuantity)
+    push(
+        batch,
+        sender,
+        batch_size,
+        Triple {
+            subject: pset_subject.to_string(),
+            predicate: bsddm(container_predicate),
+            object: Object::Iri(prop_subject.clone()),
+        },
+        triples,
+    )?;
+
+    // bSDD property code as rdf:type on the property node (dictionary identifier, not predicate)
     if let Some(code) = match_result.property_code.as_deref() {
         push(
             batch,
             sender,
             batch_size,
             Triple {
-                subject: subject.to_string(),
-                predicate: bsdd_prop(code),
-                object: Object::Iri(prop_subject.clone()),
+                subject: prop_subject.clone(),
+                predicate: rdf_type(),
+                object: Object::Iri(bsdd_prop(code)),
             },
             triples,
         )?;
     }
 
-    // Phase 1: emit candidateProperty triples for ambiguous matches
+    // Candidate bSDD property codes for ambiguous matches (still as predicate — these are
+    // unresolved candidates, not confirmed types)
     for candidate_code in &match_result.ambiguous_candidates {
         push(
             batch,

@@ -2517,21 +2517,22 @@ pub(crate) fn element_resource_iri(base: &str, element: &ifc_model::ElementNode)
     format!("{base}/{}", lbd_local_name(&prefix, &element.guid))
 }
 
-fn property_resource_iri(base: &str, predicate_local: &str, guid: &str, set_scope: &str) -> String {
-    let prop = short_property_key(predicate_local);
-    let set_suffix = stable_short_guid_token(set_scope);
-    let object_suffix = stable_short_guid_token(guid);
-    format!("{base}/prop_{prop}_{set_suffix}_{object_suffix}")
+/// Property node IRI — deterministic hash of (predicate_local, set_scope, element_guid).
+/// Shared between the props and bSDD modules so the same logical property produces the
+/// same IRI node in both named graphs, enabling natural join in a triplestore.
+pub(crate) fn property_resource_iri(base: &str, predicate_local: &str, guid: &str, set_scope: &str) -> String {
+    let key = format!("{predicate_local}|{set_scope}|{guid}");
+    format!("{base}/p_{:016x}", fnv1a64(key.as_bytes()))
 }
 
 pub(crate) fn property_set_resource_iri(base: &str, guid: &str) -> String {
     let suffix = prefix_safe_guid_token(guid);
-    format!("{base}/propertyset_{suffix}")
+    format!("{base}/ps_{suffix}")
 }
 
-fn quantity_set_resource_iri(base: &str, guid: &str) -> String {
+pub(crate) fn quantity_set_resource_iri(base: &str, guid: &str) -> String {
     let suffix = prefix_safe_guid_token(guid);
-    format!("{base}/quantityset_{suffix}")
+    format!("{base}/qs_{suffix}")
 }
 
 pub(crate) fn geometry_resource_iri(base: &str, guid: &str) -> String {
@@ -2581,10 +2582,8 @@ fn property_state_iri(
     state_kind: char,
     state_counter: u64,
 ) -> String {
-    let prop = short_property_key(predicate_local);
-    let object_suffix = stable_short_guid_token(guid);
-    let set_suffix = stable_short_guid_token(set_scope);
-    format!("{base}/state_{prop}_{set_suffix}_{object_suffix}_{state_kind}{state_counter}")
+    let key = format!("{predicate_local}|{set_scope}|{guid}");
+    format!("{base}/s_{:016x}_{state_kind}{state_counter}", fnv1a64(key.as_bytes()))
 }
 
 fn short_property_key(input: &str) -> String {
@@ -2605,7 +2604,7 @@ fn stable_short_guid_token(raw: &str) -> String {
     format!("{:012x}", fnv1a64(expanded.as_bytes()))
 }
 
-fn fnv1a64(bytes: &[u8]) -> u64 {
+pub(crate) fn fnv1a64(bytes: &[u8]) -> u64 {
     let mut hash: u64 = 0xcbf29ce484222325;
     for &b in bytes {
         hash ^= b as u64;
@@ -2745,7 +2744,7 @@ fn property_label(set_name: Option<&str>, predicate_local: &str) -> String {
     }
 }
 
-fn property_local_name(name: &str) -> String {
+pub(crate) fn property_local_name(name: &str) -> String {
     let escaped = java_ifc_escape_text(&normalize_property_name_text(name));
     if escaped.to_ascii_uppercase() == escaped {
         let upper = escaped.replace(' ', "_");
@@ -3132,7 +3131,7 @@ mod tests {
         assert!(result.triples.iter().any(|triple| {
             triple.subject == area_property
                 && triple.predicate == opm_has_property_state()
-                && matches!(&triple.object, Object::Iri(iri) if iri.contains("/state_area_") || iri.contains("/state_area"))
+                && matches!(&triple.object, Object::Iri(iri) if iri.contains("/s_"))
         }));
         assert!(result.triples.iter().any(|triple| {
             triple.predicate == schema_value()
@@ -3544,7 +3543,7 @@ mod tests {
             },
         );
         assert!(result.triples.iter().any(|triple| {
-            triple.predicate == rdf_member() && triple.subject.contains("/propertyset_")
+            triple.predicate == rdf_member() && triple.subject.contains("/ps_")
         }));
     }
 
