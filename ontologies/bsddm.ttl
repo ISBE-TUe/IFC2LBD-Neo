@@ -54,6 +54,12 @@ bsddm:CustomProperty
     rdfs:label "CustomProperty"@en ;
     rdfs:comment "A property node that could not be matched to any bSDD property (Unmapped)."@en .
 
+bsddm:StandardAttribute
+    a owl:Class ;
+    rdfs:subClassOf opm:Property ;
+    rdfs:label "StandardAttribute"@en ;
+    rdfs:comment "An IFC standard attribute (GlobalId, Name, Description, Tag, elevation, etc.) expressed as an OPM property node. Linked from elements via bsddm:hasProperty; the specific attribute is identified by rdfs:label."@en .
+
 bsddm:MappingStatus
     a owl:Class ;
     rdfs:label "MappingStatus"@en ;
@@ -157,123 +163,7 @@ bsddm:classPropertyCode
     rdfs:domain opm:Property ;
     rdfs:range xsd:string .
 
-# ---------------------------------------------------------------------------
-# Object properties — standard IFC attributes (all point to opm:Property nodes)
-#
-# These replace props:* predicates when the bSDD graph is used as a standalone
-# replacement for the props-opm named graph.
-# ---------------------------------------------------------------------------
-
-bsddm:globalIdIfcRoot
-    a owl:ObjectProperty ;
-    rdfs:label "globalIdIfcRoot"@en ;
-    rdfs:comment "IfcRoot.GlobalId — the IFC compressed GUID of the entity."@en ;
-    rdfs:range opm:Property .
-
-bsddm:nameIfcRoot
-    a owl:ObjectProperty ;
-    rdfs:label "nameIfcRoot"@en ;
-    rdfs:comment "IfcRoot.Name — the human-readable name of the entity."@en ;
-    rdfs:range opm:Property .
-
-bsddm:descriptionIfcRoot
-    a owl:ObjectProperty ;
-    rdfs:label "descriptionIfcRoot"@en ;
-    rdfs:comment "IfcRoot.Description — a textual description of the entity."@en ;
-    rdfs:range opm:Property .
-
-bsddm:objectTypeIfcObject
-    a owl:ObjectProperty ;
-    rdfs:label "objectTypeIfcObject"@en ;
-    rdfs:comment "IfcObject.ObjectType — the user-defined type of the object."@en ;
-    rdfs:range opm:Property .
-
-bsddm:longNameIfcSpatialElement
-    a owl:ObjectProperty ;
-    rdfs:label "longNameIfcSpatialElement"@en ;
-    rdfs:comment "IfcSpatialElement.LongName (IFC4+) — the full name of the spatial element."@en ;
-    rdfs:range opm:Property .
-
-bsddm:longNameIfcSpatialStructureElement
-    a owl:ObjectProperty ;
-    rdfs:label "longNameIfcSpatialStructureElement"@en ;
-    rdfs:comment "IfcSpatialStructureElement.LongName (IFC2X3) — the full name of the spatial element."@en ;
-    rdfs:range opm:Property .
-
-bsddm:elevationIfcBuildingStorey
-    a owl:ObjectProperty ;
-    rdfs:label "elevationIfcBuildingStorey"@en ;
-    rdfs:comment "IfcBuildingStorey.Elevation — the elevation of the storey above the project datum."@en ;
-    rdfs:range opm:Property .
-
-bsddm:refElevationIfcSite
-    a owl:ObjectProperty ;
-    rdfs:label "refElevationIfcSite"@en ;
-    rdfs:comment "IfcSite.RefElevation — the elevation of the site reference point."@en ;
-    rdfs:range opm:Property .
-
-bsddm:elevationOfRefHeightIfcBuilding
-    a owl:ObjectProperty ;
-    rdfs:label "elevationOfRefHeightIfcBuilding"@en ;
-    rdfs:comment "IfcBuilding.ElevationOfRefHeight — the elevation used as reference height for the building."@en ;
-    rdfs:range opm:Property .
-
-bsddm:elevationOfTerrainIfcBuilding
-    a owl:ObjectProperty ;
-    rdfs:label "elevationOfTerrainIfcBuilding"@en ;
-    rdfs:comment "IfcBuilding.ElevationOfTerrain — the elevation of the terrain at the building footprint."@en ;
-    rdfs:range opm:Property .
-
-bsddm:batid
-    a owl:ObjectProperty ;
-    rdfs:label "batid"@en ;
-    rdfs:comment "IfcElement.Tag — the manufacturer or supplier tag of the element."@en ;
-    rdfs:range opm:Property .
-
-bsddm:overallHeightIfcDoor
-    a owl:ObjectProperty ;
-    rdfs:label "overallHeightIfcDoor"@en ;
-    rdfs:comment "IfcDoor.OverallHeight — the nominal height of the door."@en ;
-    rdfs:range opm:Property .
-
-bsddm:overallHeightIfcWindow
-    a owl:ObjectProperty ;
-    rdfs:label "overallHeightIfcWindow"@en ;
-    rdfs:comment "IfcWindow.OverallHeight — the nominal height of the window."@en ;
-    rdfs:range opm:Property .
-
-bsddm:overallWidthIfcDoor
-    a owl:ObjectProperty ;
-    rdfs:label "overallWidthIfcDoor"@en ;
-    rdfs:comment "IfcDoor.OverallWidth — the nominal width of the door."@en ;
-    rdfs:range opm:Property .
-
-bsddm:overallWidthIfcWindow
-    a owl:ObjectProperty ;
-    rdfs:label "overallWidthIfcWindow"@en ;
-    rdfs:comment "IfcWindow.OverallWidth — the nominal width of the window."@en ;
-    rdfs:range opm:Property .
-
-bsddm:numberOfRiserIfcStairFlight
-    a owl:ObjectProperty ;
-    rdfs:label "numberOfRiserIfcStairFlight"@en ;
-    rdfs:comment "IfcStairFlight.NumberOfRisers — the number of risers in the stair flight."@en ;
-    rdfs:range opm:Property .
-
-bsddm:numberOfTreadsIfcStairFlight
-    a owl:ObjectProperty ;
-    rdfs:label "numberOfTreadsIfcStairFlight"@en ;
-    rdfs:comment "IfcStairFlight.NumberOfTreads — the number of treads in the stair flight."@en ;
-    rdfs:range opm:Property .
-
-bsddm:riserHeightIfcStairFlight
-    a owl:ObjectProperty ;
-    rdfs:label "riserHeightIfcStairFlight"@en ;
-    rdfs:comment "IfcStairFlight.RiserHeight — the height of each riser."@en ;
-    rdfs:range opm:Property .
-
-bsddm:treadLengthIfcStairFlight
-    a owl:ObjectProperty ;
-    rdfs:label "treadLengthIfcStairFlight"@en ;
-    rdfs:comment "IfcStairFlight.TreadLength — the horizontal length of each tread."@en ;
-    rdfs:range opm:Property .
+# Standard IFC attributes (GlobalId, Name, Description, Tag, elevations, dimensions)
+# are now emitted as bsddm:StandardAttribute nodes linked via bsddm:hasProperty.
+# The specific attribute is identified by rdfs:label on the property node.
+# No named per-attribute predicates — uniform navigation via bsddm:hasProperty for all.
