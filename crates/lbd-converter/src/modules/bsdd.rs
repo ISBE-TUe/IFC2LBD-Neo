@@ -1866,15 +1866,14 @@ fn emit_property(
     }
     let predicate_local = crate::property_local_name(prop_name);
     let prop_subject = crate::property_resource_iri(base, &predicate_local, object_guid, pset_guid);
-    // bSDD state node is graph-specific (bsdd named graph carries different provenance than props)
-    let state_subject = bsdd_local_instance(
+    // Same state IRI scheme as props: deterministic on (predicate, pset, element, value).
+    // Identical property+value in both graphs → identical state node → no duplicates in triplestore.
+    let state_subject = crate::property_state_iri(
         base,
-        "s",
-        &format!(
-            "{:016x}_b{}",
-            crate::fnv1a64(format!("{predicate_local}|{pset_guid}|{object_guid}|bsdd").as_bytes()),
-            property_counter
-        ),
+        &predicate_local,
+        object_guid,
+        pset_guid,
+        crate::object_value_repr(&value),
     );
 
     // Universal direct link: element → property (all properties, regardless of match status)
@@ -2277,8 +2276,13 @@ fn emit_std_attr(
 ) -> Result<(), StreamError> {
     // Same IRI scheme as regular properties — aligned so triplestore merges them correctly.
     let prop_iri = crate::property_resource_iri(base, attr_local, guid, "standardAttributes");
-    let state_key = format!("{attr_local}|standardAttributes|{guid}|bsdd");
-    let state_iri = format!("{base}/s_{:016x}_sa", crate::fnv1a64(state_key.as_bytes()));
+    let state_iri = crate::property_state_iri(
+        base,
+        attr_local,
+        guid,
+        "standardAttributes",
+        crate::object_value_repr(&value),
+    );
 
     // Universal navigation — same shape as regular bSDD properties.
     // No named direct predicate (bsddm:batid etc.) — identity carried by rdfs:label.

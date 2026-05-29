@@ -560,8 +560,6 @@ where
     let generated_at = current_generated_at_rfc3339();
     let mut declared_object_properties = HashSet::new();
     let mut declared_property_comments = HashSet::new();
-    let mut property_state_counter = 0_u64;
-    let mut attribute_state_counter = 0_u64;
     let mut declared_standard_attributes = HashSet::new();
     let mut declared_standard_attribute_comments = HashSet::new();
 
@@ -600,8 +598,6 @@ where
                                 )),
                                 &object_guid,
                                 &property_set.guid,
-                                'p',
-                                &mut property_state_counter,
                                 value,
                                 resolve_property_unit(property, &unit_by_type, model),
                                 &generated_at,
@@ -633,8 +629,6 @@ where
                             )),
                             &object_guid,
                             &property_set.guid,
-                            'p',
-                            &mut property_state_counter,
                             value,
                             None,
                             &generated_at,
@@ -684,8 +678,6 @@ where
                         )),
                         &object_guid,
                         &quantity_set.guid,
-                        'p',
-                        &mut property_state_counter,
                         value,
                         resolve_quantity_unit(quantity.entity_name.as_str(), &unit_by_type),
                         &generated_at,
@@ -711,7 +703,6 @@ where
         base,
         &unit_by_type,
         &generated_at,
-        &mut attribute_state_counter,
         &mut declared_standard_attributes,
         &mut declared_standard_attribute_comments,
         &mut emit,
@@ -1683,8 +1674,6 @@ fn emit_property_state<E, F>(
     label: Option<String>,
     object_guid: &str,
     set_scope: &str,
-    state_kind: char,
-    state_counter: &mut u64,
     value: Object,
     unit: Option<String>,
     generated_at: &str,
@@ -1699,10 +1688,8 @@ where
         predicate_local,
         object_guid,
         set_scope,
-        state_kind,
-        *state_counter,
+        object_value_repr(&value),
     );
-    *state_counter += 1;
 
     emit(Triple {
         subject: subject.to_string(),
@@ -1759,7 +1746,6 @@ fn emit_standard_attribute_triples<E, F>(
     base: &str,
     unit_by_type: &HashMap<String, String>,
     generated_at: &str,
-    attribute_state_counter: &mut u64,
     declared_object_properties: &mut HashSet<String>,
     declared_property_comments: &mut HashSet<(String, String)>,
     emit: &mut F,
@@ -1774,8 +1760,6 @@ where
             base,
             "globalIdIfcRoot",
             &node.guid,
-            'a',
-            attribute_state_counter,
             Object::Literal(node.guid.to_string()),
             generated_at,
             None,
@@ -1789,8 +1773,6 @@ where
                 base,
                 "nameIfcRoot",
                 &node.guid,
-                'a',
-                attribute_state_counter,
                 Object::Literal(name.to_string()),
                 generated_at,
                 None,
@@ -1805,8 +1787,6 @@ where
                 base,
                 "descriptionIfcRoot",
                 &node.guid,
-                'a',
-                attribute_state_counter,
                 Object::Literal(description.to_string()),
                 generated_at,
                 None,
@@ -1821,8 +1801,6 @@ where
                 base,
                 "objectTypeIfcObject",
                 &node.guid,
-                'a',
-                attribute_state_counter,
                 Object::Literal(object_type.to_string()),
                 generated_at,
                 None,
@@ -1840,8 +1818,6 @@ where
                     _ => "longNameIfcSpatialElement",
                 },
                 &node.guid,
-                'a',
-                attribute_state_counter,
                 Object::Literal(long_name.to_string()),
                 generated_at,
                 None,
@@ -1856,8 +1832,6 @@ where
                 base,
                 "elevationIfcBuildingStorey",
                 &node.guid,
-                'a',
-                attribute_state_counter,
                 Object::TypedLiteral {
                     value: elevation.to_string(),
                     datatype: format!("{XSD}double"),
@@ -1875,8 +1849,6 @@ where
                 base,
                 "refElevationIfcSite",
                 &node.guid,
-                'a',
-                attribute_state_counter,
                 Object::TypedLiteral {
                     value: ref_elevation.to_string(),
                     datatype: format!("{XSD}double"),
@@ -1894,8 +1866,6 @@ where
                 base,
                 "elevationOfRefHeightIfcBuilding",
                 &node.guid,
-                'a',
-                attribute_state_counter,
                 Object::TypedLiteral {
                     value: elevation_of_ref_height.to_string(),
                     datatype: format!("{XSD}double"),
@@ -1913,8 +1883,6 @@ where
                 base,
                 "elevationOfTerrainIfcBuilding",
                 &node.guid,
-                'a',
-                attribute_state_counter,
                 Object::TypedLiteral {
                     value: elevation_of_terrain.to_string(),
                     datatype: format!("{XSD}double"),
@@ -1935,8 +1903,6 @@ where
             base,
             "globalIdIfcRoot",
             &element.guid,
-            'a',
-            attribute_state_counter,
             Object::Literal(element.guid.to_string()),
             generated_at,
             None,
@@ -1950,8 +1916,6 @@ where
                 base,
                 "nameIfcRoot",
                 &element.guid,
-                'a',
-                attribute_state_counter,
                 Object::Literal(name.to_string()),
                 generated_at,
                 None,
@@ -1966,8 +1930,6 @@ where
                 base,
                 "descriptionIfcRoot",
                 &element.guid,
-                'a',
-                attribute_state_counter,
                 Object::Literal(description.to_string()),
                 generated_at,
                 None,
@@ -1982,8 +1944,6 @@ where
                 base,
                 "objectTypeIfcObject",
                 &element.guid,
-                'a',
-                attribute_state_counter,
                 Object::Literal(object_type.to_string()),
                 generated_at,
                 None,
@@ -1998,8 +1958,6 @@ where
                 base,
                 "batid",
                 &element.guid,
-                'a',
-                attribute_state_counter,
                 Object::Literal(tag.to_string()),
                 generated_at,
                 None,
@@ -2018,8 +1976,6 @@ where
                     _ => "overallHeight",
                 },
                 &element.guid,
-                'a',
-                attribute_state_counter,
                 Object::TypedLiteral {
                     value: overall_height.to_string(),
                     datatype: format!("{XSD}double"),
@@ -2041,8 +1997,6 @@ where
                     _ => "overallWidth",
                 },
                 &element.guid,
-                'a',
-                attribute_state_counter,
                 Object::TypedLiteral {
                     value: overall_width.to_string(),
                     datatype: format!("{XSD}double"),
@@ -2060,8 +2014,6 @@ where
                 base,
                 "numberOfRiserIfcStairFlight",
                 &element.guid,
-                'a',
-                attribute_state_counter,
                 Object::TypedLiteral {
                     value: number_of_risers.to_string(),
                     datatype: format!("{XSD}integer"),
@@ -2079,8 +2031,6 @@ where
                 base,
                 "numberOfTreadsIfcStairFlight",
                 &element.guid,
-                'a',
-                attribute_state_counter,
                 Object::TypedLiteral {
                     value: number_of_treads.to_string(),
                     datatype: format!("{XSD}integer"),
@@ -2098,8 +2048,6 @@ where
                 base,
                 "riserHeightIfcStairFlight",
                 &element.guid,
-                'a',
-                attribute_state_counter,
                 Object::TypedLiteral {
                     value: riser_height.to_string(),
                     datatype: format!("{XSD}double"),
@@ -2117,8 +2065,6 @@ where
                 base,
                 "treadLengthIfcStairFlight",
                 &element.guid,
-                'a',
-                attribute_state_counter,
                 Object::TypedLiteral {
                     value: tread_length.to_string(),
                     datatype: format!("{XSD}double"),
@@ -2200,8 +2146,6 @@ fn emit_standard_attribute<E, F>(
     base: &str,
     predicate_local: &str,
     object_guid: &str,
-    state_kind: char,
-    state_counter: &mut u64,
     value: Object,
     generated_at: &str,
     unit: Option<String>,
@@ -2236,8 +2180,6 @@ where
         None,
         object_guid,
         "standardAttributes",
-        state_kind,
-        state_counter,
         value,
         unit,
         generated_at,
@@ -2460,16 +2402,25 @@ fn topology_interface_resource_iri(base: &str, interface_id: EntityId) -> String
     format!("{base}/interface_{interface_id}")
 }
 
-fn property_state_iri(
+/// Deterministic state IRI keyed on (predicate_local, set_scope, element_guid, value_repr).
+/// Using the value in the key means same property + same value → same IRI across all modules
+/// (props and bSDD), so a triplestore merge produces one state node rather than duplicates.
+pub(crate) fn property_state_iri(
     base: &str,
     predicate_local: &str,
     guid: &str,
     set_scope: &str,
-    state_kind: char,
-    state_counter: u64,
+    value_repr: &str,
 ) -> String {
-    let key = format!("{predicate_local}|{set_scope}|{guid}");
-    format!("{base}/s_{:016x}_{state_kind}{state_counter}", fnv1a64(key.as_bytes()))
+    let key = format!("{predicate_local}|{set_scope}|{guid}|{value_repr}");
+    format!("{base}/s_{:016x}", fnv1a64(key.as_bytes()))
+}
+
+pub(crate) fn object_value_repr(value: &Object) -> &str {
+    match value {
+        Object::Iri(s) | Object::Literal(s) => s,
+        Object::TypedLiteral { value, .. } => value,
+    }
 }
 
 fn short_property_key(input: &str) -> String {
