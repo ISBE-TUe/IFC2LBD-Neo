@@ -3,12 +3,12 @@ use std::collections::HashSet;
 use crossbeam::channel::Sender;
 use ifc_model::IfcModel;
 use ifc_schema::SpatialType;
-use lbd_ontology::{bot_contains_element, bot_element, bot_has_building, bot_has_site, bot_has_space, bot_has_storey, rdf_type, Object, Triple};
+use lbd_ontology::{bot_contains_element, bot_element, bot_has_building, bot_has_site, bot_has_space, bot_has_storey, owl_same_as, rdf_type, Object, Triple};
 
 use crate::{
-    baseline_containment_closure, element_resource_iri, normalize_base_uri, sorted_values,
-    spatial_class, spatial_resource_iri, ConvertOptions, StreamError, MIN_STREAM_BATCH_SIZE,
-    MAX_STREAM_BATCH_SIZE,
+    baseline_containment_closure, element_resource_iri, ifcowl_element_iri, ifcowl_spatial_iri,
+    normalize_base_uri, sorted_values, spatial_class, spatial_resource_iri, ConvertOptions,
+    StreamError, MIN_STREAM_BATCH_SIZE, MAX_STREAM_BATCH_SIZE,
 };
 
 /// Emit BOT spatial-node types, spatial-hierarchy predicates and `bot:Element` typing.
@@ -18,7 +18,7 @@ use crate::{
 /// property sets are emitted by their own modules.
 pub(crate) fn emit_bot<E, F>(
     model: &IfcModel,
-    _options: &ConvertOptions,
+    options: &ConvertOptions,
     base: &str,
     emit: &mut F,
 ) -> Result<(), E>
@@ -109,6 +109,25 @@ where
                 subject: structure_subject.clone(),
                 predicate: bot_contains_element(),
                 object: Object::Iri(element_resource_iri(base, contained_element)),
+            })?;
+        }
+    }
+
+    if options.emit_ifcowl_links {
+        for node in sorted_values(&model.spatial_nodes) {
+            let subject = spatial_resource_iri(base, node.spatial_type, &node.guid);
+            emit(Triple {
+                subject,
+                predicate: owl_same_as(),
+                object: Object::Iri(ifcowl_spatial_iri(base, node)),
+            })?;
+        }
+        for element in sorted_values(&model.elements) {
+            let subject = element_resource_iri(base, element);
+            emit(Triple {
+                subject,
+                predicate: owl_same_as(),
+                object: Object::Iri(ifcowl_element_iri(base, element)),
             })?;
         }
     }
