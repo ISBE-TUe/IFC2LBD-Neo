@@ -1196,12 +1196,28 @@ pub fn stream_bsdd_with_cache(
     let profile = load_active_profile(options.bsdd_profile.as_deref())
         .map_err(StreamError::Conversion)?;
 
-    // If a non-base profile is active and the cache was built with a different profile,
-    // skip cache to avoid stale matches from the base-profile cache.
-    let effective_cache = match_cache.filter(|c| {
-        let options_profile = options.bsdd_profile.as_deref().unwrap_or("base");
-        c.profile_id == options_profile || options_profile == "base"
-    });
+    // Always ensure a valid match cache is available.
+    //
+    // Without a cache every (class, pset, prop) triple is resolved independently for each
+    // element instance — the same combination is looked up once per element rather than once
+    // total. For a model with N elements and P properties each, that is O(N×P) resolve calls
+    // instead of O(unique combos), each potentially running the O(400) fuzzy scan.
+    //
+    // We build inline when:
+    //   - no cache was provided (preprocess plugin not active), OR
+    //   - the provided cache was built with a different profile (stale — would produce wrong matches).
+    let options_profile = options.bsdd_profile.as_deref().unwrap_or("base");
+    let owned_inline: Option<BsddMatchCache>;
+    let cache: &BsddMatchCache = match match_cache {
+        Some(c) if c.profile_id == options_profile || options_profile == "base" => c,
+        _ => {
+            owned_inline = Some(
+                build_bsdd_match_cache(model, options.bsdd_profile.as_deref())
+                    .map_err(StreamError::Conversion)?,
+            );
+            owned_inline.as_ref().unwrap()
+        }
+    };
 
     let base = normalize_base_uri(&options.base_uri);
     let batch_size = options
@@ -1267,7 +1283,7 @@ pub fn stream_bsdd_with_cache(
                     &base,
                     index,
                     &profile,
-                    effective_cache,
+                    cache,
                     &unit_by_type,
                     &generated_at,
                     compact,
@@ -1292,7 +1308,7 @@ pub fn stream_bsdd_with_cache(
             &base,
             index,
             &profile,
-            effective_cache,
+            cache,
             &unit_by_type,
             &generated_at,
             compact,
@@ -1321,7 +1337,7 @@ pub fn stream_bsdd_with_cache(
                         &base,
                         index,
                         &profile,
-                        effective_cache,
+                        cache,
                         &unit_by_type,
                         &generated_at,
                         compact,
@@ -1346,7 +1362,7 @@ pub fn stream_bsdd_with_cache(
             &base,
             index,
             &profile,
-            effective_cache,
+            cache,
             &unit_by_type,
             &generated_at,
             compact,
@@ -1395,7 +1411,7 @@ fn process_element_psets(
     base: &str,
     index: &BsddIndex,
     profile: &BsddProfile,
-    effective_cache: Option<&BsddMatchCache>,
+    cache: &BsddMatchCache,
     unit_by_type: &HashMap<String, String>,
     generated_at: &str,
     compact: bool,
@@ -1517,7 +1533,7 @@ fn process_element_psets(
                     &class_name_like,
                     index,
                     profile,
-                    effective_cache,
+                    cache,
                     resolve_property_unit(psv, unit_by_type, model),
                     generated_at,
                     compact,
@@ -1548,7 +1564,7 @@ fn process_element_psets(
                         &class_name_like,
                         index,
                         profile,
-                        effective_cache,
+                        cache,
                         None,
                         generated_at,
                         compact,
@@ -1577,7 +1593,7 @@ fn process_element_quantities(
     base: &str,
     index: &BsddIndex,
     profile: &BsddProfile,
-    effective_cache: Option<&BsddMatchCache>,
+    cache: &BsddMatchCache,
     unit_by_type: &HashMap<String, String>,
     generated_at: &str,
     compact: bool,
@@ -1700,7 +1716,7 @@ fn process_element_quantities(
                 &class_name_like,
                 index,
                 profile,
-                effective_cache,
+                cache,
                 resolve_quantity_unit(quantity.entity_name.as_str(), unit_by_type),
                 generated_at,
                 compact,
@@ -1827,7 +1843,7 @@ fn emit_property(
     class_name_like: &str,
     index: &BsddIndex,
     profile: &BsddProfile,
-    match_cache: Option<&BsddMatchCache>,
+    cache: &BsddMatchCache,
     unit: Option<String>,
     generated_at: &str,
     compact: bool,
@@ -1838,14 +1854,12 @@ fn emit_property(
     batch_size: usize,
     triples: &mut u64,
 ) -> Result<(), StreamError> {
-    let match_result = if let Some(cache) = match_cache {
-        resolve_from_cache(cache, schema, class_name_like, pset_name, prop_name, profile)
-            .unwrap_or_else(|| {
-                index.resolve_property(schema, class_name_like, pset_name, prop_name, profile)
-            })
-    } else {
-        index.resolve_property(schema, class_name_like, pset_name, prop_name, profile)
-    };
+    // Cache is always present — look up first, fall back to live resolve only if the
+    // specific key is absent (safety net; should not happen for a cache built from the same model).
+    let match_result = resolve_from_cache(cache, schema, class_name_like, pset_name, prop_name, profile)
+        .unwrap_or_else(|| {
+            index.resolve_property(schema, class_name_like, pset_name, prop_name, profile)
+        });
     if matches!(match_result.status, MatchStatus::Unmapped) {
         let key = format!("{pset_name}|{prop_name}");
         *unmatched_histogram.entry(key).or_insert(0) += 1;

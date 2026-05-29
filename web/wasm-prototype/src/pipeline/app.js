@@ -17,7 +17,7 @@ const RUNTIME_BUILD = "pipeline-v11-2026-05-29T00:00Z";
 // Pipeline Templates
 // ---------------------------------------------------------------------------
 
-const PREPROCESS_MODULES = ["neo-bsdd-match-preprocess", "neo-cleanup-preprocess", "neo-qto-preprocess"];
+const PREPROCESS_MODULES = ["neo-cleanup-preprocess", "neo-qto-preprocess"];
 const LBD_MODULES = ["neo-bot-producer", "neo-beo-producer", "neo-bsdd-producer", "neo-omg-fog"];
 
 const TEMPLATES = [
