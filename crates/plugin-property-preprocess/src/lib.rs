@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use ifc_model::IfcModel;
-use lbd_converter::{build_bsdd_match_cache, dedup_model_property_sets, BsddMatchCache};
+use lbd_converter::{build_bsdd_match_cache, dedup_model_property_sets, BsddMatchCache, ConvertOptions};
 use lbd_pipeline::{
     PipelineContext, PipelineLogBundle, PipelinePlugin, PipelineStage,
     PluginManifest, PreprocessError, PreprocessPlugin, FailurePolicy, ParallelismMode,
@@ -115,7 +115,10 @@ impl PreprocessPlugin for BsddMatchPreprocessPlugin {
             .get::<IfcModel>()
             .ok_or_else(|| PreprocessError::Preprocessing("BsddMatchPreprocessPlugin: missing IfcModel in context".to_string()))?;
 
-        let profile_name = std::env::var("IFC2LBD_BSDD_PROFILE").ok();
+        // Env var takes precedence (override), then ConvertOptions.bsdd_profile, then "base".
+        let options_profile = ctx.get::<ConvertOptions>()
+            .and_then(|o| o.bsdd_profile.clone());
+        let profile_name = std::env::var("IFC2LBD_BSDD_PROFILE").ok().or(options_profile);
         let cache: BsddMatchCache = build_bsdd_match_cache(&model, profile_name.as_deref())
             .map_err(|e| PreprocessError::Preprocessing(format!("BsddMatchPreprocessPlugin: failed building bSDD match cache: {e}")))?;
 

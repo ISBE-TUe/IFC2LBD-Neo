@@ -514,6 +514,8 @@ impl PipelineRunner {
             ifcowl_max_workers,
             ifcowl_mode: settings.ifcowl_mode,
             bsdd_profile: settings.bsdd_profile.clone(),
+            bsdd_compact: settings.bsdd_compact,
+            bsdd_include_standard_attrs: settings.bsdd_include_standard_attrs,
         }
     }
 

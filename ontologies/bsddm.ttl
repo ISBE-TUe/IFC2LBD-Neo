@@ -1,0 +1,265 @@
+@prefix bsddm: <https://w3id.org/ifc2lbd/bsdd-meta#> .
+@prefix bsddc: <https://identifier.buildingsmart.org/uri/buildingsmart/ifc/4.3/class/> .
+@prefix opm:   <https://w3id.org/opm#> .
+@prefix owl:   <http://www.w3.org/2002/07/owl#> .
+@prefix rdf:   <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:  <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:   <http://www.w3.org/2001/XMLSchema#> .
+
+# ---------------------------------------------------------------------------
+# Ontology declaration
+# ---------------------------------------------------------------------------
+
+<https://w3id.org/ifc2lbd/bsdd-meta>
+    a owl:Ontology ;
+    rdfs:label "bSDD Mapping Metadata Ontology"@en ;
+    rdfs:comment
+        "Vocabulary for representing bSDD property mapping results and IFC standard attributes in the ifc2lbd-neo conversion pipeline."@en .
+
+# ---------------------------------------------------------------------------
+# Classes
+# ---------------------------------------------------------------------------
+
+bsddm:PropertySet
+    a owl:Class ;
+    rdfs:label "PropertySet"@en ;
+    rdfs:comment "An IFC property set node produced by the bSDD named-graph producer."@en .
+
+bsddm:CustomPropertySet
+    a owl:Class ;
+    rdfs:subClassOf bsddm:PropertySet ;
+    rdfs:label "CustomPropertySet"@en ;
+    rdfs:comment "A property set whose name was not found in the bSDD class index."@en .
+
+bsddm:QuantitySet
+    a owl:Class ;
+    rdfs:label "QuantitySet"@en ;
+    rdfs:comment "An IFC quantity set node produced by the bSDD named-graph producer."@en .
+
+bsddm:CustomQuantitySet
+    a owl:Class ;
+    rdfs:subClassOf bsddm:QuantitySet ;
+    rdfs:label "CustomQuantitySet"@en ;
+    rdfs:comment "A quantity set whose name was not found in the bSDD class index."@en .
+
+bsddm:Property
+    a owl:Class ;
+    rdfs:subClassOf opm:Property ;
+    rdfs:label "Property"@en ;
+    rdfs:comment "A property node that was successfully matched (Mapped or Normalized) to a bSDD property code."@en .
+
+bsddm:CustomProperty
+    a owl:Class ;
+    rdfs:subClassOf bsddm:Property ;
+    rdfs:label "CustomProperty"@en ;
+    rdfs:comment "A property node that could not be matched to any bSDD property (Unmapped)."@en .
+
+bsddm:MappingStatus
+    a owl:Class ;
+    rdfs:label "MappingStatus"@en ;
+    rdfs:comment "Superclass of all bSDD mapping status values."@en .
+
+bsddm:Mapped
+    a owl:Class ;
+    rdfs:subClassOf bsddm:MappingStatus ;
+    rdfs:label "Mapped"@en ;
+    rdfs:comment "Exact match via hard override or exact class+pset+property key."@en .
+
+bsddm:Normalized
+    a owl:Class ;
+    rdfs:subClassOf bsddm:MappingStatus ;
+    rdfs:label "Normalized"@en ;
+    rdfs:comment "Match via normalized lookup (pset/class/prop fallback) or fuzzy matching."@en .
+
+bsddm:Ambiguous
+    a owl:Class ;
+    rdfs:subClassOf bsddm:MappingStatus ;
+    rdfs:label "Ambiguous"@en ;
+    rdfs:comment "Multiple candidate bSDD properties found; the mapping is unresolved."@en .
+
+bsddm:Unmapped
+    a owl:Class ;
+    rdfs:subClassOf bsddm:MappingStatus ;
+    rdfs:label "Unmapped"@en ;
+    rdfs:comment "No bSDD property candidate found for this IFC property."@en .
+
+# ---------------------------------------------------------------------------
+# Object properties — structural
+# ---------------------------------------------------------------------------
+
+bsddm:hasPropertySet
+    a owl:ObjectProperty ;
+    rdfs:label "hasPropertySet"@en ;
+    rdfs:comment "Links an IFC element or spatial node to a bsddm:PropertySet node."@en ;
+    rdfs:range bsddm:PropertySet .
+
+bsddm:hasQuantitySet
+    a owl:ObjectProperty ;
+    rdfs:label "hasQuantitySet"@en ;
+    rdfs:comment "Links an IFC element or spatial node to a bsddm:QuantitySet node."@en ;
+    rdfs:range bsddm:QuantitySet .
+
+bsddm:hasProperty
+    a owl:ObjectProperty ;
+    rdfs:label "hasProperty"@en ;
+    rdfs:comment "Links a bsddm:PropertySet or bsddm:QuantitySet to an individual property node."@en ;
+    rdfs:range opm:Property .
+
+bsddm:mappingStatus
+    a owl:ObjectProperty ;
+    rdfs:label "mappingStatus"@en ;
+    rdfs:comment "The bSDD mapping status of a property node."@en ;
+    rdfs:domain opm:Property ;
+    rdfs:range bsddm:MappingStatus .
+
+bsddm:candidateProperty
+    a owl:ObjectProperty ;
+    rdfs:label "candidateProperty"@en ;
+    rdfs:comment "A candidate bSDD property URI for a property whose mapping is ambiguous."@en ;
+    rdfs:domain opm:Property .
+
+# ---------------------------------------------------------------------------
+# Datatype properties — mapping metadata
+# ---------------------------------------------------------------------------
+
+bsddm:matchingMethod
+    a owl:DatatypeProperty ;
+    rdfs:label "matchingMethod"@en ;
+    rdfs:comment "The name of the matching strategy that produced this mapping result (e.g. exact_class_pset_prop, fuzzy, hard_override)."@en ;
+    rdfs:domain opm:Property ;
+    rdfs:range xsd:string .
+
+bsddm:matchingConfidence
+    a owl:DatatypeProperty ;
+    rdfs:label "matchingConfidence"@en ;
+    rdfs:comment "A confidence score in [0, 1] for the mapping result. 1.0 for exact matches, lower for fuzzy matches."@en ;
+    rdfs:domain opm:Property ;
+    rdfs:range xsd:decimal .
+
+bsddm:classPropertyCode
+    a owl:DatatypeProperty ;
+    rdfs:label "classPropertyCode"@en ;
+    rdfs:comment "The bSDD class-property code from the index exact_meta record, when available."@en ;
+    rdfs:domain opm:Property ;
+    rdfs:range xsd:string .
+
+# ---------------------------------------------------------------------------
+# Object properties — standard IFC attributes (all point to opm:Property nodes)
+#
+# These replace props:* predicates when the bSDD graph is used as a standalone
+# replacement for the props-opm named graph.
+# ---------------------------------------------------------------------------
+
+bsddm:globalIdIfcRoot
+    a owl:ObjectProperty ;
+    rdfs:label "globalIdIfcRoot"@en ;
+    rdfs:comment "IfcRoot.GlobalId — the IFC compressed GUID of the entity."@en ;
+    rdfs:range opm:Property .
+
+bsddm:nameIfcRoot
+    a owl:ObjectProperty ;
+    rdfs:label "nameIfcRoot"@en ;
+    rdfs:comment "IfcRoot.Name — the human-readable name of the entity."@en ;
+    rdfs:range opm:Property .
+
+bsddm:descriptionIfcRoot
+    a owl:ObjectProperty ;
+    rdfs:label "descriptionIfcRoot"@en ;
+    rdfs:comment "IfcRoot.Description — a textual description of the entity."@en ;
+    rdfs:range opm:Property .
+
+bsddm:objectTypeIfcObject
+    a owl:ObjectProperty ;
+    rdfs:label "objectTypeIfcObject"@en ;
+    rdfs:comment "IfcObject.ObjectType — the user-defined type of the object."@en ;
+    rdfs:range opm:Property .
+
+bsddm:longNameIfcSpatialElement
+    a owl:ObjectProperty ;
+    rdfs:label "longNameIfcSpatialElement"@en ;
+    rdfs:comment "IfcSpatialElement.LongName (IFC4+) — the full name of the spatial element."@en ;
+    rdfs:range opm:Property .
+
+bsddm:longNameIfcSpatialStructureElement
+    a owl:ObjectProperty ;
+    rdfs:label "longNameIfcSpatialStructureElement"@en ;
+    rdfs:comment "IfcSpatialStructureElement.LongName (IFC2X3) — the full name of the spatial element."@en ;
+    rdfs:range opm:Property .
+
+bsddm:elevationIfcBuildingStorey
+    a owl:ObjectProperty ;
+    rdfs:label "elevationIfcBuildingStorey"@en ;
+    rdfs:comment "IfcBuildingStorey.Elevation — the elevation of the storey above the project datum."@en ;
+    rdfs:range opm:Property .
+
+bsddm:refElevationIfcSite
+    a owl:ObjectProperty ;
+    rdfs:label "refElevationIfcSite"@en ;
+    rdfs:comment "IfcSite.RefElevation — the elevation of the site reference point."@en ;
+    rdfs:range opm:Property .
+
+bsddm:elevationOfRefHeightIfcBuilding
+    a owl:ObjectProperty ;
+    rdfs:label "elevationOfRefHeightIfcBuilding"@en ;
+    rdfs:comment "IfcBuilding.ElevationOfRefHeight — the elevation used as reference height for the building."@en ;
+    rdfs:range opm:Property .
+
+bsddm:elevationOfTerrainIfcBuilding
+    a owl:ObjectProperty ;
+    rdfs:label "elevationOfTerrainIfcBuilding"@en ;
+    rdfs:comment "IfcBuilding.ElevationOfTerrain — the elevation of the terrain at the building footprint."@en ;
+    rdfs:range opm:Property .
+
+bsddm:batid
+    a owl:ObjectProperty ;
+    rdfs:label "batid"@en ;
+    rdfs:comment "IfcElement.Tag — the manufacturer or supplier tag of the element."@en ;
+    rdfs:range opm:Property .
+
+bsddm:overallHeightIfcDoor
+    a owl:ObjectProperty ;
+    rdfs:label "overallHeightIfcDoor"@en ;
+    rdfs:comment "IfcDoor.OverallHeight — the nominal height of the door."@en ;
+    rdfs:range opm:Property .
+
+bsddm:overallHeightIfcWindow
+    a owl:ObjectProperty ;
+    rdfs:label "overallHeightIfcWindow"@en ;
+    rdfs:comment "IfcWindow.OverallHeight — the nominal height of the window."@en ;
+    rdfs:range opm:Property .
+
+bsddm:overallWidthIfcDoor
+    a owl:ObjectProperty ;
+    rdfs:label "overallWidthIfcDoor"@en ;
+    rdfs:comment "IfcDoor.OverallWidth — the nominal width of the door."@en ;
+    rdfs:range opm:Property .
+
+bsddm:overallWidthIfcWindow
+    a owl:ObjectProperty ;
+    rdfs:label "overallWidthIfcWindow"@en ;
+    rdfs:comment "IfcWindow.OverallWidth — the nominal width of the window."@en ;
+    rdfs:range opm:Property .
+
+bsddm:numberOfRiserIfcStairFlight
+    a owl:ObjectProperty ;
+    rdfs:label "numberOfRiserIfcStairFlight"@en ;
+    rdfs:comment "IfcStairFlight.NumberOfRisers — the number of risers in the stair flight."@en ;
+    rdfs:range opm:Property .
+
+bsddm:numberOfTreadsIfcStairFlight
+    a owl:ObjectProperty ;
+    rdfs:label "numberOfTreadsIfcStairFlight"@en ;
+    rdfs:comment "IfcStairFlight.NumberOfTreads — the number of treads in the stair flight."@en ;
+    rdfs:range opm:Property .
+
+bsddm:riserHeightIfcStairFlight
+    a owl:ObjectProperty ;
+    rdfs:label "riserHeightIfcStairFlight"@en ;
+    rdfs:comment "IfcStairFlight.RiserHeight — the height of each riser."@en ;
+    rdfs:range opm:Property .
+
+bsddm:treadLengthIfcStairFlight
+    a owl:ObjectProperty ;
+    rdfs:label "treadLengthIfcStairFlight"@en ;
+    rdfs:comment "IfcStairFlight.TreadLength — the horizontal length of each tread."@en ;
+    rdfs:range opm:Property .

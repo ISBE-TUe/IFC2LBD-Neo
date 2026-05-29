@@ -85,6 +85,14 @@ pub struct ConvertOptions {
     /// bSDD mapping profile name ("base", "revit-dach", "allplan-de", "tekla-en") or a path to
     /// a custom profile JSON file. `None` is equivalent to "base".
     pub bsdd_profile: Option<String>,
+    /// Skip per-property mapping metadata triples (bsddm:mappingStatus, bsddm:matchingMethod,
+    /// bsddm:matchingConfidence, bsddm:classPropertyCode, rdf:type bsddm:CustomProperty).
+    /// Reduces ~3-5 triples per property. Use for production graphs where debug provenance is unwanted.
+    pub bsdd_compact: bool,
+    /// Emit IFC standard attributes (GlobalId, Name, Description, ObjectType, Tag, elevations,
+    /// door/window dimensions, stair geometry) as bsddm: predicate OPM states in the bSDD graph.
+    /// Required for full props module replacement. Default true.
+    pub bsdd_include_standard_attrs: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,6 +119,8 @@ impl Default for ConvertOptions {
             ifcowl_max_workers: 16,
             ifcowl_mode: IfcowlMode::Full,
             bsdd_profile: None,
+            bsdd_compact: false,
+            bsdd_include_standard_attrs: true,
         }
     }
 }
@@ -653,7 +663,7 @@ where
                                 &predicate_local,
                                 Some(property_label(
                                     property_set.name.as_deref(),
-                                    &predicate_local,
+                                    &decode_ifc_unicode(&property.name),
                                 )),
                                 &object_guid,
                                 &property_set.guid,
@@ -703,7 +713,7 @@ where
                             &predicate_local,
                             Some(property_label(
                                 property_set.name.as_deref(),
-                                &predicate_local,
+                                &decode_ifc_unicode(&property.name),
                             )),
                             &object_guid,
                             &property_set.guid,
@@ -779,7 +789,7 @@ where
                         &predicate_local,
                         Some(property_label(
                             quantity_set.name.as_deref(),
-                            &predicate_local,
+                            &decode_ifc_unicode(&quantity.name),
                         )),
                         &object_guid,
                         &quantity_set.guid,
@@ -3042,6 +3052,8 @@ mod tests {
                 ifcowl_max_workers: 16,
                 ifcowl_mode: IfcowlMode::Full,
                 bsdd_profile: None,
+                bsdd_compact: false,
+                bsdd_include_standard_attrs: true,
             },
         );
 
@@ -3437,6 +3449,8 @@ mod tests {
                 ifcowl_max_workers: 16,
                 ifcowl_mode: IfcowlMode::Full,
                 bsdd_profile: None,
+                bsdd_compact: false,
+                bsdd_include_standard_attrs: true,
             },
         );
 
@@ -3490,6 +3504,8 @@ mod tests {
                 ifcowl_max_workers: 16,
                 ifcowl_mode: IfcowlMode::Full,
                 bsdd_profile: None,
+                bsdd_compact: false,
+                bsdd_include_standard_attrs: true,
             },
         );
 
@@ -3523,6 +3539,8 @@ mod tests {
                 ifcowl_max_workers: 16,
                 ifcowl_mode: IfcowlMode::Full,
                 bsdd_profile: None,
+                bsdd_compact: false,
+                bsdd_include_standard_attrs: true,
             },
         );
         assert!(result.triples.iter().any(|triple| {
@@ -3632,6 +3650,8 @@ mod tests {
             ifcowl_max_workers: 16,
             ifcowl_mode: IfcowlMode::Full,
             bsdd_profile: None,
+            bsdd_compact: false,
+            bsdd_include_standard_attrs: true,
         };
         let result = convert_step_and_model(&step, &model, &options);
         assert!(result.triples.iter().any(|triple| {

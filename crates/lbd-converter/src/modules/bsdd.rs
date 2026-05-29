@@ -1207,6 +1207,7 @@ pub fn stream_bsdd_with_cache(
     let batch_size = options
         .stream_batch_size
         .clamp(MIN_STREAM_BATCH_SIZE, MAX_STREAM_BATCH_SIZE);
+    let compact = options.bsdd_compact;
     let unit_by_type = build_unit_type_map(model);
     let generated_at = current_generated_at_rfc3339();
 
@@ -1269,6 +1270,7 @@ pub fn stream_bsdd_with_cache(
                     effective_cache,
                     &unit_by_type,
                     &generated_at,
+                    compact,
                     sender,
                     batch_size,
                 )
@@ -1293,6 +1295,7 @@ pub fn stream_bsdd_with_cache(
             effective_cache,
             &unit_by_type,
             &generated_at,
+            compact,
             sender,
             batch_size,
         )?;
@@ -1321,6 +1324,7 @@ pub fn stream_bsdd_with_cache(
                         effective_cache,
                         &unit_by_type,
                         &generated_at,
+                        compact,
                         sender,
                         batch_size,
                     )
@@ -1345,6 +1349,7 @@ pub fn stream_bsdd_with_cache(
             effective_cache,
             &unit_by_type,
             &generated_at,
+            compact,
             sender,
             batch_size,
         )?;
@@ -1357,6 +1362,18 @@ pub fn stream_bsdd_with_cache(
     if !batch.is_empty() {
         sender.send(batch).map_err(|_| StreamError::ChannelClosed)?;
     }
+
+    if options.bsdd_include_standard_attrs {
+        triples += emit_bsdd_standard_attrs(
+            model,
+            &base,
+            &unit_by_type,
+            &generated_at,
+            sender,
+            batch_size,
+        )?;
+    }
+
     if !unmatched_histogram.is_empty() {
         let mut top: Vec<_> = unmatched_histogram.into_iter().collect();
         top.sort_by(|a, b| b.1.cmp(&a.1));
@@ -1381,6 +1398,7 @@ fn process_element_psets(
     effective_cache: Option<&BsddMatchCache>,
     unit_by_type: &HashMap<String, String>,
     generated_at: &str,
+    compact: bool,
     sender: &Sender<Vec<Triple>>,
     batch_size: usize,
 ) -> Result<(u64, HashMap<String, u64>), StreamError> {
@@ -1504,6 +1522,7 @@ fn process_element_psets(
                     effective_cache,
                     resolve_property_unit(psv, unit_by_type, model),
                     generated_at,
+                    compact,
                     &mut local_unmatched,
                     &mut local_counter,
                     &mut local_batch,
@@ -1532,6 +1551,7 @@ fn process_element_psets(
                         effective_cache,
                         None,
                         generated_at,
+                        compact,
                         &mut local_unmatched,
                         &mut local_counter,
                         &mut local_batch,
@@ -1560,6 +1580,7 @@ fn process_element_quantities(
     effective_cache: Option<&BsddMatchCache>,
     unit_by_type: &HashMap<String, String>,
     generated_at: &str,
+    compact: bool,
     sender: &Sender<Vec<Triple>>,
     batch_size: usize,
 ) -> Result<(u64, HashMap<String, u64>), StreamError> {
@@ -1684,6 +1705,7 @@ fn process_element_quantities(
                 effective_cache,
                 resolve_quantity_unit(quantity.entity_name.as_str(), unit_by_type),
                 generated_at,
+                compact,
                 &mut local_unmatched,
                 &mut local_counter,
                 &mut local_batch,
@@ -1808,6 +1830,7 @@ fn emit_property(
     match_cache: Option<&BsddMatchCache>,
     unit: Option<String>,
     generated_at: &str,
+    compact: bool,
     unmatched_histogram: &mut HashMap<String, u64>,
     property_counter: &mut u64,
     batch: &mut Vec<Triple>,
@@ -1900,31 +1923,32 @@ fn emit_property(
         },
         triples,
     )?;
-    if matches!(match_result.status, MatchStatus::Unmapped) {
-        push(
-            batch,
-            sender,
-            batch_size,
-            Triple {
-                subject: prop_subject.clone(),
-                predicate: rdf_type(),
-                // Phase 1 semantics cleanup: PascalCase
-                object: Object::Iri(bsddm("CustomProperty")),
-            },
-            triples,
-        )?;
-    } else {
-        push(
-            batch,
-            sender,
-            batch_size,
-            Triple {
-                subject: prop_subject.clone(),
-                predicate: rdf_type(),
-                object: Object::Iri(bsddm("Property")),
-            },
-            triples,
-        )?;
+    if !compact {
+        if matches!(match_result.status, MatchStatus::Unmapped) {
+            push(
+                batch,
+                sender,
+                batch_size,
+                Triple {
+                    subject: prop_subject.clone(),
+                    predicate: rdf_type(),
+                    object: Object::Iri(bsddm("CustomProperty")),
+                },
+                triples,
+            )?;
+        } else {
+            push(
+                batch,
+                sender,
+                batch_size,
+                Triple {
+                    subject: prop_subject.clone(),
+                    predicate: rdf_type(),
+                    object: Object::Iri(bsddm("Property")),
+                },
+                triples,
+            )?;
+        }
     }
     push(
         batch,
@@ -1949,59 +1973,61 @@ fn emit_property(
         triples,
     )?;
     let _ = pset_name;
-    push(
-        batch,
-        sender,
-        batch_size,
-        Triple {
-            subject: prop_subject.clone(),
-            predicate: bsddm("mappingStatus"),
-            object: Object::Iri(mapping_status_iri(match_result.status)),
-        },
-        triples,
-    )?;
-    push(
-        batch,
-        sender,
-        batch_size,
-        Triple {
-            subject: prop_subject.clone(),
-            predicate: bsddm("matchingMethod"),
-            object: Object::Literal(match_result.method.to_string()),
-        },
-        triples,
-    )?;
-    if let Some(confidence) = match_result.confidence {
+    if !compact {
         push(
             batch,
             sender,
             batch_size,
             Triple {
                 subject: prop_subject.clone(),
-                predicate: bsddm("matchingConfidence"),
-                object: Object::TypedLiteral {
-                    value: format!("{confidence:.4}"),
-                    datatype: format!("{XSD}decimal"),
-                },
+                predicate: bsddm("mappingStatus"),
+                object: Object::Iri(mapping_status_iri(match_result.status)),
             },
             triples,
         )?;
-    }
-    if let Some(meta) = match_result.exact_meta.as_ref() {
-        if !meta.class_property_code.is_empty() {
+        push(
+            batch,
+            sender,
+            batch_size,
+            Triple {
+                subject: prop_subject.clone(),
+                predicate: bsddm("matchingMethod"),
+                object: Object::Literal(match_result.method.to_string()),
+            },
+            triples,
+        )?;
+        if let Some(confidence) = match_result.confidence {
             push(
                 batch,
                 sender,
                 batch_size,
                 Triple {
                     subject: prop_subject.clone(),
-                    predicate: bsddm("classPropertyCode"),
-                    object: Object::Literal(meta.class_property_code.clone()),
+                    predicate: bsddm("matchingConfidence"),
+                    object: Object::TypedLiteral {
+                        value: format!("{confidence:.4}"),
+                        datatype: format!("{XSD}decimal"),
+                    },
                 },
                 triples,
             )?;
         }
-    }
+        if let Some(meta) = match_result.exact_meta.as_ref() {
+            if !meta.class_property_code.is_empty() {
+                push(
+                    batch,
+                    sender,
+                    batch_size,
+                    Triple {
+                        subject: prop_subject.clone(),
+                        predicate: bsddm("classPropertyCode"),
+                        object: Object::Literal(meta.class_property_code.clone()),
+                    },
+                    triples,
+                )?;
+            }
+        }
+    } // end if !compact
 
     push(
         batch,
@@ -2053,6 +2079,223 @@ fn emit_property(
         )?;
     }
 
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Standard attribute emission — bsddm: predicates, OPM state pattern
+// ---------------------------------------------------------------------------
+
+/// Emit IFC standard attributes (GlobalId, Name, Description, etc.) as bsddm: OPM states.
+/// These mirror the attrs emitted by props_opm but use bsddm: namespace predicates so
+/// the bSDD graph can fully replace the props graph.
+fn emit_bsdd_standard_attrs(
+    model: &IfcModel,
+    base: &str,
+    unit_by_type: &HashMap<String, String>,
+    generated_at: &str,
+    sender: &Sender<Vec<Triple>>,
+    batch_size: usize,
+) -> Result<u64, StreamError> {
+    let mut batch: Vec<Triple> = Vec::with_capacity(batch_size);
+    let mut triples = 0_u64;
+
+    for spatial in sorted_values(&model.spatial_nodes) {
+        let subject = spatial_resource_iri(base, spatial.spatial_type, &spatial.guid);
+        let guid = spatial.guid.as_str();
+
+        emit_std_attr(&subject, base, "globalIdIfcRoot", guid,
+            Object::Literal(spatial.guid.to_string()), generated_at, None,
+            &mut batch, sender, batch_size, &mut triples)?;
+        if let Some(name) = &spatial.name {
+            emit_std_attr(&subject, base, "nameIfcRoot", guid,
+                Object::Literal(name.to_string()), generated_at, None,
+                &mut batch, sender, batch_size, &mut triples)?;
+        }
+        if let Some(desc) = spatial.description.as_ref().filter(|d| !d.is_empty()) {
+            emit_std_attr(&subject, base, "descriptionIfcRoot", guid,
+                Object::Literal(desc.to_string()), generated_at, None,
+                &mut batch, sender, batch_size, &mut triples)?;
+        }
+        if let Some(object_type) = &spatial.object_type {
+            emit_std_attr(&subject, base, "objectTypeIfcObject", guid,
+                Object::Literal(object_type.to_string()), generated_at, None,
+                &mut batch, sender, batch_size, &mut triples)?;
+        }
+        if let Some(long_name) = &spatial.long_name {
+            let attr = match model.schema {
+                ifc_step::StepSchema::Ifc2x3 => "longNameIfcSpatialStructureElement",
+                _ => "longNameIfcSpatialElement",
+            };
+            emit_std_attr(&subject, base, attr, guid,
+                Object::Literal(long_name.to_string()), generated_at, None,
+                &mut batch, sender, batch_size, &mut triples)?;
+        }
+        if let Some(elevation) = spatial.elevation {
+            emit_std_attr(&subject, base, "elevationIfcBuildingStorey", guid,
+                Object::TypedLiteral { value: elevation.to_string(), datatype: format!("{XSD}double") },
+                generated_at, unit_by_type.get("LENGTHUNIT").cloned(),
+                &mut batch, sender, batch_size, &mut triples)?;
+        }
+        if let Some(ref_elevation) = spatial.ref_elevation {
+            emit_std_attr(&subject, base, "refElevationIfcSite", guid,
+                Object::TypedLiteral { value: ref_elevation.to_string(), datatype: format!("{XSD}double") },
+                generated_at, unit_by_type.get("LENGTHUNIT").cloned(),
+                &mut batch, sender, batch_size, &mut triples)?;
+        }
+        if let Some(elev_ref_height) = spatial.elevation_of_ref_height {
+            emit_std_attr(&subject, base, "elevationOfRefHeightIfcBuilding", guid,
+                Object::TypedLiteral { value: elev_ref_height.to_string(), datatype: format!("{XSD}double") },
+                generated_at, unit_by_type.get("LENGTHUNIT").cloned(),
+                &mut batch, sender, batch_size, &mut triples)?;
+        }
+        if let Some(elev_terrain) = spatial.elevation_of_terrain {
+            emit_std_attr(&subject, base, "elevationOfTerrainIfcBuilding", guid,
+                Object::TypedLiteral { value: elev_terrain.to_string(), datatype: format!("{XSD}double") },
+                generated_at, unit_by_type.get("LENGTHUNIT").cloned(),
+                &mut batch, sender, batch_size, &mut triples)?;
+        }
+    }
+
+    for element in sorted_values(&model.elements) {
+        let subject = element_resource_iri(base, element);
+        let guid = element.guid.as_str();
+
+        emit_std_attr(&subject, base, "globalIdIfcRoot", guid,
+            Object::Literal(element.guid.to_string()), generated_at, None,
+            &mut batch, sender, batch_size, &mut triples)?;
+        if let Some(name) = &element.name {
+            emit_std_attr(&subject, base, "nameIfcRoot", guid,
+                Object::Literal(name.to_string()), generated_at, None,
+                &mut batch, sender, batch_size, &mut triples)?;
+        }
+        if let Some(desc) = element.description.as_ref().filter(|d| !d.is_empty()) {
+            emit_std_attr(&subject, base, "descriptionIfcRoot", guid,
+                Object::Literal(desc.to_string()), generated_at, None,
+                &mut batch, sender, batch_size, &mut triples)?;
+        }
+        if let Some(object_type) = &element.object_type {
+            emit_std_attr(&subject, base, "objectTypeIfcObject", guid,
+                Object::Literal(object_type.to_string()), generated_at, None,
+                &mut batch, sender, batch_size, &mut triples)?;
+        }
+        if let Some(tag) = &element.tag {
+            emit_std_attr(&subject, base, "batid", guid,
+                Object::Literal(tag.to_string()), generated_at, None,
+                &mut batch, sender, batch_size, &mut triples)?;
+        }
+        if let Some(overall_height) = element.overall_height {
+            let attr = match element.entity_name.as_str() {
+                "IFCDOOR" => "overallHeightIfcDoor",
+                "IFCWINDOW" => "overallHeightIfcWindow",
+                _ => "overallHeight",
+            };
+            emit_std_attr(&subject, base, attr, guid,
+                Object::TypedLiteral { value: overall_height.to_string(), datatype: format!("{XSD}double") },
+                generated_at, unit_by_type.get("LENGTHUNIT").cloned(),
+                &mut batch, sender, batch_size, &mut triples)?;
+        }
+        if let Some(overall_width) = element.overall_width {
+            let attr = match element.entity_name.as_str() {
+                "IFCDOOR" => "overallWidthIfcDoor",
+                "IFCWINDOW" => "overallWidthIfcWindow",
+                _ => "overallWidth",
+            };
+            emit_std_attr(&subject, base, attr, guid,
+                Object::TypedLiteral { value: overall_width.to_string(), datatype: format!("{XSD}double") },
+                generated_at, unit_by_type.get("LENGTHUNIT").cloned(),
+                &mut batch, sender, batch_size, &mut triples)?;
+        }
+        if let Some(n) = element.number_of_risers {
+            emit_std_attr(&subject, base, "numberOfRiserIfcStairFlight", guid,
+                Object::TypedLiteral { value: n.to_string(), datatype: format!("{XSD}integer") },
+                generated_at, None,
+                &mut batch, sender, batch_size, &mut triples)?;
+        }
+        if let Some(n) = element.number_of_treads {
+            emit_std_attr(&subject, base, "numberOfTreadsIfcStairFlight", guid,
+                Object::TypedLiteral { value: n.to_string(), datatype: format!("{XSD}integer") },
+                generated_at, None,
+                &mut batch, sender, batch_size, &mut triples)?;
+        }
+        if let Some(h) = element.riser_height {
+            emit_std_attr(&subject, base, "riserHeightIfcStairFlight", guid,
+                Object::TypedLiteral { value: h.to_string(), datatype: format!("{XSD}double") },
+                generated_at, unit_by_type.get("LENGTHUNIT").cloned(),
+                &mut batch, sender, batch_size, &mut triples)?;
+        }
+        if let Some(l) = element.tread_length {
+            emit_std_attr(&subject, base, "treadLengthIfcStairFlight", guid,
+                Object::TypedLiteral { value: l.to_string(), datatype: format!("{XSD}double") },
+                generated_at, unit_by_type.get("LENGTHUNIT").cloned(),
+                &mut batch, sender, batch_size, &mut triples)?;
+        }
+    }
+
+    if !batch.is_empty() {
+        sender.send(batch).map_err(|_| StreamError::ChannelClosed)?;
+    }
+    Ok(triples)
+}
+
+/// Emit a single standard-attribute as a bsddm: OPM property + state triple pair.
+#[allow(clippy::too_many_arguments)]
+fn emit_std_attr(
+    subject: &str,
+    base: &str,
+    attr_local: &str,
+    guid: &str,
+    value: Object,
+    generated_at: &str,
+    unit: Option<String>,
+    batch: &mut Vec<Triple>,
+    sender: &Sender<Vec<Triple>>,
+    batch_size: usize,
+    triples: &mut u64,
+) -> Result<(), StreamError> {
+    let prop_iri = format!("{base}/bsdd_attr_{}_{}", sanitize(attr_local), sanitize(guid));
+    let state_iri = format!("{base}/bsdd_attrstate_{}_{}", sanitize(attr_local), sanitize(guid));
+
+    push(batch, sender, batch_size, Triple {
+        subject: subject.to_string(),
+        predicate: bsddm(attr_local),
+        object: Object::Iri(prop_iri.clone()),
+    }, triples)?;
+    push(batch, sender, batch_size, Triple {
+        subject: prop_iri.clone(),
+        predicate: rdf_type(),
+        object: Object::Iri(opm_property()),
+    }, triples)?;
+    push(batch, sender, batch_size, Triple {
+        subject: prop_iri.clone(),
+        predicate: opm_has_property_state(),
+        object: Object::Iri(state_iri.clone()),
+    }, triples)?;
+    push(batch, sender, batch_size, Triple {
+        subject: state_iri.clone(),
+        predicate: rdf_type(),
+        object: Object::Iri(opm_current_property_state()),
+    }, triples)?;
+    push(batch, sender, batch_size, Triple {
+        subject: state_iri.clone(),
+        predicate: prov_generated_at_time(),
+        object: Object::TypedLiteral {
+            value: generated_at.to_string(),
+            datatype: format!("{XSD}dateTime"),
+        },
+    }, triples)?;
+    push(batch, sender, batch_size, Triple {
+        subject: state_iri.clone(),
+        predicate: schema_value(),
+        object: value,
+    }, triples)?;
+    if let Some(unit) = unit {
+        push(batch, sender, batch_size, Triple {
+            subject: state_iri,
+            predicate: smls_unit(),
+            object: Object::Iri(unit),
+        }, triples)?;
+    }
     Ok(())
 }
 

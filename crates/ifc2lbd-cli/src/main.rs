@@ -132,6 +132,8 @@ struct ExecutionSettings {
     turtle_grouping: TurtleGrouping,
     ifcowl_mode: IfcowlMode,
     bsdd_profile: Option<String>,
+    bsdd_compact: bool,
+    bsdd_include_standard_attrs: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -235,6 +237,8 @@ fn main() -> anyhow::Result<()> {
         ifcowl_max_workers: 16,
         ifcowl_mode: settings.ifcowl_mode,
         bsdd_profile: settings.bsdd_profile.clone(),
+        bsdd_compact: settings.bsdd_compact,
+        bsdd_include_standard_attrs: settings.bsdd_include_standard_attrs,
     };
 
     let preprocess_ids: Vec<String> = activation_plan
@@ -724,9 +728,25 @@ fn validate_bsdd_producer_module_config(
                     ));
                 }
             }
+            "compact" => {
+                if !["true", "false"].contains(&value.as_str()) {
+                    return Err(format!(
+                        "`neo-bsdd-producer.compact` must be true or false, got `{}`",
+                        value
+                    ));
+                }
+            }
+            "include_standard_attrs" => {
+                if !["true", "false"].contains(&value.as_str()) {
+                    return Err(format!(
+                        "`neo-bsdd-producer.include_standard_attrs` must be true or false, got `{}`",
+                        value
+                    ));
+                }
+            }
             other => {
                 return Err(format!(
-                    "unknown option `neo-bsdd-producer.{}` (supported: profile)",
+                    "unknown option `neo-bsdd-producer.{}` (supported: profile, compact, include_standard_attrs)",
                     other
                 ));
             }
@@ -843,10 +863,16 @@ fn resolve_execution_settings(
         ),
     };
 
-    let bsdd_profile = configs
-        .get(lbd_pipeline::BSDD_PRODUCER_ID)
-        .and_then(|e| e.get("profile"))
-        .cloned();
+    let bsdd_entries = configs.get(lbd_pipeline::BSDD_PRODUCER_ID);
+    let bsdd_profile = bsdd_entries.and_then(|e| e.get("profile")).cloned();
+    let bsdd_compact = bsdd_entries
+        .and_then(|e| e.get("compact"))
+        .map(|v| v == "true")
+        .unwrap_or(false);
+    let bsdd_include_standard_attrs = bsdd_entries
+        .and_then(|e| e.get("include_standard_attrs"))
+        .map(|v| v != "false")
+        .unwrap_or(true);
 
     Ok(ExecutionSettings {
         output_format,
@@ -862,6 +888,8 @@ fn resolve_execution_settings(
         turtle_grouping,
         ifcowl_mode,
         bsdd_profile,
+        bsdd_compact,
+        bsdd_include_standard_attrs,
     })
 }
 
@@ -1367,6 +1395,8 @@ mod tests {
             turtle_grouping: TurtleGrouping::Streaming,
             ifcowl_mode: IfcowlMode::Full,
             bsdd_profile: None,
+            bsdd_compact: false,
+            bsdd_include_standard_attrs: true,
         }
     }
 }
