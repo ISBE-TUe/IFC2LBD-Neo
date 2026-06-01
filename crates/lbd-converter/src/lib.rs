@@ -93,6 +93,11 @@ pub struct ConvertOptions {
     /// door/window dimensions, stair geometry) as bsddm: predicate OPM states in the bSDD graph.
     /// Required for full props module replacement. Default true.
     pub bsdd_include_standard_attrs: bool,
+    /// Share property and state instances across elements when the (property, pset, value) triple
+    /// is identical. Replaces per-element URIs with value-fingerprint canonical URIs so that N
+    /// elements sharing height=3m point to one canonical property node instead of N copies.
+    /// The element→hasProperty link is still emitted per element. Default false.
+    pub bsdd_dedup_properties: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,6 +126,7 @@ impl Default for ConvertOptions {
             bsdd_profile: None,
             bsdd_compact: false,
             bsdd_include_standard_attrs: true,
+            bsdd_dedup_properties: false,
         }
     }
 }
@@ -2416,6 +2422,19 @@ pub(crate) fn property_state_iri(
     format!("{base}/s_{:016x}", fnv1a64(key.as_bytes()))
 }
 
+/// Canonical property IRI shared across elements when value is the same.
+/// Key: (predicate_local, set_scope/pset_guid, value_repr) — no element GUID.
+pub(crate) fn canonical_property_resource_iri(base: &str, predicate_local: &str, set_scope: &str, value_repr: &str) -> String {
+    let key = format!("{predicate_local}|{set_scope}|{value_repr}");
+    format!("{base}/cp_{:016x}", fnv1a64(key.as_bytes()))
+}
+
+/// Canonical state IRI shared across elements when value is the same.
+pub(crate) fn canonical_property_state_iri(base: &str, predicate_local: &str, set_scope: &str, value_repr: &str) -> String {
+    let key = format!("{predicate_local}|{set_scope}|{value_repr}");
+    format!("{base}/cs_{:016x}", fnv1a64(key.as_bytes()))
+}
+
 pub(crate) fn object_value_repr(value: &Object) -> &str {
     match value {
         Object::Iri(s) | Object::Literal(s) => s,
@@ -2890,6 +2909,7 @@ mod tests {
                 bsdd_profile: None,
                 bsdd_compact: false,
                 bsdd_include_standard_attrs: true,
+                bsdd_dedup_properties: false,
             },
         );
 
@@ -3287,6 +3307,7 @@ mod tests {
                 bsdd_profile: None,
                 bsdd_compact: false,
                 bsdd_include_standard_attrs: true,
+                bsdd_dedup_properties: false,
             },
         );
 
@@ -3342,6 +3363,7 @@ mod tests {
                 bsdd_profile: None,
                 bsdd_compact: false,
                 bsdd_include_standard_attrs: true,
+                bsdd_dedup_properties: false,
             },
         );
 
@@ -3377,6 +3399,7 @@ mod tests {
                 bsdd_profile: None,
                 bsdd_compact: false,
                 bsdd_include_standard_attrs: true,
+                bsdd_dedup_properties: false,
             },
         );
         assert!(result.triples.iter().any(|triple| {
@@ -3488,6 +3511,7 @@ mod tests {
             bsdd_profile: None,
             bsdd_compact: false,
             bsdd_include_standard_attrs: true,
+                bsdd_dedup_properties: false,
         };
         let result = convert_step_and_model(&step, &model, &options);
         assert!(result.triples.iter().any(|triple| {

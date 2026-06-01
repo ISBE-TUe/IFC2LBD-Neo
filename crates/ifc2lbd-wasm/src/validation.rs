@@ -195,6 +195,10 @@ pub(crate) fn resolve_execution_settings(
         .and_then(|m| m.get("include_standard_attrs"))
         .map(|v| v != "false")
         .unwrap_or(true);
+    let bsdd_dedup_properties = bsdd_entries
+        .and_then(|m| m.get("dedup_properties"))
+        .map(|v| v == "true")
+        .unwrap_or(false);
 
     Ok(ExecutionSettings {
         output_formats,
@@ -212,6 +216,7 @@ pub(crate) fn resolve_execution_settings(
         bsdd_profile,
         bsdd_compact,
         bsdd_include_standard_attrs,
+        bsdd_dedup_properties,
     })
 }
 
