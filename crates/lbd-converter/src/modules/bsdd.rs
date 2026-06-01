@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crossbeam::channel::Sender;
 use flate2::read::GzDecoder;
@@ -22,6 +22,26 @@ use crate::{
     resolve_property_unit, resolve_quantity_unit, sorted_values, spatial_resource_iri,
     ConvertOptions, StreamError, MAX_STREAM_BATCH_SIZE, MIN_STREAM_BATCH_SIZE,
 };
+
+/// Tracks which canonical RDF nodes have already been emitted during a dedup pass.
+/// Wrapped in Arc<Mutex<>> so it can be shared across rayon threads (CLI) and used directly
+/// in the single-threaded WASM path.  All sets grow monotonically — presence means triples
+/// are already in the stream; the first thread to insert wins and emits.
+#[derive(Default)]
+struct DedupSets {
+    /// Canonical prop_subject IRIs whose full definition triples have been emitted.
+    emitted_props: HashSet<String>,
+    /// Set-subject IRIs (pset/qset) whose type/label triples have been emitted.
+    emitted_set_defs: HashSet<String>,
+    /// "{set_subject}|{prop_subject}" keys for containsProperty/containsQuantity triples.
+    emitted_set_contains: HashSet<String>,
+}
+
+impl DedupSets {
+    fn shared() -> Arc<Mutex<Self>> {
+        Arc::new(Mutex::new(Self::default()))
+    }
+}
 
 // Fuzzy matching thresholds — named so tests break if someone adjusts blindly.
 // Both values are exposed in the profile and overridable per profile in Phase 2.
@@ -1224,6 +1244,7 @@ pub fn stream_bsdd_with_cache(
         .stream_batch_size
         .clamp(MIN_STREAM_BATCH_SIZE, MAX_STREAM_BATCH_SIZE);
     let compact = options.bsdd_compact;
+    let dedup = options.bsdd_dedup_properties;
     let unit_by_type = build_unit_type_map(model);
     let generated_at = current_generated_at_rfc3339();
 
@@ -1271,6 +1292,10 @@ pub fn stream_bsdd_with_cache(
     let mut object_ids: Vec<_> = model.property_sets_for_object.keys().copied().collect();
     object_ids.sort_unstable();
 
+    // Dedup mode uses Arc<Mutex<DedupSets>> so the same shared state works for both
+    // the rayon parallel path (CLI) and the single-threaded WASM path.
+    let pset_dedup: Option<Arc<Mutex<DedupSets>>> = dedup.then(DedupSets::shared);
+
     #[cfg(not(target_arch = "wasm32"))]
     {
         use rayon::prelude::*;
@@ -1287,6 +1312,7 @@ pub fn stream_bsdd_with_cache(
                     &unit_by_type,
                     &generated_at,
                     compact,
+                    pset_dedup.as_ref(),
                     sender,
                     batch_size,
                 )
@@ -1312,6 +1338,7 @@ pub fn stream_bsdd_with_cache(
             &unit_by_type,
             &generated_at,
             compact,
+            pset_dedup.as_ref(),
             sender,
             batch_size,
         )?;
@@ -1323,6 +1350,8 @@ pub fn stream_bsdd_with_cache(
 
     let mut quantity_object_ids: Vec<_> = model.quantities_for_object.keys().copied().collect();
     quantity_object_ids.sort_unstable();
+
+    let qty_dedup: Option<Arc<Mutex<DedupSets>>> = dedup.then(DedupSets::shared);
 
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -1341,6 +1370,7 @@ pub fn stream_bsdd_with_cache(
                         &unit_by_type,
                         &generated_at,
                         compact,
+                        qty_dedup.as_ref(),
                         sender,
                         batch_size,
                     )
@@ -1366,6 +1396,7 @@ pub fn stream_bsdd_with_cache(
             &unit_by_type,
             &generated_at,
             compact,
+            qty_dedup.as_ref(),
             sender,
             batch_size,
         )?;
@@ -1415,6 +1446,7 @@ fn process_element_psets(
     unit_by_type: &HashMap<String, String>,
     generated_at: &str,
     compact: bool,
+    dedup: Option<&Arc<Mutex<DedupSets>>>,
     sender: &Sender<Vec<Triple>>,
     batch_size: usize,
 ) -> Result<(u64, HashMap<String, u64>), StreamError> {
@@ -1450,6 +1482,7 @@ fn process_element_psets(
         let pset_name = pset.name.as_deref().unwrap_or_default();
         let pset_subject = crate::property_set_resource_iri(base, &pset.guid);
 
+        // element → hasPropertySet is always per-element
         push(
             &mut local_batch,
             sender,
@@ -1461,18 +1494,13 @@ fn process_element_psets(
             },
             &mut local_triples,
         )?;
-        push(
-            &mut local_batch,
-            sender,
-            batch_size,
-            Triple {
-                subject: pset_subject.clone(),
-                predicate: rdf_type(),
-                object: Object::Iri(bsddm("PropertySet")),
-            },
-            &mut local_triples,
-        )?;
-        if let Some(pset_code) = index.resolve_class(pset_name) {
+
+        // pset type/label triples: emit once per pset IRI in dedup mode
+        let emit_pset_def = match dedup {
+            Some(ds) => ds.lock().unwrap().emitted_set_defs.insert(pset_subject.clone()),
+            None => true,
+        };
+        if emit_pset_def {
             push(
                 &mut local_batch,
                 sender,
@@ -1480,35 +1508,48 @@ fn process_element_psets(
                 Triple {
                     subject: pset_subject.clone(),
                     predicate: rdf_type(),
-                    object: Object::Iri(bsdd_class(pset_code)),
+                    object: Object::Iri(bsddm("PropertySet")),
                 },
                 &mut local_triples,
             )?;
-        } else {
-            push(
-                &mut local_batch,
-                sender,
-                batch_size,
-                Triple {
-                    subject: pset_subject.clone(),
-                    predicate: rdf_type(),
-                    object: Object::Iri(bsddm("CustomPropertySet")),
-                },
-                &mut local_triples,
-            )?;
-        }
-        if !pset_name.is_empty() {
-            push(
-                &mut local_batch,
-                sender,
-                batch_size,
-                Triple {
-                    subject: pset_subject.clone(),
-                    predicate: rdfs_label(),
-                    object: Object::Literal(pset_name.to_string()),
-                },
-                &mut local_triples,
-            )?;
+            if let Some(pset_code) = index.resolve_class(pset_name) {
+                push(
+                    &mut local_batch,
+                    sender,
+                    batch_size,
+                    Triple {
+                        subject: pset_subject.clone(),
+                        predicate: rdf_type(),
+                        object: Object::Iri(bsdd_class(pset_code)),
+                    },
+                    &mut local_triples,
+                )?;
+            } else {
+                push(
+                    &mut local_batch,
+                    sender,
+                    batch_size,
+                    Triple {
+                        subject: pset_subject.clone(),
+                        predicate: rdf_type(),
+                        object: Object::Iri(bsddm("CustomPropertySet")),
+                    },
+                    &mut local_triples,
+                )?;
+            }
+            if !pset_name.is_empty() {
+                push(
+                    &mut local_batch,
+                    sender,
+                    batch_size,
+                    Triple {
+                        subject: pset_subject.clone(),
+                        predicate: rdfs_label(),
+                        object: Object::Literal(pset_name.to_string()),
+                    },
+                    &mut local_triples,
+                )?;
+            }
         }
 
         for prop_id in &pset.properties {
@@ -1537,6 +1578,7 @@ fn process_element_psets(
                     resolve_property_unit(psv, unit_by_type, model),
                     generated_at,
                     compact,
+                    dedup,
                     &mut local_unmatched,
                     &mut local_counter,
                     &mut local_batch,
@@ -1568,6 +1610,7 @@ fn process_element_psets(
                         None,
                         generated_at,
                         compact,
+                        dedup,
                         &mut local_unmatched,
                         &mut local_counter,
                         &mut local_batch,
@@ -1597,6 +1640,7 @@ fn process_element_quantities(
     unit_by_type: &HashMap<String, String>,
     generated_at: &str,
     compact: bool,
+    dedup: Option<&Arc<Mutex<DedupSets>>>,
     sender: &Sender<Vec<Triple>>,
     batch_size: usize,
 ) -> Result<(u64, HashMap<String, u64>), StreamError> {
@@ -1632,6 +1676,7 @@ fn process_element_quantities(
         let quantity_set_name = quantity_set.name.as_deref().unwrap_or_default();
         let quantity_set_subject = crate::quantity_set_resource_iri(base, &quantity_set.guid);
 
+        // element → hasQuantitySet is always per-element
         push(
             &mut local_batch,
             sender,
@@ -1643,18 +1688,13 @@ fn process_element_quantities(
             },
             &mut local_triples,
         )?;
-        push(
-            &mut local_batch,
-            sender,
-            batch_size,
-            Triple {
-                subject: quantity_set_subject.clone(),
-                predicate: rdf_type(),
-                object: Object::Iri(bsddm("QuantitySet")),
-            },
-            &mut local_triples,
-        )?;
-        if let Some(quantity_set_code) = index.resolve_class(quantity_set_name) {
+
+        // qset type/label triples: emit once per qset IRI in dedup mode
+        let emit_qset_def = match dedup {
+            Some(ds) => ds.lock().unwrap().emitted_set_defs.insert(quantity_set_subject.clone()),
+            None => true,
+        };
+        if emit_qset_def {
             push(
                 &mut local_batch,
                 sender,
@@ -1662,35 +1702,48 @@ fn process_element_quantities(
                 Triple {
                     subject: quantity_set_subject.clone(),
                     predicate: rdf_type(),
-                    object: Object::Iri(bsdd_class(quantity_set_code)),
+                    object: Object::Iri(bsddm("QuantitySet")),
                 },
                 &mut local_triples,
             )?;
-        } else {
-            push(
-                &mut local_batch,
-                sender,
-                batch_size,
-                Triple {
-                    subject: quantity_set_subject.clone(),
-                    predicate: rdf_type(),
-                    object: Object::Iri(bsddm("CustomQuantitySet")),
-                },
-                &mut local_triples,
-            )?;
-        }
-        if !quantity_set_name.is_empty() {
-            push(
-                &mut local_batch,
-                sender,
-                batch_size,
-                Triple {
-                    subject: quantity_set_subject.clone(),
-                    predicate: rdfs_label(),
-                    object: Object::Literal(quantity_set_name.to_string()),
-                },
-                &mut local_triples,
-            )?;
+            if let Some(quantity_set_code) = index.resolve_class(quantity_set_name) {
+                push(
+                    &mut local_batch,
+                    sender,
+                    batch_size,
+                    Triple {
+                        subject: quantity_set_subject.clone(),
+                        predicate: rdf_type(),
+                        object: Object::Iri(bsdd_class(quantity_set_code)),
+                    },
+                    &mut local_triples,
+                )?;
+            } else {
+                push(
+                    &mut local_batch,
+                    sender,
+                    batch_size,
+                    Triple {
+                        subject: quantity_set_subject.clone(),
+                        predicate: rdf_type(),
+                        object: Object::Iri(bsddm("CustomQuantitySet")),
+                    },
+                    &mut local_triples,
+                )?;
+            }
+            if !quantity_set_name.is_empty() {
+                push(
+                    &mut local_batch,
+                    sender,
+                    batch_size,
+                    Triple {
+                        subject: quantity_set_subject.clone(),
+                        predicate: rdfs_label(),
+                        object: Object::Literal(quantity_set_name.to_string()),
+                    },
+                    &mut local_triples,
+                )?;
+            }
         }
 
         for quantity_id in &quantity_set.quantities {
@@ -1720,6 +1773,7 @@ fn process_element_quantities(
                 resolve_quantity_unit(quantity.entity_name.as_str(), unit_by_type),
                 generated_at,
                 compact,
+                dedup,
                 &mut local_unmatched,
                 &mut local_counter,
                 &mut local_batch,
@@ -1847,6 +1901,7 @@ fn emit_property(
     unit: Option<String>,
     generated_at: &str,
     compact: bool,
+    dedup: Option<&Arc<Mutex<DedupSets>>>,
     unmatched_histogram: &mut HashMap<String, u64>,
     property_counter: &mut u64,
     batch: &mut Vec<Triple>,
@@ -1865,18 +1920,23 @@ fn emit_property(
         *unmatched_histogram.entry(key).or_insert(0) += 1;
     }
     let predicate_local = crate::property_local_name(prop_name);
-    let prop_subject = crate::property_resource_iri(base, &predicate_local, object_guid, pset_guid);
-    // Same state IRI scheme as props: deterministic on (predicate, pset, element, value).
-    // Identical property+value in both graphs → identical state node → no duplicates in triplestore.
-    let state_subject = crate::property_state_iri(
-        base,
-        &predicate_local,
-        object_guid,
-        pset_guid,
-        crate::object_value_repr(&value),
-    );
+    let value_repr = crate::object_value_repr(&value).to_string();
+    let (prop_subject, state_subject) = if dedup.is_some() {
+        // Canonical URIs: keyed on (predicate, pset_guid, value) — no element GUID.
+        // Multiple elements sharing the same property+value point to one canonical node.
+        (
+            crate::canonical_property_resource_iri(base, &predicate_local, pset_guid, &value_repr),
+            crate::canonical_property_state_iri(base, &predicate_local, pset_guid, &value_repr),
+        )
+    } else {
+        // Per-element URIs (existing behaviour).
+        (
+            crate::property_resource_iri(base, &predicate_local, object_guid, pset_guid),
+            crate::property_state_iri(base, &predicate_local, object_guid, pset_guid, &value_repr),
+        )
+    };
 
-    // Universal direct link: element → property (all properties, regardless of match status)
+    // Universal direct link: element → property (always per-element)
     push(
         batch,
         sender,
@@ -1889,18 +1949,39 @@ fn emit_property(
         triples,
     )?;
 
+    // In dedup mode: gate the container link and all definition triples on first-seen.
+    // The mutex is held only for the atomic check-and-insert — no I/O inside the lock.
+    let (emit_container, emit_definition) = match dedup {
+        Some(ds) => {
+            let mut guard = ds.lock().unwrap();
+            let set_key = format!("{}|{}", pset_subject, prop_subject);
+            (
+                guard.emitted_set_contains.insert(set_key),
+                guard.emitted_props.insert(prop_subject.clone()),
+            )
+        }
+        None => (true, true),
+    };
+
     // Container grouping link: pset/qset → property (containsProperty or containsQuantity)
-    push(
-        batch,
-        sender,
-        batch_size,
-        Triple {
-            subject: pset_subject.to_string(),
-            predicate: bsddm(container_predicate),
-            object: Object::Iri(prop_subject.clone()),
-        },
-        triples,
-    )?;
+    if emit_container {
+        push(
+            batch,
+            sender,
+            batch_size,
+            Triple {
+                subject: pset_subject.to_string(),
+                predicate: bsddm(container_predicate),
+                object: Object::Iri(prop_subject.clone()),
+            },
+            triples,
+        )?;
+    }
+
+    if !emit_definition {
+        // Canonical instance already in stream — only the per-element link above is needed.
+        return Ok(());
+    }
 
     // bSDD property code as rdf:type on the property node (dictionary identifier, not predicate)
     if let Some(code) = match_result.property_code.as_deref() {

@@ -200,6 +200,17 @@ function optionControl(pluginId, key) {
         </select>
       </div>`;
   }
+  if (key === "dedup_properties") {
+    const dedupVal = current || "false";
+    return `
+      <div class="detail-row">
+        <span class="detail-label">dedup properties</span>
+        <select data-option-key="dedup_properties" class="detail-select">
+          <option value="false" ${dedupVal === "false" ? "selected" : ""}>Off — one instance per element</option>
+          <option value="true" ${dedupVal === "true" ? "selected" : ""}>On — share instances with equal values</option>
+        </select>
+      </div>`;
+  }
   // Default: text input with contextual placeholder
   const placeholders = {
     chunk_size_lines: "2000000 (2M lines)",

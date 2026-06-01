@@ -214,6 +214,7 @@ pub struct ExecutionSettings {
     pub bsdd_profile: Option<String>,
     pub bsdd_compact: bool,
     pub bsdd_include_standard_attrs: bool,
+    pub bsdd_dedup_properties: bool,
 }
 
 impl ExecutionSettings {

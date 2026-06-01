@@ -134,6 +134,7 @@ struct ExecutionSettings {
     bsdd_profile: Option<String>,
     bsdd_compact: bool,
     bsdd_include_standard_attrs: bool,
+    bsdd_dedup_properties: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -239,6 +240,7 @@ fn main() -> anyhow::Result<()> {
         bsdd_profile: settings.bsdd_profile.clone(),
         bsdd_compact: settings.bsdd_compact,
         bsdd_include_standard_attrs: settings.bsdd_include_standard_attrs,
+        bsdd_dedup_properties: settings.bsdd_dedup_properties,
     };
 
     let preprocess_ids: Vec<String> = activation_plan
@@ -873,6 +875,10 @@ fn resolve_execution_settings(
         .and_then(|e| e.get("include_standard_attrs"))
         .map(|v| v != "false")
         .unwrap_or(true);
+    let bsdd_dedup_properties = bsdd_entries
+        .and_then(|e| e.get("dedup_properties"))
+        .map(|v| v == "true")
+        .unwrap_or(false);
 
     Ok(ExecutionSettings {
         output_format,
@@ -890,6 +896,7 @@ fn resolve_execution_settings(
         bsdd_profile,
         bsdd_compact,
         bsdd_include_standard_attrs,
+        bsdd_dedup_properties,
     })
 }
 
@@ -1397,6 +1404,7 @@ mod tests {
             bsdd_profile: None,
             bsdd_compact: false,
             bsdd_include_standard_attrs: true,
+            bsdd_dedup_properties: false,
         }
     }
 }
