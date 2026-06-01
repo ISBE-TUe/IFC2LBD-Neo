@@ -18,7 +18,7 @@ use std::sync::Arc;
 use ifc_model::{IfcModel, Unit};
 use ifc_step::StepFile;
 use lbd_pipeline::{
-    FailurePolicy, ParallelismMode, PipelineContext, PipelineLogBundle, PipelinePlugin,
+    FailurePolicy, ParallelismMode, PipelineContext, PipelinePlugin,
     PipelineStage, PluginManifest, PreprocessError, PreprocessPlugin, QTO_PREPROCESS_ID,
 };
 use serde_json::json;
@@ -181,28 +181,20 @@ impl PreprocessPlugin for QtoPreprocessPlugin {
         ctx.replace(Arc::new(augmented));
 
         // --- Log ------------------------------------------------------------
-        let mut logs = ctx
-            .get::<PipelineLogBundle>()
-            .map(|x| (*x).clone())
-            .unwrap_or_default();
-        logs.write_module(
-            QTO_PREPROCESS_ID,
-            json!({
-                "elements_scanned": elements_scanned,
-                "elements_with_all_qto": elements_with_all_qto,
-                "elements_missing_qto": elements_missing_qto,
-                "qto_sets_found_existing": sets_extended,
-                "qto_sets_created_new": sets_created,
-                "quantities_computed_total": quantities_computed_total,
-                "tier_used": {
-                    "bbox_only": tier_bbox,
-                    "rep_parser": tier_rep,
-                    "mesh_volume": tier_mesh,
-                },
-                "elements_skipped_no_geometry": skipped_no_geometry,
-            }),
-        );
-        ctx.replace(Arc::new(logs));
+        ctx.write_log(QTO_PREPROCESS_ID, json!({
+            "elements_scanned": elements_scanned,
+            "elements_with_all_qto": elements_with_all_qto,
+            "elements_missing_qto": elements_missing_qto,
+            "qto_sets_found_existing": sets_extended,
+            "qto_sets_created_new": sets_created,
+            "quantities_computed_total": quantities_computed_total,
+            "tier_used": {
+                "bbox_only": tier_bbox,
+                "rep_parser": tier_rep,
+                "mesh_volume": tier_mesh,
+            },
+            "elements_skipped_no_geometry": skipped_no_geometry,
+        }));
 
         info!(
             "qto preprocess: {quantities_computed_total} quantities computed, \

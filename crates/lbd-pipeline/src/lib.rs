@@ -87,6 +87,9 @@ pub struct DerivedFile {
 ///
 /// Typed data is stored as `Arc<dyn Any + Send + Sync>` and accessed via
 /// `get::<T>()` or replaced in-place via `replace::<T>()` (for preprocessors).
+///
+/// Log bundle uses interior mutability (`Mutex`) so that both preprocessors
+/// (`&mut PipelineContext`) and producers (`&PipelineContext`) can write stats.
 #[derive(Clone)]
 pub struct PipelineContext {
     pub resource_limits: ResourceLimits,
@@ -95,6 +98,9 @@ pub struct PipelineContext {
     /// If set, producers may send sidecar artefacts (geometry files, etc.) here.
     /// The orchestrator drains this after all producers finish.
     pub sidecar_tx: Option<Sender<DerivedFile>>,
+    /// Per-module stats written by both preprocessors and producers.
+    /// Uses `Arc<Mutex<>>` so producers (which only get `&PipelineContext`) can write.
+    log_bundle: Arc<Mutex<PipelineLogBundle>>,
 }
 
 impl PipelineContext {
@@ -103,6 +109,7 @@ impl PipelineContext {
             resource_limits: limits,
             data: Vec::new(),
             sidecar_tx: None,
+            log_bundle: Arc::new(Mutex::new(PipelineLogBundle::default())),
         }
     }
 
@@ -134,6 +141,20 @@ impl PipelineContext {
             }
         }
         None
+    }
+
+    /// Write per-module stats to the log bundle. Works from both `&mut self`
+    /// (preprocessors) and `&self` (producers) because the bundle uses a `Mutex`.
+    pub fn write_log(&self, module_id: &str, stats: serde_json::Value) {
+        if let Ok(mut guard) = self.log_bundle.lock() {
+            guard.write_module(module_id, stats);
+        }
+    }
+
+    /// Snapshot of the accumulated log bundle. Called by log exporters after
+    /// all stages complete.
+    pub fn read_log_bundle(&self) -> PipelineLogBundle {
+        self.log_bundle.lock().map(|g| g.clone()).unwrap_or_default()
     }
 }
 

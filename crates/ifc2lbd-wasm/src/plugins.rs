@@ -5,12 +5,13 @@ use crossbeam::channel::Sender;
 use ifc_model::IfcModel;
 use ifc_step::StepFile;
 use lbd_converter::{stream_beo, stream_bot, stream_bsdd_with_cache, stream_omg_fog, stream_props_opm, BsddMatchCache, ConvertOptions};
+use serde_json::json;
 use lbd_ontology::Triple;
 use lbd_pipeline::{
     BatchKind, DerivedFile, ExportError, ExportFileSummary, ExportPlugin, ExportSession,
     FailurePolicy, FILE_EXPORT_ID, IFCOWL_PRODUCER_ID, LOG_EXPORT_ID, NQUADS_CHUNKED_SERIALIZER_ID,
     NQUADS_SERIALIZER_ID, OMG_FOG_PRODUCER_ID, ParallelismMode, PipelineContext, PipelinePlugin,
-    PipelineLogBundle, PipelineStage, PluginManifest, PluginRegistry, ProducerError,
+    PipelineStage, PluginManifest, PluginRegistry, ProducerError,
     ProducerPlugin, SerializerPlugin, TaggedBatch, BEO_PRODUCER_ID, BOT_PRODUCER_ID,
     BSDD_PRODUCER_ID, PROPS_OPM_PRODUCER_ID, TURTLE_SERIALIZER_ID,
 };
@@ -262,9 +263,20 @@ impl ProducerPlugin for BsddProducerPlugin {
         forward_as_tagged(raw_receiver, graph_iri, sender.clone());
 
         let cache = ctx.get::<BsddMatchCache>();
-        stream_bsdd_with_cache(&model, &options, &raw_sender, cache.as_deref())
-            .map(|_| ())
-            .map_err(|e| ProducerError::Conversion(format!("bSDD streaming failed: {e}")))
+        let (_, dedup_stats) = stream_bsdd_with_cache(&model, &options, &raw_sender, cache.as_deref())
+            .map_err(|e| ProducerError::Conversion(format!("bSDD streaming failed: {e}")))?;
+        if options.bsdd_dedup_properties {
+            ctx.write_log(BSDD_PRODUCER_ID, json!({
+                "dedup_properties": true,
+                "prop_instances_deduped": dedup_stats.prop_instances_deduped,
+                "set_defs_deduped": dedup_stats.set_defs_deduped,
+                "set_contains_deduped": dedup_stats.set_contains_deduped,
+                "total_triples_saved": dedup_stats.prop_instances_deduped
+                    + dedup_stats.set_defs_deduped
+                    + dedup_stats.set_contains_deduped,
+            }));
+        }
+        Ok(())
     }
 }
 
@@ -587,10 +599,7 @@ impl ExportPlugin for LogExportPlugin {
         &self,
         ctx: &PipelineContext,
     ) -> Result<Box<dyn ExportSession>, ExportError> {
-        let logs = ctx
-            .get::<PipelineLogBundle>()
-            .map(|l| (*l).clone())
-            .unwrap_or_default();
+        let logs = ctx.read_log_bundle();
         Ok(Box::new(WasmLogExportSession {
             buffers: Arc::new(Mutex::new(Vec::new())),
             derived: Vec::new(),
@@ -612,7 +621,7 @@ struct WasmFileExportSession {
 struct WasmLogExportSession {
     buffers: Arc<Mutex<Vec<(String, String, String, Vec<u8>)>>>,
     derived: Vec<ExportFileSummary>,
-    logs: PipelineLogBundle,
+    logs: lbd_pipeline::PipelineLogBundle,
 }
 
 impl ExportSession for WasmFileExportSession {
