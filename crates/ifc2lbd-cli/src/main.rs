@@ -746,9 +746,17 @@ fn validate_bsdd_producer_module_config(
                     ));
                 }
             }
+            "dedup_properties" => {
+                if !["true", "false"].contains(&value.as_str()) {
+                    return Err(format!(
+                        "`neo-bsdd-producer.dedup_properties` must be true or false, got `{}`",
+                        value
+                    ));
+                }
+            }
             other => {
                 return Err(format!(
-                    "unknown option `neo-bsdd-producer.{}` (supported: profile, compact, include_standard_attrs)",
+                    "unknown option `neo-bsdd-producer.{}` (supported: profile, compact, include_standard_attrs, dedup_properties)",
                     other
                 ));
             }
