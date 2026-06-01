@@ -3,7 +3,7 @@ use std::sync::Arc;
 use ifc_model::IfcModel;
 use lbd_converter::{build_bsdd_match_cache, dedup_model_property_sets, BsddMatchCache, ConvertOptions};
 use lbd_pipeline::{
-    PipelineContext, PipelineLogBundle, PipelinePlugin, PipelineStage,
+    PipelineContext, PipelinePlugin, PipelineStage,
     PluginManifest, PreprocessError, PreprocessPlugin, FailurePolicy, ParallelismMode,
     CLEANUP_PREPROCESS_ID, BSDD_MATCH_PREPROCESS_ID,
 };
@@ -71,8 +71,7 @@ impl PreprocessPlugin for CleanupPreprocessPlugin {
         ctx.replace(Arc::new(normalized_model));
 
         let deduped_count = before_props.saturating_sub(after_props);
-        let mut logs = ctx.get::<PipelineLogBundle>().map(|x| (*x).clone()).unwrap_or_default();
-        logs.write_module(CLEANUP_PREPROCESS_ID, json!({
+        ctx.write_log(CLEANUP_PREPROCESS_ID, json!({
             "properties_before_dedup": before_props,
             "properties_after_dedup": after_props,
             "properties_deduped": deduped_count,
@@ -83,7 +82,6 @@ impl PreprocessPlugin for CleanupPreprocessPlugin {
             "property_sets_normalized": normalization_stats.property_sets_normalized,
             "non_ascii_names_remaining": normalization_stats.non_ascii_names_remaining,
         }));
-        ctx.replace(Arc::new(logs));
         info!("cleanup preprocess complete: dedup applied");
         Ok(())
     }
@@ -130,9 +128,7 @@ impl PreprocessPlugin for BsddMatchPreprocessPlugin {
             ctx.insert(Arc::new(cache));
         }
 
-        let mut logs = ctx.get::<PipelineLogBundle>().map(|x| (*x).clone()).unwrap_or_default();
-        logs.write_module(BSDD_MATCH_PREPROCESS_ID, match_stats);
-        ctx.replace(Arc::new(logs));
+        ctx.write_log(BSDD_MATCH_PREPROCESS_ID, match_stats);
         info!("bSDD match preprocess complete: cache ready");
         Ok(())
     }

@@ -1601,10 +1601,7 @@ fn emit_log_sidecar(
     summaries: &mut Vec<OutputFileSummary>,
 ) -> Result<(), lbd_serializer::SerializerError> {
     use std::io::Write as _;
-    let bundle = match ctx.get::<PipelineLogBundle>() {
-        Some(b) => (*b).clone(),
-        None => return Ok(()),
-    };
+    let bundle = ctx.read_log_bundle();
     if bundle.modules.is_empty() {
         return Ok(());
     }

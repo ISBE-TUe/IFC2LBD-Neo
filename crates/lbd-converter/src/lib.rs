@@ -11,7 +11,7 @@ pub mod modules;
 pub use modules::bbox::compute_approximate_bboxes;
 pub use modules::bsdd::{
     build_bsdd_match_cache, dedup_model_property_sets, list_embedded_profiles,
-    score_profile_for_model, stream_bsdd, stream_bsdd_with_cache, BsddMatchCache,
+    score_profile_for_model, stream_bsdd, stream_bsdd_with_cache, BsddDedupStats, BsddMatchCache,
 };
 
 // LBD sub-module public streaming API — each produces its own named graph.

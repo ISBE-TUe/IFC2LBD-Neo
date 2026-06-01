@@ -18,6 +18,7 @@ const state = {
   ]),
   moduleOptions: {
     "neo-turtle-serializer": { grouping: "streaming", layout: "joined" },
+    "neo-bsdd-producer": { compact: "false", include_standard_attrs: "true", dedup_properties: "false" },
   },
   baseUri: "https://lbd.example.com/",
   outputStem: "converted-model",

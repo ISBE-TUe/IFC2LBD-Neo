@@ -43,6 +43,17 @@ impl DedupSets {
     }
 }
 
+/// Stats emitted to the logger when dedup_properties is active.
+#[derive(Debug, Clone, Default)]
+pub struct BsddDedupStats {
+    /// Property+state definition triples skipped because a canonical instance was already emitted.
+    pub prop_instances_deduped: u64,
+    /// Pset/qset type+label triples skipped because the set IRI was already emitted.
+    pub set_defs_deduped: u64,
+    /// containsProperty/containsQuantity triples skipped (same pset→prop already linked).
+    pub set_contains_deduped: u64,
+}
+
 // Fuzzy matching thresholds — named so tests break if someone adjusts blindly.
 // Both values are exposed in the profile and overridable per profile in Phase 2.
 const FUZZY_THRESHOLD: f64 = 0.94;
@@ -1202,7 +1213,7 @@ pub fn stream_bsdd(
     model: &IfcModel,
     options: &ConvertOptions,
     sender: &Sender<Vec<Triple>>,
-) -> Result<u64, StreamError> {
+) -> Result<(u64, BsddDedupStats), StreamError> {
     stream_bsdd_with_cache(model, options, sender, None)
 }
 
@@ -1211,7 +1222,7 @@ pub fn stream_bsdd_with_cache(
     options: &ConvertOptions,
     sender: &Sender<Vec<Triple>>,
     match_cache: Option<&BsddMatchCache>,
-) -> Result<u64, StreamError> {
+) -> Result<(u64, BsddDedupStats), StreamError> {
     let index = load_bsdd_index().map_err(StreamError::Conversion)?;
     let profile = load_active_profile(options.bsdd_profile.as_deref())
         .map_err(StreamError::Conversion)?;
@@ -1432,7 +1443,21 @@ pub fn stream_bsdd_with_cache(
             .join(", ");
         info!("bSDD unmatched top20: {preview}");
     }
-    Ok(triples)
+
+    let dedup_stats = match (&pset_dedup, &qty_dedup) {
+        (Some(p), Some(q)) => {
+            let pg = p.lock().unwrap();
+            let qg = q.lock().unwrap();
+            BsddDedupStats {
+                prop_instances_deduped: (pg.emitted_props.len() + qg.emitted_props.len()) as u64,
+                set_defs_deduped: (pg.emitted_set_defs.len() + qg.emitted_set_defs.len()) as u64,
+                set_contains_deduped: (pg.emitted_set_contains.len() + qg.emitted_set_contains.len()) as u64,
+            }
+        }
+        _ => BsddDedupStats::default(),
+    };
+
+    Ok((triples, dedup_stats))
 }
 
 #[allow(clippy::too_many_arguments)]
