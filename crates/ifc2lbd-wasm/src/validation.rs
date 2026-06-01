@@ -380,9 +380,17 @@ pub(crate) fn validate_bsdd_producer_options(
                     )));
                 }
             }
+            "dedup_properties" => {
+                if !["true", "false"].contains(&value.as_str()) {
+                    return Err(WasmApiError::Message(format!(
+                        "`neo-bsdd-producer.dedup_properties` must be true or false, got `{}`",
+                        value
+                    )));
+                }
+            }
             other => {
                 return Err(WasmApiError::Message(format!(
-                    "unknown option `neo-bsdd-producer.{}` (supported: profile, compact, include_standard_attrs)",
+                    "unknown option `neo-bsdd-producer.{}` (supported: profile, compact, include_standard_attrs, dedup_properties)",
                     other
                 )));
             }
