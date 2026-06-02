@@ -19,6 +19,10 @@ lbd-serializer = { workspace = true }
 plugin-property-preprocess = { workspace = true }
 plugin-fragments-producer = { workspace = true }
 plugin-qto-preprocess = { workspace = true }
+plugin-geometry-preprocess = { workspace = true }
+# All 3 geometry output formats in WASM: fragments, parquet (Snappy = pure Rust), gltf
+plugin-geometry-producer = { workspace = true, features = ["fmt-fragments", "fmt-parquet", "fmt-gltf"] }
+tessellated-model = { workspace = true }
 crossbeam = { workspace = true }
 rayon = { workspace = true }
 serde = { workspace = true }

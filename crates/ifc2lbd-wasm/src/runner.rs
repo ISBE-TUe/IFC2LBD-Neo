@@ -16,6 +16,27 @@ use lbd_serializer::{
     write_turtle_prefixes_for_stream,
 };
 
+use plugin_geometry_preprocess::{IFCContent, MetadataModeOption, GEOMETRY_PREPROCESS_ID};
+use plugin_geometry_producer::{GeometryFormat, GeometryProducerConfig, GEOMETRY_PRODUCER_ID};
+use tessellated_model::MetadataMode;
+
+fn base64_encode(data: &[u8]) -> String {
+    use std::fmt::Write;
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(CHARS[((n >> 18) & 63) as usize] as char);
+        out.push(CHARS[((n >> 12) & 63) as usize] as char);
+        out.push(if chunk.len() > 1 { CHARS[((n >> 6) & 63) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 2 { CHARS[(n & 63) as usize] as char } else { '=' });
+    }
+    out
+}
+
 use crate::memory::{
     effective_ifcowl_workers, effective_stream_batch_size, execution_mode_str,
     select_execution_mode,
@@ -80,6 +101,7 @@ fn active_producer_ids_from_settings(settings: &ExecutionSettings) -> Vec<String
         PROPS_OPM_PRODUCER_ID,
         OMG_FOG_PRODUCER_ID,
         IFCOWL_PRODUCER_ID,
+        GEOMETRY_PRODUCER_ID,
     ] {
         if settings.has(id) {
             ids.push(id.to_string());
@@ -368,17 +390,49 @@ impl PipelineRunner {
         let stream_batch_size = options.stream_batch_size;
         let ifcowl_max_workers = options.ifcowl_max_workers;
 
+        // Geometry pipeline: runs with cloned model (IfcModel is Clone) + raw input bytes.
+        // LBD pipeline: runs with owned step (StepFile is not Clone) + owned model.
+        // rayon::join runs both in parallel on the thread pool.
+        let run_geometry = settings.has(GEOMETRY_PRODUCER_ID) || settings.has(GEOMETRY_PREPROCESS_ID);
+        // Geometry pipeline runs first (uses rayon internally for parallel tessellation).
+        // LBD pipeline follows. JS sink (&Function) is not Send so rayon::join can't be used.
+        // The geometry pipeline is CPU-bound and benefits from rayon's internal parallelism.
+        let input_bytes = input.to_vec();
+        let geo_sidecars = if run_geometry {
+            let model_arc = std::sync::Arc::new(model.clone()); // IfcModel is Clone
+            // Re-parse StepFile for geometry (StepFile is not Clone; ifc-step parse is ~50ms).
+            // Uses the same bytes we just parsed for LBD — will not fail.
+            let step_arc = std::sync::Arc::new(
+                parse_step_bytes(&input_bytes).expect("re-parse of already-validated IFC failed")
+            );
+            run_geometry_pipeline(&input_bytes, model_arc, step_arc, &settings)
+        } else {
+            Vec::new()
+        };
+        let settings_clone = settings.clone();
+
+        let lbd_result = export_browser_files_to_sink_streaming(
+            step,
+            model,
+            options,
+            &base_uri,
+            &settings_clone,
+            sink,
+            &sink_config,
+        );
+
         let (output_files, sink_max_pending_bytes, sink_chunk_size_bytes, stage_durations) =
-            export_browser_files_to_sink_streaming(
-                step,
-                model,
-                options,
-                &base_uri,
-                &settings,
-                sink,
-                &sink_config,
-            )
-            .map_err(|err| WasmApiError::Serialization(err.to_string()))?;
+            lbd_result.map_err(|err| WasmApiError::Serialization(err.to_string()))?;
+
+        let geometry_files: Vec<crate::types::GeometryFile> = geo_sidecars
+            .into_iter()
+            .map(|f| crate::types::GeometryFile {
+                filename: f.filename.clone(),
+                mime_type: f.mime_type.to_string(),
+                data_base64: base64_encode(&f.bytes),
+                bytes: f.bytes.len() as u64,
+            })
+            .collect();
 
         // Emit completion events for serialize + export
         let total_output_bytes: u64 = output_files.iter().map(|f| f.bytes).sum();
@@ -411,6 +465,7 @@ impl PipelineRunner {
             total_output_bytes,
             output_files,
             warnings,
+            geometry_files,
             telemetry: ConversionTelemetry {
                 execution_mode: execution_mode_str(mode).to_string(),
                 stream_batch_size,
@@ -1589,6 +1644,85 @@ fn nquads_to_sink(
         }
         Ok((summaries, peak, chunk_size, sd))
     }
+}
+
+/// Run the geometry pipeline (neo-geometry-preprocess + neo-geometry-producer)
+/// as a self-contained pass using raw IFC bytes.
+/// Returns the emitted sidecar file(s) with their actual binary content.
+/// Does NOT touch the existing LBD/turtle/nquads pipeline at all.
+fn run_geometry_pipeline(
+    input: &[u8],
+    model: std::sync::Arc<ifc_model::IfcModel>,
+    step: std::sync::Arc<ifc_step::StepFile>,
+    settings: &ExecutionSettings,
+) -> Vec<lbd_pipeline::DerivedFile> {
+    use lbd_pipeline::{spawn_preprocessors, spawn_producers, ResourceLimits, PipelineContext};
+    use plugin_geometry_preprocess::{IFCContent, MetadataModeOption, GEOMETRY_PREPROCESS_ID};
+    use plugin_geometry_producer::{GeometryFormat, GeometryProducerConfig, GEOMETRY_PRODUCER_ID};
+    use tessellated_model::MetadataMode;
+
+    let chan_cap = 8usize;
+    let limits = ResourceLimits {
+        memory_budget_bytes: 0,
+        thread_count: rayon::current_num_threads().max(1),
+        channel_capacity: chan_cap,
+        batch_size: 8192,
+    };
+
+    let mut ctx = PipelineContext::new(limits);
+    ctx.insert(model);
+    ctx.insert(step);
+
+    // IFCContent: raw IFC text for ifc-lite's EntityDecoder
+    if let Ok(content) = std::str::from_utf8(input) {
+        ctx.insert(std::sync::Arc::new(IFCContent(content.to_string())));
+    }
+
+    // Metadata mode: stripped or full based on settings
+    let metadata = if settings.has("neo-geometry-preprocess")
+        && settings.module_option("neo-geometry-preprocess", "metadata")
+            .map(|v| v == "stripped")
+            .unwrap_or(false)
+    {
+        MetadataMode::Stripped
+    } else {
+        MetadataMode::Full
+    };
+    ctx.insert(std::sync::Arc::new(MetadataModeOption(metadata)));
+
+    // Geometry format from module option
+    let format = settings
+        .module_option("neo-geometry-producer", "format")
+        .and_then(|v| GeometryFormat::from_str(&v))
+        .unwrap_or_default();
+    ctx.insert(std::sync::Arc::new(GeometryProducerConfig { format }));
+
+    // Sidecar channel to collect geometry output bytes
+    let (sidecar_tx, sidecar_rx) = crossbeam::channel::bounded(chan_cap);
+    ctx.sidecar_tx = Some(sidecar_tx);
+
+    let registry = crate::plugins::browser_registry();
+
+    // Run preprocess (geometry tessellation) — needs mutable ctx
+    let preprocess_ids = vec![GEOMETRY_PREPROCESS_ID.to_string()];
+    if lbd_pipeline::spawn_preprocessors(&preprocess_ids, &registry, &mut ctx).is_err() {
+        return Vec::new();
+    }
+
+    // Wrap in Arc for producers
+    let ctx = std::sync::Arc::new(ctx);
+
+    // Run producer (serialize to fragments/parquet)
+    let producer_ids = vec![GEOMETRY_PRODUCER_ID.to_string()];
+    let receivers = spawn_producers(&producer_ids, &registry, &ctx, chan_cap);
+    // Drain producer channels (geometry producer emits via sidecar_tx, not triple channels)
+    for (_id, rx) in receivers {
+        for _batch in rx {}
+    }
+
+    // Drop ctx to release the sidecar_tx sender, then collect all emitted files
+    drop(ctx);
+    sidecar_rx.try_iter().collect()
 }
 
 /// Serialize per-module log JSON sidecars from `PipelineLogBundle` in context.

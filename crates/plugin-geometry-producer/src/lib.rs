@@ -117,11 +117,7 @@ impl ProducerPlugin for GeometryProducerPlugin {
 
         let bytes = match format {
             GeometryFormat::Fragments => serialize_fragments(ctx, &model)?,
-            GeometryFormat::Gltf => {
-                return Err(ProducerError::Conversion(
-                    "glTF format not yet implemented".to_string(),
-                ))
-            }
+            GeometryFormat::Gltf => serialize_gltf(ctx, &model)?,
             GeometryFormat::Parquet => serialize_parquet(ctx, &model)?,
             GeometryFormat::Ifc5 => {
                 return Err(ProducerError::Conversion(
@@ -174,6 +170,281 @@ fn serialize_fragments(
 }
 
 // ─── Parquet serialization ────────────────────────────────────────────────────
+
+// ─── glTF binary (GLB) serialization ─────────────────────────────────────────
+
+#[cfg(feature = "fmt-gltf")]
+fn serialize_gltf(
+    _ctx: &PipelineContext,
+    tessellated: &TessellatedModel,
+) -> Result<Vec<u8>, ProducerError> {
+    gltf_writer::write(tessellated)
+        .map_err(|e| ProducerError::Conversion(format!("glTF: {e}")))
+}
+
+#[cfg(not(feature = "fmt-gltf"))]
+fn serialize_gltf(
+    _ctx: &PipelineContext,
+    _model: &TessellatedModel,
+) -> Result<Vec<u8>, ProducerError> {
+    Err(ProducerError::Conversion("glTF not compiled (enable fmt-gltf feature)".into()))
+}
+
+/// glTF 2.0 binary (GLB) writer.
+///
+/// Spec: https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html
+/// One mesh per element, world-space positions + normals + indices.
+#[cfg(feature = "fmt-gltf")]
+mod gltf_writer {
+    use super::*;
+    use std::io::{Cursor, Write as IoWrite};
+    use serde_json::json;
+
+    pub fn write(tessellated: &TessellatedModel) -> Result<Vec<u8>, String> {
+        let mut bin: Vec<u8> = Vec::new();
+
+        // Each accessor (one buffer view each): positions, normals, indices
+        struct MeshInfo {
+            pos_bv: usize,   // buffer view index for positions
+            nrm_bv: usize,   // buffer view index for normals
+            idx_bv: usize,   // buffer view index for indices
+            idx_count: usize,
+            pos_min: [f32; 3],
+            pos_max: [f32; 3],
+            name: String,
+            material_idx: usize,
+        }
+
+        // Material dedup: [r,g,b,a u8] → index
+        let mut mat_map: std::collections::HashMap<[u8; 4], usize> = std::collections::HashMap::new();
+        let mut materials_json: Vec<serde_json::Value> = Vec::new();
+
+        let mut meshes_info: Vec<MeshInfo> = Vec::new();
+        let mut buffer_views_json: Vec<serde_json::Value> = Vec::new();
+        let mut accessors_json: Vec<serde_json::Value> = Vec::new();
+
+        for flat in &tessellated.meshes {
+            if flat.geometries.is_empty() { continue; }
+
+            // Merge all sub-meshes for this element
+            let mut all_pos: Vec<f32> = Vec::new();
+            let mut all_nrm: Vec<f32> = Vec::new();
+            let mut all_idx: Vec<u32> = Vec::new();
+            let mut base_v: u32 = 0;
+            let first_color = flat.geometries[0].color;
+
+            for geom in &flat.geometries {
+                let pos = &geom.mesh.positions;
+                let nrm = &geom.mesh.normals;
+                let n = pos.len() / 3;
+                let m = &geom.world_transform;
+
+                for i in 0..n {
+                    let (lx, ly, lz) = (pos[i*3] as f64, pos[i*3+1] as f64, pos[i*3+2] as f64);
+                    all_pos.push((m[0]*lx + m[4]*ly + m[8]*lz + m[12]) as f32);
+                    all_pos.push((m[1]*lx + m[5]*ly + m[9]*lz + m[13]) as f32);
+                    all_pos.push((m[2]*lx + m[6]*ly + m[10]*lz + m[14]) as f32);
+                    if nrm.len() == pos.len() {
+                        let (nx, ny, nz) = (nrm[i*3] as f64, nrm[i*3+1] as f64, nrm[i*3+2] as f64);
+                        let wnx = m[0]*nx + m[4]*ny + m[8]*nz;
+                        let wny = m[1]*nx + m[5]*ny + m[9]*nz;
+                        let wnz = m[2]*nx + m[6]*ny + m[10]*nz;
+                        let len = (wnx*wnx + wny*wny + wnz*wnz).sqrt().max(1e-12);
+                        all_nrm.push((wnx/len) as f32);
+                        all_nrm.push((wny/len) as f32);
+                        all_nrm.push((wnz/len) as f32);
+                    } else {
+                        all_nrm.push(0.0); all_nrm.push(0.0); all_nrm.push(1.0);
+                    }
+                }
+                for idx in &geom.mesh.indices { all_idx.push(*idx + base_v); }
+                base_v += (pos.len() / 3) as u32;
+            }
+
+            if all_idx.is_empty() { continue; }
+
+            // Material index
+            let color_bytes = [
+                (first_color[0] * 255.0) as u8,
+                (first_color[1] * 255.0) as u8,
+                (first_color[2] * 255.0) as u8,
+                (first_color[3] * 255.0) as u8,
+            ];
+            let mat_idx = *mat_map.entry(color_bytes).or_insert_with(|| {
+                let idx = materials_json.len();
+                let r = color_bytes[0] as f64 / 255.0;
+                let g = color_bytes[1] as f64 / 255.0;
+                let b = color_bytes[2] as f64 / 255.0;
+                let a = color_bytes[3] as f64 / 255.0;
+                materials_json.push(json!({
+                    "pbrMetallicRoughness": {
+                        "baseColorFactor": [r, g, b, a],
+                        "metallicFactor": 0.0,
+                        "roughnessFactor": 0.8
+                    },
+                    "alphaMode": if a < 1.0 { "BLEND" } else { "OPAQUE" }
+                }));
+                idx
+            });
+
+            // Compute bounding box
+            let mut min = [f32::MAX; 3];
+            let mut max = [f32::MIN; 3];
+            for chunk in all_pos.chunks_exact(3) {
+                for a in 0..3 {
+                    min[a] = min[a].min(chunk[a]);
+                    max[a] = max[a].max(chunk[a]);
+                }
+            }
+
+            // Positions buffer view + accessor
+            let pos_bv_idx = buffer_views_json.len();
+            let pos_byte_offset = bin.len();
+            for v in &all_pos { bin.extend_from_slice(&v.to_le_bytes()); }
+            // 4-byte align
+            while bin.len() % 4 != 0 { bin.push(0); }
+            let pos_byte_len = bin.len() - pos_byte_offset;
+            buffer_views_json.push(json!({
+                "buffer": 0,
+                "byteOffset": pos_byte_offset,
+                "byteLength": pos_byte_len,
+                "target": 34962  // ARRAY_BUFFER
+            }));
+            let pos_acc_idx = accessors_json.len();
+            accessors_json.push(json!({
+                "bufferView": pos_bv_idx,
+                "byteOffset": 0,
+                "componentType": 5126,  // FLOAT
+                "count": all_pos.len() / 3,
+                "type": "VEC3",
+                "min": [min[0], min[1], min[2]],
+                "max": [max[0], max[1], max[2]]
+            }));
+
+            // Normals buffer view + accessor
+            let nrm_bv_idx = buffer_views_json.len();
+            let nrm_byte_offset = bin.len();
+            for v in &all_nrm { bin.extend_from_slice(&v.to_le_bytes()); }
+            while bin.len() % 4 != 0 { bin.push(0); }
+            let nrm_byte_len = bin.len() - nrm_byte_offset;
+            buffer_views_json.push(json!({
+                "buffer": 0,
+                "byteOffset": nrm_byte_offset,
+                "byteLength": nrm_byte_len,
+                "target": 34962
+            }));
+            let nrm_acc_idx = accessors_json.len();
+            accessors_json.push(json!({
+                "bufferView": nrm_bv_idx,
+                "byteOffset": 0,
+                "componentType": 5126,
+                "count": all_nrm.len() / 3,
+                "type": "VEC3"
+            }));
+
+            // Indices buffer view + accessor (u32)
+            let idx_bv_idx = buffer_views_json.len();
+            let idx_byte_offset = bin.len();
+            for v in &all_idx { bin.extend_from_slice(&v.to_le_bytes()); }
+            while bin.len() % 4 != 0 { bin.push(0); }
+            let idx_byte_len = bin.len() - idx_byte_offset;
+            buffer_views_json.push(json!({
+                "buffer": 0,
+                "byteOffset": idx_byte_offset,
+                "byteLength": idx_byte_len,
+                "target": 34963  // ELEMENT_ARRAY_BUFFER
+            }));
+            let idx_acc_idx = accessors_json.len();
+            accessors_json.push(json!({
+                "bufferView": idx_bv_idx,
+                "byteOffset": 0,
+                "componentType": 5125,  // UNSIGNED_INT
+                "count": all_idx.len(),
+                "type": "SCALAR"
+            }));
+
+            meshes_info.push(MeshInfo {
+                pos_bv: pos_acc_idx,
+                nrm_bv: nrm_acc_idx,
+                idx_bv: idx_acc_idx,
+                idx_count: all_idx.len(),
+                pos_min: min,
+                pos_max: max,
+                name: flat.guid.clone(),
+                material_idx: mat_idx,
+            });
+        }
+
+        // Build glTF JSON
+        let meshes_json: Vec<serde_json::Value> = meshes_info.iter().map(|m| {
+            json!({
+                "name": m.name,
+                "primitives": [{
+                    "attributes": {
+                        "POSITION": m.pos_bv,
+                        "NORMAL": m.nrm_bv
+                    },
+                    "indices": m.idx_bv,
+                    "material": m.material_idx,
+                    "mode": 4  // TRIANGLES
+                }]
+            })
+        }).collect();
+
+        let nodes_json: Vec<serde_json::Value> = (0..meshes_info.len())
+            .map(|i| json!({ "mesh": i, "name": &meshes_info[i].name }))
+            .collect();
+
+        let node_indices: Vec<usize> = (0..meshes_info.len()).collect();
+
+        let gltf_json = json!({
+            "asset": { "version": "2.0", "generator": "ifc2lbd-neo" },
+            "scene": 0,
+            "scenes": [{ "nodes": node_indices, "name": "Scene" }],
+            "nodes": nodes_json,
+            "meshes": meshes_json,
+            "materials": materials_json,
+            "accessors": accessors_json,
+            "bufferViews": buffer_views_json,
+            "buffers": [{ "byteLength": bin.len() }]
+        });
+
+        let json_bytes = gltf_json.to_string().into_bytes();
+        // JSON chunk must be 4-byte aligned, padded with spaces (0x20)
+        let json_len = json_bytes.len();
+        let json_padded_len = (json_len + 3) & !3;
+        let json_padding = json_padded_len - json_len;
+
+        // Binary chunk must be 4-byte aligned, padded with zeros
+        let bin_len = bin.len();
+        let bin_padded_len = (bin_len + 3) & !3;
+        let bin_padding = bin_padded_len - bin_len;
+
+        // GLB layout:
+        // 12 bytes header
+        // 8 bytes JSON chunk header + json_padded_len bytes JSON
+        // 8 bytes BIN chunk header + bin_padded_len bytes BIN
+        let total_len = 12 + 8 + json_padded_len + 8 + bin_padded_len;
+
+        let mut out: Vec<u8> = Vec::with_capacity(total_len);
+        // Header: magic 0x46546C67, version 2, total length
+        out.extend_from_slice(&0x46546C67u32.to_le_bytes()); // magic "glTF"
+        out.extend_from_slice(&2u32.to_le_bytes());           // version
+        out.extend_from_slice(&(total_len as u32).to_le_bytes());
+        // JSON chunk: length, type 0x4E4F534A ("JSON")
+        out.extend_from_slice(&(json_padded_len as u32).to_le_bytes());
+        out.extend_from_slice(&0x4E4F534Au32.to_le_bytes());
+        out.extend_from_slice(&json_bytes);
+        for _ in 0..json_padding { out.push(0x20); } // space padding
+        // Binary chunk: length, type 0x004E4942 ("BIN\0")
+        out.extend_from_slice(&(bin_padded_len as u32).to_le_bytes());
+        out.extend_from_slice(&0x004E4942u32.to_le_bytes());
+        out.extend_from_slice(&bin);
+        for _ in 0..bin_padding { out.push(0); }
+
+        Ok(out)
+    }
+}
 
 #[cfg(feature = "fmt-parquet")]
 fn serialize_parquet(

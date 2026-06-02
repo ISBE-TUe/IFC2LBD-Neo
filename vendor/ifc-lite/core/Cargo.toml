@@ -1,0 +1,19 @@
+[package]
+name = "ifc-lite-core"
+version = "3.0.0"
+edition = "2021"
+license = "MPL-2.0"
+
+[features]
+default = []
+
+[dependencies]
+fast-float2 = "0.2"
+futures-core = "0.3"
+futures-util = "0.3"
+lexical-core = "1.0"
+memchr = "2.8"
+nom = "7.1"
+rustc-hash = "2.1"
+smallvec = "1.13"
+thiserror = "2.0"
