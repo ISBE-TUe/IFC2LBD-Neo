@@ -1,0 +1,32 @@
+[package]
+name = "plugin-geometry-producer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["fmt-fragments"]
+fmt-fragments = ["fragments-schema", "flate2", "dep:flatbuffers", "dep:ifc-geometry", "dep:fragments-core"]
+fmt-parquet = ["dep:parquet", "dep:arrow-array", "dep:arrow-schema", "dep:arrow-buffer", "dep:zip"]
+
+[dependencies]
+tessellated-model = { workspace = true }
+ifc-step = { workspace = true }
+ifc-model = { workspace = true }
+lbd-pipeline = { workspace = true }
+crossbeam = { workspace = true }
+thiserror = { workspace = true }
+serde_json = { workspace = true }
+# Fragment format (default)
+fragments-schema = { workspace = true, optional = true }
+flate2 = { workspace = true, optional = true }
+flatbuffers = { version = "=25.12.19", optional = true }
+ifc-geometry = { workspace = true, optional = true }
+# Temporary: entity serialization from existing proven code (will be inlined later)
+fragments-core = { workspace = true, optional = true }
+# Parquet output
+parquet = { version = "52", default-features = false, features = ["arrow", "snap", "zstd"], optional = true }
+zip = { version = "2", optional = true }
+arrow-array = { version = "52", optional = true }
+arrow-schema = { version = "52", optional = true }
+arrow-buffer = { version = "52", optional = true }

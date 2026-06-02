@@ -19,6 +19,8 @@ use lbd_pipeline::{
 use plugin_property_preprocess::{BsddMatchPreprocessPlugin, CleanupPreprocessPlugin};
 use plugin_fragments_producer::FragmentsProducerPlugin;
 use plugin_qto_preprocess::QtoPreprocessPlugin;
+use plugin_geometry_preprocess::GeometryPreprocessPlugin;
+use plugin_geometry_producer::{GeometryProducerPlugin, GeometryFormat};
 
 // ---------------------------------------------------------------------------
 // OutputDir — context key for the export destination directory
@@ -68,6 +70,8 @@ pub fn built_in_registry() -> PluginRegistry {
     registry.register_producer(OmgFogProducerPlugin).unwrap();
     registry.register_producer(IfcowlProducerPlugin).unwrap();
     registry.register_producer(FragmentsProducerPlugin).unwrap();
+    registry.register_preprocess(GeometryPreprocessPlugin).unwrap();
+    registry.register_producer(GeometryProducerPlugin::default()).unwrap();
     registry.register_serializer(TurtleSerializerPlugin).unwrap();
     registry.register_serializer(NquadsSerializerPlugin).unwrap();
     registry.register_serializer(NquadsChunkedSerializerPlugin).unwrap();
@@ -756,8 +760,8 @@ mod tests {
     #[test]
     fn built_in_registry_exposes_expected_stage_counts() {
         let registry = built_in_registry();
-        // Bot, Beo, Bsdd, PropsOpm, OmgFog, Ifcowl, Fragments
-        assert_eq!(registry.manifests_for_stage(PipelineStage::Produce).len(), 7);
+        // Bot, Beo, Bsdd, PropsOpm, OmgFog, Ifcowl, Fragments, GeometryProducer
+        assert_eq!(registry.manifests_for_stage(PipelineStage::Produce).len(), 8);
         // Turtle, NQuads, NQuadsChunked
         assert_eq!(registry.manifests_for_stage(PipelineStage::Serialize).len(), 3);
         // File, Log, Stdout

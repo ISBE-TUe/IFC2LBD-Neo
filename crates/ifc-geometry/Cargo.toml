@@ -1,0 +1,23 @@
+[package]
+name = "ifc-geometry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+
+[dependencies]
+ifc-lite-core = { workspace = true }
+ifc-lite-geometry = { workspace = true }
+nalgebra = { workspace = true }
+thiserror = { workspace = true }
+
+parquet = { version = "52", default-features = false, features = ["arrow", "snap"] }
+arrow-array = { version = "52" }
+arrow-schema = { version = "52" }
+zip = { version = "2" }
+
+[[bin]]
+name = "ifc-lite-proof"
+path = "src/bin/proof.rs"

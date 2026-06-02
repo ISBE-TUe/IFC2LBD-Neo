@@ -78,16 +78,8 @@ pub fn convert_step_to_fragments(
     };
 
     let relations = {
-        let relation_map = build_relations(&mut builder, model, step, &entity_ids);
-
-        let mut ids = Vec::new();
-        let mut rel_offsets = Vec::new();
-        for (id, defs) in relation_map {
-            ids.push(id as i32);
-            let defs_vec = builder.create_vector(&defs);
-            rel_offsets.push(Relation::create(&mut builder, &RelationArgs { data: Some(defs_vec) }));
-        }
-        (builder.create_vector(&rel_offsets), builder.create_vector(&ids))
+        let relation_map = build_relations(model, step, &entity_ids);
+        relations_to_flatbuffer(&mut builder, relation_map)
     };
 
     // Match oracle's classes.elements: include IFCSPACE from spatial nodes,
@@ -153,6 +145,93 @@ pub fn convert_step_to_fragments(
     };
 
     Ok(FragmentsBytes { raw, compressed })
+}
+
+/// Raw u32 FlatBuffer offsets for the entity section.
+/// No lifetime parameter — WIPOffset<T> is just a u32 wrapper.
+/// Callers reconstruct typed WIPOffset values with `WIPOffset::new(raw)`.
+pub struct EntitySection {
+    pub metadata: u32,
+    pub root_guid: u32,
+    pub guids: u32,
+    pub guids_items: u32,
+    pub local_ids: u32,
+    pub categories: u32,
+    pub attributes: u32,
+    pub relations: u32,
+    pub relations_items: u32,
+    pub spatial_structure: Option<u32>,
+    pub max_local_id: u32,
+}
+
+/// Build all entity-metadata FlatBuffer sections into `builder`.
+/// The geometry producer calls this with its own builder, then builds the
+/// Meshes section from ifc-lite, and combines both into the Model.
+pub fn build_entity_section(
+    builder: &mut FlatBufferBuilder,
+    model: &IfcModel,
+    step: &StepFile,
+) -> Result<EntitySection, FragmentsError> {
+    let entity_ids = collect_serialized_entity_ids(model, step);
+
+    let local_ids_u32: Vec<u32> = entity_ids.iter().copied().map(to_u32).collect::<Result<_, _>>()?;
+    let cat_offsets: Vec<_> = entity_ids
+        .iter()
+        .map(|id| builder.create_string(entity_name(step, *id).unwrap_or("UNKNOWN")))
+        .collect();
+    let categories = builder.create_vector(&cat_offsets);
+    let local_ids = builder.create_vector(&local_ids_u32);
+
+    let mut guid_offsets = Vec::new();
+    let mut guid_items = Vec::new();
+    for id in &entity_ids {
+        if let Some(guid) = entity_guid(model, step, *id) {
+            guid_offsets.push(builder.create_string(guid));
+            guid_items.push(to_u32(*id)?);
+        }
+    }
+    let guids = builder.create_vector(&guid_offsets);
+    let guids_items = builder.create_vector(&guid_items);
+
+    let attr_offsets: Vec<_> = entity_ids.iter().map(|id| {
+        let values = collect_entity_attributes(model, step, *id);
+        build_attribute(builder, &values)
+    }).collect();
+    let attributes = builder.create_vector(&attr_offsets);
+
+    // Relations — build strings without builder, then serialize
+    let relation_map = build_relations(model, step, &entity_ids);
+    let (relations_vec, relations_items_vec) = relations_to_flatbuffer(builder, relation_map);
+
+    // Spatial structure
+    let spatial_structure = build_spatial_structure(builder, model, step)?;
+
+    // Metadata + root GUID
+    let metadata_str = build_metadata(step);
+    let metadata = builder.create_string(&metadata_str);
+    let root_guid_str = model.spatial_nodes
+        .values()
+        .find(|n| step.entities.get(&n.id).map(|e| e.entity_name == "IFCPROJECT").unwrap_or(false))
+        .map(|n| n.guid.as_str())
+        .or_else(|| entity_ids.iter().find_map(|id| entity_guid(model, step, *id)))
+        .unwrap_or("ifc2lbd-neo");
+    let root_guid = builder.create_string(root_guid_str);
+
+    let max_local_id = local_ids_u32.iter().copied().max().unwrap_or(0).saturating_add(1);
+
+    Ok(EntitySection {
+        metadata: metadata.value(),
+        root_guid: root_guid.value(),
+        guids: guids.value(),
+        guids_items: guids_items.value(),
+        local_ids: local_ids.value(),
+        categories: categories.value(),
+        attributes: attributes.value(),
+        relations: relations_vec.value(),
+        relations_items: relations_items_vec.value(),
+        spatial_structure: spatial_structure.map(|s| s.value()),
+        max_local_id,
+    })
 }
 
 fn build_meshes<'a>(
@@ -765,12 +844,13 @@ fn collect_entity_attributes(model: &IfcModel, step: &StepFile, id: u64) -> Vec<
     out
 }
 
-fn build_relations<'a>(
-    builder: &mut FlatBufferBuilder<'a>,
+/// Returns raw JSON strings for each entity's relations.
+/// No FlatBuffer builder needed — call `relations_to_flatbuffer` to serialize.
+fn build_relations(
     _model: &IfcModel,
     step: &StepFile,
     entity_ids: &[u64],
-) -> BTreeMap<u32, Vec<WIPOffset<&'a str>>> {
+) -> BTreeMap<u32, Vec<String>> {
     let mut relation_values: BTreeMap<u64, Vec<String>> = BTreeMap::new();
 
     // Pass 1: inline refs from every serialized entity (matching oracle's serializeAttributes).
@@ -859,13 +939,25 @@ fn build_relations<'a>(
 
     let mut relation_map = BTreeMap::new();
     for (id, defs) in relation_values {
-        let offsets = defs
-            .into_iter()
-            .map(|value| builder.create_string(&value))
-            .collect::<Vec<_>>();
-        relation_map.insert(id as u32, offsets);
+        relation_map.insert(id as u32, defs);
     }
     relation_map
+}
+
+/// Serialize a relations map into FlatBuffer offsets.
+fn relations_to_flatbuffer<'a>(
+    builder: &mut FlatBufferBuilder<'a>,
+    relation_map: BTreeMap<u32, Vec<String>>,
+) -> (WIPOffset<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<Relation<'a>>>>, WIPOffset<flatbuffers::Vector<'a, i32>>) {
+    let mut ids = Vec::new();
+    let mut rel_offsets = Vec::new();
+    for (id, defs) in relation_map {
+        ids.push(id as i32);
+        let offsets: Vec<_> = defs.into_iter().map(|v| builder.create_string(&v)).collect();
+        let defs_vec = builder.create_vector(&offsets);
+        rel_offsets.push(Relation::create(builder, &RelationArgs { data: Some(defs_vec) }));
+    }
+    (builder.create_vector(&rel_offsets), builder.create_vector(&ids))
 }
 
 fn collect_serialized_entity_ids(model: &IfcModel, step: &StepFile) -> Vec<u64> {

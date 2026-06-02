@@ -21,6 +21,9 @@ use lbd_serializer::{
 
 use crate::pipeline_plugins::OutputDir;
 use plugin_fragments_producer::FRAGMENTS_PRODUCER_ID;
+use plugin_geometry_preprocess::{IFCContent, MetadataModeOption, GEOMETRY_PREPROCESS_ID};
+use plugin_geometry_producer::{GeometryFormat, GeometryProducerConfig, GEOMETRY_PRODUCER_ID};
+use tessellated_model::MetadataMode;
 
 mod chunk_writer;
 mod pipeline_plugins;
@@ -261,6 +264,30 @@ fn main() -> anyhow::Result<()> {
     ctx.insert(model.clone());
     ctx.insert(std::sync::Arc::new(base_options.clone()));
     ctx.insert(step.clone());
+    // Raw IFC content needed by neo-geometry-preprocess (ifc-lite EntityDecoder)
+    let raw_content = std::fs::read_to_string(input_path)
+        .map(|s| std::sync::Arc::new(IFCContent(s)))
+        .ok();
+    if let Some(content) = raw_content {
+        ctx.insert(content);
+    }
+
+    // Geometry preprocess metadata mode
+    if let Some(geom_entries) = module_configs.get(GEOMETRY_PREPROCESS_ID) {
+        let mode = match geom_entries.get("metadata").map(String::as_str) {
+            Some("stripped") => MetadataMode::Stripped,
+            _ => MetadataMode::Full,
+        };
+        ctx.insert(std::sync::Arc::new(MetadataModeOption(mode)));
+    }
+
+    // Geometry producer format
+    if let Some(geom_entries) = module_configs.get(GEOMETRY_PRODUCER_ID) {
+        let format = geom_entries.get("format")
+            .and_then(|s| GeometryFormat::from_str(s))
+            .unwrap_or_default();
+        ctx.insert(std::sync::Arc::new(GeometryProducerConfig { format }));
+    }
     let (sidecar_tx, sidecar_rx) = crossbeam::channel::bounded(SERIALIZER_CHANNEL_CAPACITY);
     ctx.sidecar_tx = Some(sidecar_tx);
     if preprocess_ids.iter().any(|id| id == lbd_pipeline::QTO_PREPROCESS_ID) {
@@ -729,6 +756,28 @@ fn validate_typed_module_configs(
         if module_id == lbd_pipeline::BSDD_PRODUCER_ID {
             validate_bsdd_producer_module_config(entries)?;
         }
+        if module_id == GEOMETRY_PRODUCER_ID {
+            validate_geometry_producer_module_config(entries)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_geometry_producer_module_config(entries: &std::collections::HashMap<String, String>) -> Result<(), String> {
+    for (key, value) in entries {
+        match key.as_str() {
+            "format" => {
+                if !matches!(value.as_str(), "fragments" | "gltf" | "parquet" | "ifc5") {
+                    return Err(format!("`neo-geometry-producer.format` must be fragments|gltf|parquet|ifc5, got `{value}`"));
+                }
+            }
+            "metadata" => {
+                if !matches!(value.as_str(), "full" | "stripped") {
+                    return Err(format!("`neo-geometry-producer.metadata` must be full|stripped, got `{value}`"));
+                }
+            }
+            other => return Err(format!("unknown option `neo-geometry-producer.{other}`")),
+        }
     }
     Ok(())
 }
@@ -793,7 +842,8 @@ fn validate_activation_plan_with_args(
         || active.contains(lbd_pipeline::PROPS_OPM_PRODUCER_ID)
         || active.contains(lbd_pipeline::OMG_FOG_PRODUCER_ID)
         || active.contains(lbd_pipeline::IFCOWL_PRODUCER_ID)
-        || active.contains(FRAGMENTS_PRODUCER_ID);
+        || active.contains(FRAGMENTS_PRODUCER_ID)
+        || active.contains(GEOMETRY_PRODUCER_ID);
     if !has_any_producer {
         anyhow::bail!(
             "module plan must include at least one producer (`{}`, `{}`, `{}`, or similar)",
@@ -833,6 +883,10 @@ fn resolve_execution_settings(
             "conflicting serializer modules enabled (`{}` and N-Quads serializer)",
             lbd_pipeline::TURTLE_SERIALIZER_ID,
         ),
+        // Geometry-only workflow: neo-geometry-producer emits a sidecar, no triple serializer needed.
+        (false, false) if active.contains(GEOMETRY_PRODUCER_ID) || active.contains(FRAGMENTS_PRODUCER_ID) => {
+            OutputFormat::Turtle // placeholder — no triple output, sidecar only
+        }
         (false, false) => anyhow::bail!(
             "no serializer module enabled; add `--module {}`, `--module {}`, or `--module {}`",
             lbd_pipeline::TURTLE_SERIALIZER_ID,
