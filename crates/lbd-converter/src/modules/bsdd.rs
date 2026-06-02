@@ -1152,6 +1152,26 @@ pub fn dedup_model_property_sets(model: &IfcModel) -> IfcModel {
     updated
 }
 
+/// Compute a stable content fingerprint for a pset: sorted "name=value_sig" pairs joined by "|".
+/// Two psets with identical properties and values produce the same fingerprint.
+fn pset_content_repr(pset: &ifc_model::PropertySet, model: &ifc_model::IfcModel) -> String {
+    let mut pairs: Vec<String> = pset.properties.iter().filter_map(|prop_id| {
+        if let Some(psv) = model.property_single_values.get(prop_id) {
+            let value_sig = psv.nominal_value.as_ref()
+                .map(step_value_signature)
+                .unwrap_or_else(|| "none".to_string());
+            Some(format!("{}={}", normalize(psv.name.as_str()), value_sig))
+        } else if let Some(pev) = model.property_enumerated_values.get(prop_id) {
+            let vals = pev.values.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",");
+            Some(format!("{}=[{}]", normalize(pev.name.as_str()), vals))
+        } else {
+            None
+        }
+    }).collect();
+    pairs.sort_unstable();
+    pairs.join("|")
+}
+
 fn resolve_from_cache(
     cache: &BsddMatchCache,
     schema: StepSchema,
@@ -1539,7 +1559,15 @@ fn process_element_psets(
             continue;
         };
         let pset_name = pset.name.as_deref().unwrap_or_default();
-        let pset_subject = crate::property_set_resource_iri(base, &pset.guid);
+        // In dedup mode: derive a canonical pset IRI from its content fingerprint so that
+        // all elements whose pset has identical properties+values share one pset node.
+        // In non-dedup mode: use the per-entity IFC GUID as normal.
+        let pset_subject = if dedup.is_some() {
+            let content = pset_content_repr(pset, model);
+            crate::canonical_pset_resource_iri(base, pset_name, &content)
+        } else {
+            crate::property_set_resource_iri(base, &pset.guid)
+        };
 
         // element → hasPropertySet is always per-element
         push(
@@ -1733,7 +1761,21 @@ fn process_element_quantities(
             continue;
         };
         let quantity_set_name = quantity_set.name.as_deref().unwrap_or_default();
-        let quantity_set_subject = crate::quantity_set_resource_iri(base, &quantity_set.guid);
+        let quantity_set_subject = if dedup.is_some() {
+            // Fingerprint for qsets: sorted "name=value_sig" from physical quantities.
+            let mut pairs: Vec<String> = quantity_set.quantities.iter().filter_map(|qid| {
+                model.physical_quantities.get(qid).and_then(|q| {
+                    q.value.as_ref().map(step_value_signature).map(|sig| {
+                        format!("{}={}", normalize(q.name.as_str()), sig)
+                    })
+                })
+            }).collect();
+            pairs.sort_unstable();
+            let content = pairs.join("|");
+            crate::canonical_pset_resource_iri(base, quantity_set_name, &content)
+        } else {
+            crate::quantity_set_resource_iri(base, &quantity_set.guid)
+        };
 
         // element → hasQuantitySet is always per-element
         push(
@@ -1989,9 +2031,11 @@ fn emit_property(
     // per property. Only convert to an owned String when canonical URIs are needed.
     let (prop_subject, state_subject) = if let Some(_) = dedup {
         let value_repr = crate::object_value_repr(&value).to_string();
+        // Key on pset_name (not pset_guid) so properties with the same name and value
+        // are shared across elements regardless of which pset entity they belong to.
         (
-            crate::canonical_property_resource_iri(base, &predicate_local, pset_guid, &value_repr),
-            crate::canonical_property_state_iri(base, &predicate_local, pset_guid, &value_repr),
+            crate::canonical_property_resource_iri(base, &predicate_local, pset_name, &value_repr),
+            crate::canonical_property_state_iri(base, &predicate_local, pset_name, &value_repr),
         )
     } else {
         (

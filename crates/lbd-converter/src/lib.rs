@@ -2422,17 +2422,27 @@ pub(crate) fn property_state_iri(
     format!("{base}/s_{:016x}", fnv1a64(key.as_bytes()))
 }
 
-/// Canonical property IRI shared across elements when value is the same.
-/// Key: (predicate_local, set_scope/pset_guid, value_repr) — no element GUID.
-pub(crate) fn canonical_property_resource_iri(base: &str, predicate_local: &str, set_scope: &str, value_repr: &str) -> String {
-    let key = format!("{predicate_local}|{set_scope}|{value_repr}");
+/// Canonical property IRI shared across elements when (pset_name, prop_name, value) is identical.
+/// Key: (predicate_local, pset_name, value_repr) — no element GUID, no pset GUID.
+/// Scoping by pset_name prevents "Height" in Pset_WallCommon from merging with
+/// "Height" in a custom pset.
+pub(crate) fn canonical_property_resource_iri(base: &str, predicate_local: &str, pset_name: &str, value_repr: &str) -> String {
+    let key = format!("{predicate_local}|{pset_name}|{value_repr}");
     format!("{base}/cp_{:016x}", fnv1a64(key.as_bytes()))
 }
 
-/// Canonical state IRI shared across elements when value is the same.
-pub(crate) fn canonical_property_state_iri(base: &str, predicate_local: &str, set_scope: &str, value_repr: &str) -> String {
-    let key = format!("{predicate_local}|{set_scope}|{value_repr}");
+/// Canonical state IRI — same key as the property IRI.
+pub(crate) fn canonical_property_state_iri(base: &str, predicate_local: &str, pset_name: &str, value_repr: &str) -> String {
+    let key = format!("{predicate_local}|{pset_name}|{value_repr}");
     format!("{base}/cs_{:016x}", fnv1a64(key.as_bytes()))
+}
+
+/// Canonical pset IRI shared across elements whose pset has identical content.
+/// Key: (pset_name, sorted fingerprint of all prop_name=value pairs).
+/// If any single property value differs, the fingerprint differs → different IRI → no sharing.
+pub(crate) fn canonical_pset_resource_iri(base: &str, pset_name: &str, content_repr: &str) -> String {
+    let key = format!("{pset_name}|{content_repr}");
+    format!("{base}/cps_{:016x}", fnv1a64(key.as_bytes()))
 }
 
 pub(crate) fn object_value_repr(value: &Object) -> &str {
