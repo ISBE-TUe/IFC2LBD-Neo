@@ -56,6 +56,8 @@ pub struct StepHeader {
     pub schema: StepSchema,
     /// File description strings.
     pub description: Vec<String>,
+    /// FILE_NAME quoted strings in source order.
+    pub file_name: Vec<String>,
     /// Original schema string from the file.
     pub schema_raw: String,
 }
@@ -68,10 +70,12 @@ pub fn parse_header(data: &[u8]) -> Result<StepHeader, StepError> {
     let schema_raw = extract_file_schema(&search_text)?;
     let schema = StepSchema::from_header_str(&schema_raw)?;
     let description = extract_file_description(&search_text).unwrap_or_default();
+    let file_name = extract_file_name(&search_text).unwrap_or_default();
 
     Ok(StepHeader {
         schema,
         description,
+        file_name,
         schema_raw,
     })
 }
@@ -86,14 +90,12 @@ fn extract_file_schema(text: &str) -> Result<String, StepError> {
 
 fn extract_file_description(text: &str) -> Result<Vec<String>, StepError> {
     let invocation = find_header_invocation(text, "FILE_DESCRIPTION")?;
-    let list_start = invocation
-        .find("((")
-        .ok_or_else(|| StepError::InvalidHeader("FILE_DESCRIPTION list not found".to_string()))?;
-    let list_slice = &invocation[list_start + 1..];
-    let list_end = find_matching_paren(list_slice, 0).ok_or_else(|| {
-        StepError::InvalidHeader("Unterminated FILE_DESCRIPTION list".to_string())
-    })?;
-    Ok(extract_quoted_strings(&list_slice[..=list_end]))
+    Ok(extract_quoted_strings(invocation))
+}
+
+fn extract_file_name(text: &str) -> Result<Vec<String>, StepError> {
+    let invocation = find_header_invocation(text, "FILE_NAME")?;
+    Ok(extract_quoted_strings(invocation))
 }
 
 fn find_header_invocation<'a>(text: &'a str, keyword: &str) -> Result<&'a str, StepError> {

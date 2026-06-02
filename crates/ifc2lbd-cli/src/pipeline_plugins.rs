@@ -17,6 +17,7 @@ use lbd_pipeline::{
     PROPS_OPM_PRODUCER_ID, STDOUT_EXPORT_ID, TURTLE_SERIALIZER_ID,
 };
 use plugin_property_preprocess::{BsddMatchPreprocessPlugin, CleanupPreprocessPlugin};
+use plugin_fragments_producer::FragmentsProducerPlugin;
 use plugin_qto_preprocess::QtoPreprocessPlugin;
 
 // ---------------------------------------------------------------------------
@@ -66,6 +67,7 @@ pub fn built_in_registry() -> PluginRegistry {
     registry.register_producer(PropsOpmProducerPlugin).unwrap();
     registry.register_producer(OmgFogProducerPlugin).unwrap();
     registry.register_producer(IfcowlProducerPlugin).unwrap();
+    registry.register_producer(FragmentsProducerPlugin).unwrap();
     registry.register_serializer(TurtleSerializerPlugin).unwrap();
     registry.register_serializer(NquadsSerializerPlugin).unwrap();
     registry.register_serializer(NquadsChunkedSerializerPlugin).unwrap();
@@ -754,8 +756,8 @@ mod tests {
     #[test]
     fn built_in_registry_exposes_expected_stage_counts() {
         let registry = built_in_registry();
-        // Bot, Beo, Bsdd, PropsOpm, OmgFog, Ifcowl
-        assert_eq!(registry.manifests_for_stage(PipelineStage::Produce).len(), 6);
+        // Bot, Beo, Bsdd, PropsOpm, OmgFog, Ifcowl, Fragments
+        assert_eq!(registry.manifests_for_stage(PipelineStage::Produce).len(), 7);
         // Turtle, NQuads, NQuadsChunked
         assert_eq!(registry.manifests_for_stage(PipelineStage::Serialize).len(), 3);
         // File, Log, Stdout

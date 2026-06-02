@@ -1,0 +1,196 @@
+// Synced from ThatOpen/engine_fragment packages/fragments/flatbuffers/index.fbs.
+
+// MESHES
+
+enum RenderedFaces:byte {
+    ONE = 0,
+    TWO = 1
+}
+
+enum Stroke:byte {
+    DEFAULT = 0
+}
+
+enum AxisPartClass:byte {
+    NONE = 0,
+    WIRE = 1,
+    WIRE_SET = 2,
+    CIRCLE_CURVE = 3
+}
+
+enum RepresentationClass:byte {
+    NONE = 0,
+    SHELL = 1,
+    CIRCLE_EXTRUSION = 2,
+}
+
+enum ShellType:byte {
+    NONE = 0,
+    BIG = 1,
+}
+
+struct FloatVector {
+    x: float;
+    y: float;
+    z: float;
+}
+
+struct DoubleVector {
+    x: double;
+    y: double;
+    z: double;
+}
+
+struct Transform {
+    position: DoubleVector;
+    x_direction: FloatVector;
+    y_direction: FloatVector;
+}
+
+struct Material {
+    r: ubyte;
+    g: ubyte;
+    b: ubyte;
+    a: ubyte;
+    rendered_faces: RenderedFaces;
+    stroke: Stroke;
+}
+
+struct BoundingBox {
+    min: FloatVector;
+    max: FloatVector;
+}
+
+struct Wire {
+    p1: FloatVector;
+    p2: FloatVector;
+}
+
+table WireSet {
+    ps: [FloatVector] (required);
+}
+
+struct CircleCurve {
+    aperture: float;
+    position: FloatVector;
+    radius: float;
+    x_direction: FloatVector;
+    y_direction: FloatVector;
+}
+
+table ShellHole {
+    indices: [ushort] (required);
+    profile_id: ushort;
+}
+
+table ShellProfile {
+    indices: [ushort] (required);
+}
+
+table BigShellHole {
+    indices: [uint] (required);
+    profile_id: ushort;
+}
+
+table BigShellProfile {
+    indices: [uint] (required);
+}
+
+table Axis {
+    wires: [Wire] (required);
+    order: [uint] (required);
+    parts: [AxisPartClass] (required);
+    wire_sets: [WireSet] (required);
+    circle_curves: [CircleCurve] (required);
+}
+
+struct Representation {
+    id: uint;
+    bbox: BoundingBox;
+    representation_class: RepresentationClass;
+}
+
+struct Sample {
+    item: uint;
+    material: uint;
+    representation: uint;
+    local_transform: uint;
+}
+
+table Shell {
+    profiles: [ShellProfile] (required);
+    holes: [ShellHole] (required);
+    points: [FloatVector] (required);
+    big_profiles: [BigShellProfile] (required);
+    big_holes: [BigShellHole] (required);
+    type: ShellType;
+    profiles_face_ids: [ushort] (required);
+}
+
+table CircleExtrusion {
+    radius: [double] (required);
+    axes: [Axis] (required);
+}
+
+table Meshes {
+    coordinates: Transform (required);
+    meshes_items: [uint] (required);
+    samples: [Sample] (required);
+    representations: [Representation] (required);
+    materials: [Material] (required);
+    circle_extrusions: [CircleExtrusion] (required);
+    shells: [Shell] (required);
+    local_transforms: [Transform] (required);
+    global_transforms: [Transform] (required);
+    material_ids: [uint];
+    representation_ids: [uint];
+    sample_ids: [uint];
+    local_transform_ids: [uint];
+    global_transform_ids: [uint];
+}
+
+table Attribute {
+    data: [string] (required);
+}
+
+table Relation {
+    data: [string] (required);
+}
+
+table SpatialStructure {
+    local_id: uint = null;
+    category: string;
+    children: [SpatialStructure];
+}
+
+table ModelIndex {
+    name: string;
+    string_keys: [string];
+    number_keys: [uint];
+    string_values: [string];
+    number_values: [uint];
+    end: [uint];
+    start: [uint];
+}
+
+table Model {
+    metadata: string;
+    guids: [string] (required);
+    guids_items: [uint] (required);
+    max_local_id: uint;
+    local_ids: [uint] (required);
+    categories: [string] (required);
+    meshes: Meshes (required);
+    attributes: [Attribute];
+    relations: [Relation];
+    relations_items: [int];
+    guid: string (required);
+    spatial_structure: SpatialStructure;
+    unique_attributes: [string];
+    relation_names: [string];
+    indexes: [ModelIndex];
+}
+
+file_identifier "0001";
+
+root_type Model;

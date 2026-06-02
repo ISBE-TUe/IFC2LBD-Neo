@@ -17,6 +17,7 @@ use lbd_pipeline::{
 };
 use serde_json;
 use plugin_property_preprocess::{BsddMatchPreprocessPlugin, CleanupPreprocessPlugin};
+use plugin_fragments_producer::FragmentsProducerPlugin;
 use plugin_qto_preprocess::QtoPreprocessPlugin;
 use wasm_bindgen::prelude::*;
 
@@ -72,6 +73,7 @@ pub(crate) fn browser_registry() -> PluginRegistry {
     registry.register_producer(BsddProducerPlugin).unwrap();
     registry.register_producer(PropsOpmProducerPlugin).unwrap();
     registry.register_producer(OmgFogProducerPlugin).unwrap();
+    registry.register_producer(FragmentsProducerPlugin).unwrap();
     // Other producers
     registry.register_producer(IfcowlProducerPlugin).unwrap();
     // Serializers (registration only; serialization happens in runner.rs)

@@ -20,6 +20,7 @@ use lbd_serializer::{
 };
 
 use crate::pipeline_plugins::OutputDir;
+use plugin_fragments_producer::FRAGMENTS_PRODUCER_ID;
 
 mod chunk_writer;
 mod pipeline_plugins;
@@ -260,6 +261,8 @@ fn main() -> anyhow::Result<()> {
     ctx.insert(model.clone());
     ctx.insert(std::sync::Arc::new(base_options.clone()));
     ctx.insert(step.clone());
+    let (sidecar_tx, sidecar_rx) = crossbeam::channel::bounded(SERIALIZER_CHANNEL_CAPACITY);
+    ctx.sidecar_tx = Some(sidecar_tx);
     if preprocess_ids.iter().any(|id| id == lbd_pipeline::QTO_PREPROCESS_ID) {
         ctx.insert(std::sync::Arc::new(plugin_qto_preprocess::QtoOptions::default()));
     }
@@ -518,6 +521,20 @@ fn main() -> anyhow::Result<()> {
         "phase triple_production completed in {:.3}s",
         producer_start.elapsed().as_secs_f64()
     );
+
+    let sidecar_drain_start = Instant::now();
+    let mut sidecar_count = 0usize;
+    for file in sidecar_rx.try_iter() {
+        sidecar_count += 1;
+        session::accept_derived_file(&session, file)
+            .map_err(|e| anyhow::anyhow!("failed to export derived sidecar file: {}", e))?;
+    }
+    tracing::info!(
+        "phase sidecar_delivery completed in {:.3}s ({} files)",
+        sidecar_drain_start.elapsed().as_secs_f64(),
+        sidecar_count
+    );
+
     drop(converter_lbd_sender);
     drop(ifcowl_sender);
 
@@ -775,7 +792,8 @@ fn validate_activation_plan_with_args(
         || active.contains(lbd_pipeline::BSDD_PRODUCER_ID)
         || active.contains(lbd_pipeline::PROPS_OPM_PRODUCER_ID)
         || active.contains(lbd_pipeline::OMG_FOG_PRODUCER_ID)
-        || active.contains(lbd_pipeline::IFCOWL_PRODUCER_ID);
+        || active.contains(lbd_pipeline::IFCOWL_PRODUCER_ID)
+        || active.contains(FRAGMENTS_PRODUCER_ID);
     if !has_any_producer {
         anyhow::bail!(
             "module plan must include at least one producer (`{}`, `{}`, `{}`, or similar)",
@@ -1230,14 +1248,47 @@ mod tests {
     use super::{
         build_requested_module_list,
         chunk_writer::{self, QuadChunkWriter, QuadChunkingMode},
-        parse_module_configs, validate_args, Args, ExecutionSettings, NquadsModuleOptions,
+        parse_module_configs, session, validate_args, Args, ExecutionSettings, NquadsModuleOptions,
         OutputFormat, TurtleGrouping,
     };
     use lbd_converter::IfcowlMode;
+    use lbd_pipeline::{DerivedFile, ExportError, ExportFileSummary, ExportSession};
     use clap::Parser;
     use std::io::Write;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct DirFileSession {
+        dir: PathBuf,
+    }
+
+    impl ExportSession for DirFileSession {
+        fn open_sink(
+            &mut self,
+            filename: &str,
+            _mime_type: &str,
+            _role: &str,
+        ) -> Result<Box<dyn Write + Send>, ExportError> {
+            let path = self.dir.join(filename);
+            let file = std::fs::File::create(&path)
+                .map_err(|e| ExportError::Export(e.to_string()))?;
+            Ok(Box::new(std::io::BufWriter::new(file)))
+        }
+
+        fn accept_derived_file(&mut self, file: DerivedFile) -> Result<(), ExportError> {
+            let path = self.dir.join(&file.filename);
+            std::fs::write(&path, &file.bytes)
+                .map_err(|e| ExportError::Export(e.to_string()))
+        }
+
+        fn finalize(self: Box<Self>) -> Result<Vec<ExportFileSummary>, ExportError> {
+            Ok(Vec::new())
+        }
+    }
+
+    fn dir_session(dir: PathBuf) -> session::SharedSession {
+        session::new_shared(Box::new(DirFileSession { dir }))
+    }
 
     #[test]
     fn cli_defaults_are_minimal() {
@@ -1318,7 +1369,7 @@ mod tests {
         std::fs::create_dir_all(&out_dir).expect("mkdir");
 
         let mut writer = chunk_writer::QuadChunkWriter::new(
-            out_dir.clone(),
+            dir_session(out_dir.clone()),
             "test".to_string(),
             chunk_writer::QuadChunkingMode::Lines,
             2,
@@ -1352,7 +1403,7 @@ mod tests {
         std::fs::create_dir_all(&out_dir).expect("mkdir");
 
         let mut writer = chunk_writer::QuadChunkWriter::new(
-            out_dir.clone(),
+            dir_session(out_dir.clone()),
             "core".to_string(),
             chunk_writer::QuadChunkingMode::Cores,
             2_000_000,
