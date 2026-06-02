@@ -18,6 +18,7 @@ path = "src/bin/compare_turtle.rs"
 ifc-step = { workspace = true }
 ifc-model = { workspace = true }
 ifc-schema = { workspace = true }
+fragments-core = { workspace = true }
 lbd-ontology = { workspace = true }
 lbd-pipeline = { workspace = true }
 lbd-converter = { workspace = true }
@@ -26,6 +27,7 @@ lbd-geometry = { workspace = true }
 lbd-serializer = { workspace = true }
 plugin-topology-full = { workspace = true }
 plugin-property-preprocess = { workspace = true }
+plugin-fragments-producer = { workspace = true }
 plugin-qto-preprocess = { workspace = true }
 crossbeam = { workspace = true }
 clap = { workspace = true }

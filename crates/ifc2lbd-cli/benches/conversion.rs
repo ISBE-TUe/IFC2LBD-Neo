@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use crossbeam::channel;
+use fragments_core::{convert_step_to_fragments, FragmentsConfig};
 use ifc_model::build_model;
 use ifc_step::parse_step_file;
 use lbd_converter::{
@@ -125,6 +126,25 @@ fn bench_digitalhub_bot(c: &mut Criterion) {
     });
 }
 
+fn bench_fragments_conversion(c: &mut Criterion) {
+    let path = small_ifc_path();
+    if !path.exists() {
+        eprintln!("Skipping bench_fragments_conversion: {:?} not found", path);
+        return;
+    }
+    let step = parse_step_file(&path).expect("parse");
+    let model = build_model(&step).expect("build");
+    let config = FragmentsConfig::default();
+
+    c.bench_function("convert_step_to_fragments (test.ifc)", |b| {
+        b.iter(|| {
+            let bytes = convert_step_to_fragments(&model, &step, &config).expect("fragments");
+            assert!(!bytes.raw.is_empty());
+            assert!(!bytes.compressed.is_empty());
+        })
+    });
+}
+
 criterion_group!(
     benches,
     bench_parse_and_model,
@@ -132,5 +152,6 @@ criterion_group!(
     bench_bot_beo_producers,
     bench_digitalhub_parse,
     bench_digitalhub_bot,
+    bench_fragments_conversion,
 );
 criterion_main!(benches);
