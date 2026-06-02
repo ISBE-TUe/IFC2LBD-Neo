@@ -1,0 +1,13 @@
+[package]
+name = "plugin-geometry-preprocess"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ifc-geometry = { workspace = true }
+tessellated-model = { workspace = true }
+ifc-step = { workspace = true }
+ifc-model = { workspace = true }
+lbd-pipeline = { workspace = true }
+thiserror = { workspace = true }

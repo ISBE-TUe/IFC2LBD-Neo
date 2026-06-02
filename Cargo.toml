@@ -20,6 +20,11 @@ members = [
     "crates/plugin-property-preprocess",
     "crates/plugin-fragments-producer",
     "crates/plugin-qto-preprocess",
+    # Geometry pipeline
+    "crates/ifc-geometry",
+    "crates/tessellated-model",
+    "crates/plugin-geometry-preprocess",
+    "crates/plugin-geometry-producer",
     "crates/ifc2lbd-cli",
     "crates/ifc2lbd-wasm",
     # "crates/ifc2lbd-python",  # enable when PyO3 bindings are needed
@@ -93,3 +98,12 @@ plugin-topology-full = { path = "crates/plugin-topology-full" }
 plugin-property-preprocess = { path = "crates/plugin-property-preprocess" }
 plugin-fragments-producer = { path = "crates/plugin-fragments-producer" }
 plugin-qto-preprocess = { path = "crates/plugin-qto-preprocess" }
+# Geometry pipeline
+ifc-geometry = { path = "crates/ifc-geometry" }
+tessellated-model = { path = "crates/tessellated-model" }
+plugin-geometry-preprocess = { path = "crates/plugin-geometry-preprocess" }
+plugin-geometry-producer = { path = "crates/plugin-geometry-producer" }
+# ifc-lite (MPL-2.0) — geometry engine, used without manifold-csg (BSP fallback, WASM-safe)
+ifc-lite-core = { path = "/tmp/ifc-lite/rust/core", default-features = false }
+ifc-lite-geometry = { path = "/tmp/ifc-lite/rust/geometry", default-features = false }
+nalgebra = { version = "0.35", default-features = false, features = ["std"] }
