@@ -448,7 +448,24 @@ async function runConversion() {
     resetStageStatuses();
     const result = await runSinkConversionInWorker(input, requestPayload, expectedFiles, requestedThreads);
 
-    const filesWithPayload = result.renderedFiles.filter(
+    // Geometry sidecar files (fragments/parquet/gltf) — returned as base64 in bundle
+    const geoFiles = result.streamResult?.geometryFiles || [];
+    const geoRendered = geoFiles.map((gf) => {
+      const binaryStr = atob(gf.dataBase64);
+      const bytes = new Uint8Array(binaryStr.length);
+      for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+      return {
+        filename: gf.filename,
+        mimeType: gf.mimeType,
+        role: "geometry",
+        payloadParts: [bytes],
+      };
+    });
+    if (geoFiles.length > 0) {
+      log(`Geometry output: ${geoFiles.map((g) => `${g.filename} (${(g.bytes / 1024).toFixed(0)} KB)`).join(", ")}`);
+    }
+
+    const filesWithPayload = [...result.renderedFiles, ...geoRendered].filter(
       (f) => Array.isArray(f?.payloadParts) && f.payloadParts.length > 0
     );
     if (!filesWithPayload.length) {

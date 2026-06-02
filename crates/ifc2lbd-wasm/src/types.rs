@@ -102,6 +102,18 @@ pub struct BenchmarkBundle {
     pub stage_telemetry: Vec<StageTelemetry>,
 }
 
+/// A geometry sidecar file with its actual binary content.
+/// Returned in `geometry_files` for download by the JS side.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeometryFile {
+    pub filename: String,
+    pub mime_type: String,
+    /// Base64-encoded file content — use to create a Blob/download URL in JS.
+    pub data_base64: String,
+    pub bytes: u64,
+}
+
 #[cfg(target_arch = "wasm32")]
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -114,6 +126,8 @@ pub struct StreamConversionBundle {
     pub warnings: Vec<String>,
     pub telemetry: ConversionTelemetry,
     pub stage_telemetry: Vec<StageTelemetry>,
+    /// Geometry export files (fragments, parquet, etc.) with actual binary content.
+    pub geometry_files: Vec<GeometryFile>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -206,6 +220,9 @@ pub struct ExecutionSettings {
     /// `has(plugin_id)` instead of dedicated per-module booleans so adding a
     /// new plugin only requires registering it — no struct field churn.
     pub active_plugin_ids: std::collections::HashSet<String>,
+    /// Per-module options keyed as "module-id" → key → value.
+    /// Used by geometry pipeline and any future module needing typed options.
+    pub module_configs: std::collections::HashMap<String, std::collections::HashMap<String, String>>,
     pub nquads: NquadsModuleOptions,
     pub output_stem: String,
     pub turtle_grouping: TurtleGrouping,
@@ -220,6 +237,13 @@ pub struct ExecutionSettings {
 impl ExecutionSettings {
     pub fn has(&self, plugin_id: &str) -> bool {
         self.active_plugin_ids.contains(plugin_id)
+    }
+
+    pub fn module_option(&self, module_id: &str, key: &str) -> Option<String> {
+        self.module_configs
+            .get(module_id)
+            .and_then(|m| m.get(key))
+            .cloned()
     }
 }
 

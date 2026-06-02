@@ -6,6 +6,8 @@ license.workspace = true
 
 [features]
 default = []
+# proof-bin: only for the ifc-lite-proof diagnostic binary, not for library use
+proof-bin = ["dep:parquet", "dep:arrow-array", "dep:arrow-schema", "dep:zip"]
 
 [dependencies]
 ifc-lite-core = { workspace = true }
@@ -13,11 +15,13 @@ ifc-lite-geometry = { workspace = true }
 nalgebra = { workspace = true }
 thiserror = { workspace = true }
 
-parquet = { version = "52", default-features = false, features = ["arrow", "snap"] }
-arrow-array = { version = "52" }
-arrow-schema = { version = "52" }
-zip = { version = "2" }
+# Only needed by the ifc-lite-proof binary (proof-bin feature)
+parquet   = { version = "52", default-features = false, features = ["arrow", "snap"], optional = true }
+arrow-array  = { version = "52", optional = true }
+arrow-schema = { version = "52", optional = true }
+zip = { version = "2", default-features = false, features = ["deflate"], optional = true }
 
 [[bin]]
 name = "ifc-lite-proof"
 path = "src/bin/proof.rs"
+required-features = ["proof-bin"]

@@ -19,6 +19,8 @@ use serde_json;
 use plugin_property_preprocess::{BsddMatchPreprocessPlugin, CleanupPreprocessPlugin};
 use plugin_fragments_producer::FragmentsProducerPlugin;
 use plugin_qto_preprocess::QtoPreprocessPlugin;
+use plugin_geometry_preprocess::GeometryPreprocessPlugin;
+use plugin_geometry_producer::GeometryProducerPlugin;
 use wasm_bindgen::prelude::*;
 
 use crate::types::ModuleManifestView;
@@ -58,6 +60,8 @@ pub(crate) fn module_option_keys(module_id: &str) -> Vec<String> {
         BSDD_PRODUCER_ID => vec!["profile".to_string(), "compact".to_string(), "include_standard_attrs".to_string(), "dedup_properties".to_string()],
         FILE_EXPORT_ID => vec!["output_stem".to_string()],
         LOG_EXPORT_ID => vec![],
+        "neo-geometry-preprocess" => vec!["metadata".to_string()],
+        "neo-geometry-producer" => vec!["format".to_string()],
         _ => Vec::new(),
     }
 }
@@ -74,6 +78,9 @@ pub(crate) fn browser_registry() -> PluginRegistry {
     registry.register_producer(PropsOpmProducerPlugin).unwrap();
     registry.register_producer(OmgFogProducerPlugin).unwrap();
     registry.register_producer(FragmentsProducerPlugin).unwrap();
+    // Geometry pipeline
+    registry.register_preprocess(GeometryPreprocessPlugin).unwrap();
+    registry.register_producer(GeometryProducerPlugin::default()).unwrap();
     // Other producers
     registry.register_producer(IfcowlProducerPlugin).unwrap();
     // Serializers (registration only; serialization happens in runner.rs)
