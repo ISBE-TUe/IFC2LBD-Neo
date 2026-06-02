@@ -195,6 +195,10 @@ pub struct BsddMatchCache {
     by_key: HashMap<String, BsddPreparedMatch>,
     pub profile_id: String,
     pub index_version: String,
+    /// When true, cache misses return Unmapped immediately instead of falling back to a
+    /// live fuzzy scan. Set on the empty placeholder used when no preprocess cache is present —
+    /// means the bsdd producer runs without any fuzzy matching (safe / explicit mode).
+    pub no_fuzzy: bool,
 }
 
 impl BsddMatchCache {
@@ -347,6 +351,31 @@ impl BsddIndex {
         pset_name: &str,
         prop_name: &str,
         profile: &BsddProfile,
+    ) -> MatchResult {
+        self.resolve_property_impl(schema, class_code_like, pset_name, prop_name, profile, true)
+    }
+
+    /// Same as `resolve_property` but skips the fuzzy scan (step 5).
+    /// All O(1) dictionary lookups still run — only similarity-based guessing is omitted.
+    fn resolve_property_exact_only(
+        &self,
+        schema: StepSchema,
+        class_code_like: &str,
+        pset_name: &str,
+        prop_name: &str,
+        profile: &BsddProfile,
+    ) -> MatchResult {
+        self.resolve_property_impl(schema, class_code_like, pset_name, prop_name, profile, false)
+    }
+
+    fn resolve_property_impl(
+        &self,
+        schema: StepSchema,
+        class_code_like: &str,
+        pset_name: &str,
+        prop_name: &str,
+        profile: &BsddProfile,
+        fuzzy: bool,
     ) -> MatchResult {
         let empty_schema_aliases: HashMap<String, String> = HashMap::new();
         let schema_aliases = profile
@@ -523,7 +552,7 @@ impl BsddIndex {
         }
 
         // 5. Class-scoped fuzzy — never falls back to global search
-        if profile.fuzzy.enabled && profile.fuzzy.scope != "never" {
+        if fuzzy && profile.fuzzy.enabled && profile.fuzzy.scope != "never" {
             let class_norm = class_norms.first().map(String::as_str).unwrap_or_default();
             let pset_norm = pset_norms.first().map(String::as_str).unwrap_or_default();
             let threshold = profile.fuzzy.threshold;
@@ -1086,6 +1115,7 @@ pub fn build_bsdd_match_cache(
         by_key,
         profile_id: profile.profile_id.clone(),
         index_version: index.dictionary_version.clone(),
+        no_fuzzy: false,
     })
 }
 
@@ -1227,26 +1257,30 @@ pub fn stream_bsdd_with_cache(
     let profile = load_active_profile(options.bsdd_profile.as_deref())
         .map_err(StreamError::Conversion)?;
 
-    // Always ensure a valid match cache is available.
+    // Resolve the match cache to use for this run.
     //
-    // Without a cache every (class, pset, prop) triple is resolved independently for each
-    // element instance — the same combination is looked up once per element rather than once
-    // total. For a model with N elements and P properties each, that is O(N×P) resolve calls
-    // instead of O(unique combos), each potentially running the O(400) fuzzy scan.
+    // If `neo-bsdd-match-preprocess` ran, its cache is passed in and all lookups are O(1)
+    // HashMap gets with no fuzzy scanning.
     //
-    // We build inline when:
-    //   - no cache was provided (preprocess plugin not active), OR
-    //   - the provided cache was built with a different profile (stale — would produce wrong matches).
+    // If no cache was provided the producer uses an empty cache with `no_fuzzy = true`.
+    // Every property gets MatchStatus::Unmapped — no fuzzy scanning happens at all.
+    // This is the safe/explicit mode: only add the preprocess module when you want
+    // bSDD class/property assignments to be resolved.
+    //
+    // (Previously the fallback built the cache inline, which ran the full fuzzy scan
+    // inside the producer — slow and implicit. That behaviour is gone.)
     let options_profile = options.bsdd_profile.as_deref().unwrap_or("base");
-    let owned_inline: Option<BsddMatchCache>;
+    let empty_no_fuzzy_cache: Option<BsddMatchCache>;
     let cache: &BsddMatchCache = match match_cache {
         Some(c) if c.profile_id == options_profile || options_profile == "base" => c,
         _ => {
-            owned_inline = Some(
-                build_bsdd_match_cache(model, options.bsdd_profile.as_deref())
-                    .map_err(StreamError::Conversion)?,
-            );
-            owned_inline.as_ref().unwrap()
+            empty_no_fuzzy_cache = Some(BsddMatchCache {
+                by_key: HashMap::new(),
+                profile_id: options_profile.to_string(),
+                index_version: String::new(),
+                no_fuzzy: true,
+            });
+            empty_no_fuzzy_cache.as_ref().unwrap()
         }
     };
 
@@ -1934,30 +1968,35 @@ fn emit_property(
     batch_size: usize,
     triples: &mut u64,
 ) -> Result<(), StreamError> {
-    // Cache is always present — look up first, fall back to live resolve only if the
-    // specific key is absent (safety net; should not happen for a cache built from the same model).
+    // Resolve match:
+    //   - cache hit (preprocess ran)  → O(1) HashMap get, no scanning
+    //   - cache miss, fuzzy cache     → live full resolve (safety net, should be rare)
+    //   - cache miss, no_fuzzy cache  → exact-only resolve: steps 1-4 only, fuzzy scan skipped
     let match_result = resolve_from_cache(cache, schema, class_name_like, pset_name, prop_name, profile)
         .unwrap_or_else(|| {
-            index.resolve_property(schema, class_name_like, pset_name, prop_name, profile)
+            if cache.no_fuzzy {
+                index.resolve_property_exact_only(schema, class_name_like, pset_name, prop_name, profile)
+            } else {
+                index.resolve_property(schema, class_name_like, pset_name, prop_name, profile)
+            }
         });
     if matches!(match_result.status, MatchStatus::Unmapped) {
         let key = format!("{pset_name}|{prop_name}");
         *unmatched_histogram.entry(key).or_insert(0) += 1;
     }
     let predicate_local = crate::property_local_name(prop_name);
-    let value_repr = crate::object_value_repr(&value).to_string();
-    let (prop_subject, state_subject) = if dedup.is_some() {
-        // Canonical URIs: keyed on (predicate, pset_guid, value) — no element GUID.
-        // Multiple elements sharing the same property+value point to one canonical node.
+    // In the non-dedup path keep value_repr as a borrowed &str to avoid a heap allocation
+    // per property. Only convert to an owned String when canonical URIs are needed.
+    let (prop_subject, state_subject) = if let Some(_) = dedup {
+        let value_repr = crate::object_value_repr(&value).to_string();
         (
             crate::canonical_property_resource_iri(base, &predicate_local, pset_guid, &value_repr),
             crate::canonical_property_state_iri(base, &predicate_local, pset_guid, &value_repr),
         )
     } else {
-        // Per-element URIs (existing behaviour).
         (
             crate::property_resource_iri(base, &predicate_local, object_guid, pset_guid),
-            crate::property_state_iri(base, &predicate_local, object_guid, pset_guid, &value_repr),
+            crate::property_state_iri(base, &predicate_local, object_guid, pset_guid, crate::object_value_repr(&value)),
         )
     };
 
