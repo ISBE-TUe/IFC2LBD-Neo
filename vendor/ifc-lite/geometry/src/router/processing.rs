@@ -868,16 +868,27 @@ impl GeometryRouter {
             // Get normal (baked) mesh from the processor path
             let baked_mesh = self.process_representation_item(item, decoder)?;
 
-            // Un-bake: apply inverse(Position) to strip the placement from vertices.
-            // This gives position-free geometry identical to oracle's shell_from_item_direct.
+            // Un-bake: strip the placement from vertices to get position-free geometry.
+            // The extrusion processor applies P_WebGL = R × P_IFC where R is IFC→WebGL rotation.
+            // To undo: apply inv(P_WebGL) = P_IFC^-1 × R^T  (R is orthogonal so inv = transpose).
+            //   R = [1,0,0,0 | 0,0,1,0 | 0,-1,0,0 | 0,0,0,1] (row form: IFC Z→WebGL Y, -IFC Y→WebGL Z)
+            //   R^T = [1,0,0,0 | 0,0,-1,0 | 0,1,0,0 | 0,0,0,1]
             if baked_mesh.is_empty() || is_identity_matrix(&item_placement) {
                 return Ok((baked_mesh, nalgebra::Matrix4::identity()));
             }
-            let inv = match item_placement.try_inverse() {
+            let inv_p_ifc = match item_placement.try_inverse() {
                 Some(m) => m,
                 None => return Ok((baked_mesh, item_placement)), // degenerate, keep baked
             };
-            let raw_mesh = apply_matrix_to_mesh(baked_mesh, &inv);
+            #[rustfmt::skip]
+            let r_transpose: nalgebra::Matrix4<f64> = nalgebra::Matrix4::new(
+                1.0, 0.0,  0.0, 0.0,
+                0.0, 0.0, -1.0, 0.0,
+                0.0, 1.0,  0.0, 0.0,
+                0.0, 0.0,  0.0, 1.0,
+            );
+            let unbake = inv_p_ifc * r_transpose;
+            let raw_mesh = apply_matrix_to_mesh(baked_mesh, &unbake);
             return Ok((raw_mesh, item_placement));
         }
 

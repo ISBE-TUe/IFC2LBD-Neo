@@ -20,7 +20,7 @@ use plugin_property_preprocess::{BsddMatchPreprocessPlugin, CleanupPreprocessPlu
 use plugin_fragments_producer::FragmentsProducerPlugin;
 use plugin_qto_preprocess::QtoPreprocessPlugin;
 use plugin_geometry_preprocess::GeometryPreprocessPlugin;
-use plugin_geometry_producer::{GeometryProducerPlugin, GeometryFormat};
+use plugin_geometry_producer::GeometryProducerPlugin;
 
 // ---------------------------------------------------------------------------
 // OutputDir — context key for the export destination directory

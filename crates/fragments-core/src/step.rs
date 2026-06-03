@@ -299,65 +299,7 @@ fn shape_reps(step: &StepFile, element_id: EntityId) -> Vec<EntityId> {
     list.iter().filter_map(StepValue::as_ref).collect()
 }
 
-fn shell_from_item(step: &StepFile, item_id: EntityId, depth: usize) -> Option<ShellGeometry> {
-    if depth > 8 { return None; }
-    let entity = step.entities.get(&item_id)?;
-    match entity.entity_name.as_str() {
-        "IFCMAPPEDITEM" => mapped_item_to_shell(step, entity, depth + 1),
-        "IFCBOOLEANCLIPPINGRESULT" | "IFCBOOLEANRESULT" => {
-            let first = entity.args.get(1).and_then(StepValue::as_ref)?;
-            shell_from_item(step, first, depth + 1)
-        }
-        _ => shell_from_item_direct(step, entity, item_id).map(|(shell, _)| shell),
-    }
-}
-
-fn mapped_item_to_shell(step: &StepFile, entity: &RawEntity, depth: usize) -> Option<ShellGeometry> {
-    let map_source_id = entity.args.get(0)?.as_ref()?;
-    let map_target_id = entity.args.get(1)?.as_ref()?;
-    let map_source = step.entities.get(&map_source_id)?;
-    let mapped_rep_id = map_source.args.get(1)?.as_ref()?;
-    let mapping_origin_id = map_source.args.first().and_then(StepValue::as_ref);
-    let mapped_rep = step.entities.get(&mapped_rep_id)?;
-    let items = mapped_rep.args.get(3)?.as_list()?;
-
-    for item in items {
-        let Some(child_id) = item.as_ref() else {
-            continue;
-        };
-        let mut shell = shell_from_item(step, child_id, depth)?;
-        let target = read_cartesian_transform_operator(step, map_target_id);
-        let origin = mapping_origin_id
-            .map(|id| axis2placement3d_to_affine(step, id))
-            .unwrap_or_else(Affine3::identity);
-        let combined = target.mul(&origin);
-        for point in &mut shell.points {
-            let [x, y, z] = combined.transform_point([point[0] as f64, point[1] as f64, point[2] as f64]);
-            *point = [x as f32, y as f32, z as f32];
-        }
-        return Some(shell);
-    }
-    None
-}
-
-fn extruded_area_solid_to_shell(step: &StepFile, entity: &RawEntity) -> Option<ShellGeometry> {
-    let profile_id = entity.args.first()?.as_ref()?;
-    let transform = entity
-        .args
-        .get(1)
-        .and_then(StepValue::as_ref)
-        .map(|id| axis2placement3d_to_affine(step, id))
-        .unwrap_or_else(Affine3::identity);
-    let shell = extruded_area_solid_raw(step, entity)?;
-    // Apply placement transform to produce element-local geometry (legacy path, used by shell_from_item)
-    let points = shell.points.into_iter().map(|p| {
-        let [x, y, z] = transform.transform_point([p[0] as f64, p[1] as f64, p[2] as f64]);
-        [x as f32, y as f32, z as f32]
-    }).collect();
-    Some(ShellGeometry { points, faces: shell.faces })
-}
-
-/// Same as `extruded_area_solid_to_shell` but WITHOUT applying the axis2placement3d.
+/// Returns geometry in the solid's own profile-origin space (no placement applied).
 /// Returns geometry in the solid's own profile-origin space (no placement).
 fn extruded_area_solid_raw(step: &StepFile, entity: &RawEntity) -> Option<ShellGeometry> {
     let profile_id = entity.args.first()?.as_ref()?;

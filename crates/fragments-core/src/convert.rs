@@ -543,7 +543,7 @@ fn build_meshes<'a>(
 /// Geometry deduplication hash matching oracle's metric-based approach from loadShellGeometry.
 /// Oracle hash string: "${vertexCount}-${triangleCount}-${areaSum}-${biggestArea}-${volume}-${cx}-${cy}-${cz}-${x1}-${y1}-${z1}"
 /// All float values rounded to precision p = 10000.
-fn hash_shell(shell: &ShellGeometry) -> u64 {
+pub fn hash_shell(shell: &ShellGeometry) -> u64 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
