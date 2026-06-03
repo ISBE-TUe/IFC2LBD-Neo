@@ -477,16 +477,28 @@ pub(crate) fn validate_file_export_options(
     entries: &HashMap<String, String>,
 ) -> Result<(), WasmApiError> {
     for (key, value) in entries {
-        if key != "output_stem" {
-            return Err(WasmApiError::Message(format!(
-                "unsupported option `neo-file-export.{}` in wasm phase 1",
-                key
-            )));
-        }
-        if value.trim().is_empty() {
-            return Err(WasmApiError::Message(
-                "`neo-file-export.output_stem` must be non-empty".to_string(),
-            ));
+        match key.as_str() {
+            "output_stem" => {
+                if value.trim().is_empty() {
+                    return Err(WasmApiError::Message(
+                        "`neo-file-export.output_stem` must be non-empty".to_string(),
+                    ));
+                }
+            }
+            "compress" => {
+                if !matches!(value.as_str(), "none" | "gzip") {
+                    return Err(WasmApiError::Message(format!(
+                        "`neo-file-export.compress` must be none|gzip, got `{}`",
+                        value
+                    )));
+                }
+            }
+            other => {
+                return Err(WasmApiError::Message(format!(
+                    "unsupported option `neo-file-export.{}` in wasm phase 1",
+                    other
+                )));
+            }
         }
     }
     Ok(())

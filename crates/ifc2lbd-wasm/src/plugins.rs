@@ -1,6 +1,9 @@
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
+use flate2::write::GzEncoder;
+use flate2::Compression;
+
 use crossbeam::channel::Sender;
 use ifc_model::IfcModel;
 use ifc_step::StepFile;
@@ -23,6 +26,9 @@ use plugin_geometry_producer::GeometryProducerPlugin;
 use wasm_bindgen::prelude::*;
 
 use crate::types::ModuleManifestView;
+
+/// Context key: when present and `true`, the file exporter wraps its output in gzip.
+pub(crate) struct CompressOutput(pub bool);
 
 pub(crate) fn to_view(manifest: PluginManifest) -> ModuleManifestView {
     ModuleManifestView {
@@ -57,7 +63,7 @@ pub(crate) fn module_option_keys(module_id: &str) -> Vec<String> {
         TURTLE_SERIALIZER_ID => vec!["grouping".to_string(), "layout".to_string()],
         IFCOWL_PRODUCER_ID => vec!["mode".to_string()],
         BSDD_PRODUCER_ID => vec!["profile".to_string(), "compact".to_string(), "include_standard_attrs".to_string(), "dedup_properties".to_string()],
-        FILE_EXPORT_ID => vec!["output_stem".to_string()],
+        FILE_EXPORT_ID => vec!["output_stem".to_string(), "compress".to_string()],
         LOG_EXPORT_ID => vec![],
         "neo-geometry-preprocess" => vec!["metadata".to_string()],
         "neo-geometry-producer" => vec!["format".to_string()],
@@ -572,10 +578,12 @@ impl PipelinePlugin for FileExportPlugin {
 impl ExportPlugin for FileExportPlugin {
     fn start_session(
         &self,
-        _ctx: &PipelineContext,
+        ctx: &PipelineContext,
     ) -> Result<Box<dyn ExportSession>, ExportError> {
+        let compress = ctx.get::<CompressOutput>().map(|c| c.0).unwrap_or(false);
         Ok(Box::new(WasmFileExportSession {
             buffers: Arc::new(Mutex::new(Vec::new())),
+            compress,
             derived: Vec::new(),
         }))
     }
@@ -622,6 +630,7 @@ impl ExportPlugin for LogExportPlugin {
 struct WasmFileExportSession {
     /// Shared storage: (filename, mime_type, role, bytes).
     buffers: Arc<Mutex<Vec<(String, String, String, Vec<u8>)>>>,
+    compress: bool,
     derived: Vec<ExportFileSummary>,
 }
 
@@ -639,16 +648,25 @@ impl ExportSession for WasmFileExportSession {
         role: &str,
     ) -> Result<Box<dyn Write + Send>, ExportError> {
         let buffers = Arc::clone(&self.buffers);
-        let filename = filename.to_string();
+        let actual_filename = if self.compress {
+            format!("{filename}.gz")
+        } else {
+            filename.to_string()
+        };
         let mime_type = mime_type.to_string();
         let role = role.to_string();
-        Ok(Box::new(WasmSinkWriter {
+        let sink = WasmSinkWriter {
             buffers,
-            filename,
+            filename: actual_filename,
             mime_type,
             role,
             buf: Vec::new(),
-        }))
+        };
+        if self.compress {
+            Ok(Box::new(GzEncoder::new(sink, Compression::fast())))
+        } else {
+            Ok(Box::new(sink))
+        }
     }
 
     fn accept_derived_file(&mut self, file: DerivedFile) -> Result<(), ExportError> {

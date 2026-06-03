@@ -34,6 +34,7 @@ tessellated-model = { workspace = true }
 ifc-geometry = { workspace = true, features = ["proof-bin", "manifold-csg"] }
 plugin-geometry-producer = { workspace = true, features = ["fmt-fragments", "fmt-parquet", "fmt-gltf"] }
 crossbeam = { workspace = true }
+flate2 = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }

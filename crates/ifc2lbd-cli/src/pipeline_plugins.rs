@@ -2,6 +2,9 @@ use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::PathBuf;
 
+use flate2::write::GzEncoder;
+use flate2::Compression;
+
 use crossbeam::channel::Sender;
 use ifc_model::IfcModel;
 use ifc_step::StepFile;
@@ -35,6 +38,13 @@ use plugin_geometry_producer::GeometryProducerPlugin;
 /// pipeline runs. `FileExportPlugin::start_session()` reads it to determine
 /// where to write output files.
 pub struct OutputDir(pub PathBuf);
+
+/// When `true`, the file exporter wraps its output stream in gzip compression
+/// and appends `.gz` to the filename.
+///
+/// Inserted into `PipelineContext` by `main.rs` as `Arc<CompressOutput>` when
+/// `--module-opt neo-file-export.compress=gzip` is set.
+pub struct CompressOutput(pub bool);
 
 // ---------------------------------------------------------------------------
 // Helpers shared by producer implementations
@@ -493,8 +503,10 @@ impl ExportPlugin for FileExportPlugin {
             .get::<OutputDir>()
             .map(|d| d.0.clone())
             .unwrap_or_else(|| PathBuf::from("."));
+        let compress = ctx.get::<CompressOutput>().map(|c| c.0).unwrap_or(false);
         Ok(Box::new(CliFileExportSession {
             output_dir,
+            compress,
             opened: Vec::new(),
             derived: Vec::new(),
         }))
@@ -503,6 +515,7 @@ impl ExportPlugin for FileExportPlugin {
 
 struct CliFileExportSession {
     output_dir: PathBuf,
+    compress: bool,
     opened: Vec<(String, String, String)>, // (filename, mime_type, role)
     derived: Vec<ExportFileSummary>,
 }
@@ -514,12 +527,21 @@ impl ExportSession for CliFileExportSession {
         mime_type: &str,
         role: &str,
     ) -> Result<Box<dyn Write + Send>, ExportError> {
-        let path = self.output_dir.join(filename);
+        let actual_filename = if self.compress {
+            format!("{filename}.gz")
+        } else {
+            filename.to_string()
+        };
+        let path = self.output_dir.join(&actual_filename);
         let file = File::create(&path)
             .map_err(|e| ExportError::Export(format!("cannot create {}: {e}", path.display())))?;
         self.opened
-            .push((filename.to_string(), mime_type.to_string(), role.to_string()));
-        Ok(Box::new(BufWriter::new(file)))
+            .push((actual_filename, mime_type.to_string(), role.to_string()));
+        if self.compress {
+            Ok(Box::new(GzEncoder::new(BufWriter::new(file), Compression::fast())))
+        } else {
+            Ok(Box::new(BufWriter::new(file)))
+        }
     }
 
     fn accept_derived_file(&mut self, file: DerivedFile) -> Result<(), ExportError> {
