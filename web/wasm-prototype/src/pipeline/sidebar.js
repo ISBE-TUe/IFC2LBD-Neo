@@ -211,6 +211,40 @@ function optionControl(pluginId, key) {
         </select>
       </div>`;
   }
+  if (key === "format") {
+    const formatVal = current || "fragments";
+    return `
+      <div class="detail-row">
+        <span class="detail-label">format</span>
+        <select data-option-key="format" class="detail-select">
+          <option value="fragments" ${formatVal === "fragments" ? "selected" : ""}>Fragments (.frag) — ThatOpen viewer</option>
+          <option value="parquet" ${formatVal === "parquet" ? "selected" : ""}>Parquet ZIP (.bos) — analytics / ifc-lite schema</option>
+          <option value="gltf" ${formatVal === "gltf" ? "selected" : ""}>glTF binary (.glb) — 3D viewers</option>
+        </select>
+      </div>`;
+  }
+  if (key === "metadata") {
+    const metaVal = current || "full";
+    return `
+      <div class="detail-row">
+        <span class="detail-label">metadata</span>
+        <select data-option-key="metadata" class="detail-select">
+          <option value="full" ${metaVal === "full" ? "selected" : ""}>Full — all properties, relations, GUIDs</option>
+          <option value="stripped" ${metaVal === "stripped" ? "selected" : ""}>Stripped — geometry + GUIDs only (faster, smaller)</option>
+        </select>
+      </div>`;
+  }
+  if (key === "compress") {
+    const compressVal = current || "none";
+    return `
+      <div class="detail-row">
+        <span class="detail-label">compress</span>
+        <select data-option-key="compress" class="detail-select">
+          <option value="none" ${compressVal === "none" ? "selected" : ""}>None — plain file</option>
+          <option value="gzip" ${compressVal === "gzip" ? "selected" : ""}>gzip — smaller file, Blazegraph-compatible</option>
+        </select>
+      </div>`;
+  }
   // Default: text input with contextual placeholder
   const placeholders = {
     chunk_size_lines: "2000000 (2M lines)",

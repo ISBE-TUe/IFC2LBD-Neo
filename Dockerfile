@@ -16,11 +16,16 @@
 
 FROM rust:latest
 
-# System packages needed by some Cargo dependencies (ring, openssl, etc.)
+# System packages needed by Cargo dependencies
+# - clang: required by zstd-sys (parquet Snappy/Zstd compression)
+# - libssl-dev, pkg-config: required by ring and other TLS crates
+# - wabt: wasm2wat/wat2wasm for post-processing the wasm binary
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     libssl-dev \
     wabt \
+    clang \
+    cmake \
     && rm -rf /var/lib/apt/lists/*
 
 # Install nightly toolchain, the wasm32 target, and rust-src (for build-std)

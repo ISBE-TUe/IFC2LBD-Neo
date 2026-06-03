@@ -9,7 +9,7 @@
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
-use lbd_pipeline::{ExportError, ExportFileSummary, ExportSession};
+use lbd_pipeline::{DerivedFile, ExportError, ExportFileSummary, ExportSession};
 
 pub type SharedSession = Arc<Mutex<Option<Box<dyn ExportSession>>>>;
 
@@ -31,6 +31,20 @@ pub fn open_sink(
         .as_mut()
         .ok_or_else(|| ExportError::Export("export session already finalized".to_string()))?;
     session.open_sink(filename, mime_type, role)
+}
+
+/// Forward a producer-emitted sidecar file into the active export session.
+pub fn accept_derived_file(
+    shared: &SharedSession,
+    file: DerivedFile,
+) -> Result<(), ExportError> {
+    let mut guard = shared
+        .lock()
+        .map_err(|_| ExportError::Export("export session mutex poisoned".to_string()))?;
+    let session = guard
+        .as_mut()
+        .ok_or_else(|| ExportError::Export("export session already finalized".to_string()))?;
+    session.accept_derived_file(file)
 }
 
 /// Consume the session and call `finalize()`. All clones of the Arc must be

@@ -20,6 +20,10 @@ use lbd_serializer::{
 };
 
 use crate::pipeline_plugins::OutputDir;
+use plugin_fragments_producer::FRAGMENTS_PRODUCER_ID;
+use plugin_geometry_preprocess::{IFCContent, MetadataModeOption, GEOMETRY_PREPROCESS_ID};
+use plugin_geometry_producer::{GeometryFormat, GeometryProducerConfig, GEOMETRY_PRODUCER_ID};
+use tessellated_model::MetadataMode;
 
 mod chunk_writer;
 mod pipeline_plugins;
@@ -41,6 +45,13 @@ enum TurtleGrouping {
     Sorted,
     Streaming,
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TurtleLayout {
+    Joined,
+    Separate,
+}
+
 #[derive(Debug, Parser)]
 #[command(name = "ifc2lbd-neo")]
 #[command(about = "Convert IFC STEP files to a first-slice LBD Turtle model")]
@@ -130,11 +141,13 @@ struct ExecutionSettings {
     emit_ifcowl: bool,
     nquads: NquadsModuleOptions,
     turtle_grouping: TurtleGrouping,
+    turtle_layout: TurtleLayout,
     ifcowl_mode: IfcowlMode,
     bsdd_profile: Option<String>,
     bsdd_compact: bool,
     bsdd_include_standard_attrs: bool,
     bsdd_dedup_properties: bool,
+    compress_output: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -143,6 +156,9 @@ fn main() -> anyhow::Result<()> {
         .with_env_filter("info")
         .with_writer(std::io::stderr)
         .init();
+    // BSP-tree CSG operations recurse deeply on complex IFC geometry (TUX-class models).
+    // ifc-geometry::stream_meshes runs tessellation on a dedicated OS thread with a 256 MB
+    // stack, keeping deep BSP recursion off the rayon workers entirely.
     let built_in_registry = pipeline_plugins::built_in_registry();
     tracing::debug!(
         "pipeline registry initialized with {} built-in modules",
@@ -260,6 +276,32 @@ fn main() -> anyhow::Result<()> {
     ctx.insert(model.clone());
     ctx.insert(std::sync::Arc::new(base_options.clone()));
     ctx.insert(step.clone());
+    // Raw IFC content needed by neo-geometry-preprocess (ifc-lite EntityDecoder)
+    let raw_content = std::fs::read_to_string(input_path)
+        .map(|s| std::sync::Arc::new(IFCContent(std::sync::Arc::new(s))))
+        .ok();
+    if let Some(content) = raw_content {
+        ctx.insert(content);
+    }
+
+    // Geometry preprocess metadata mode
+    if let Some(geom_entries) = module_configs.get(GEOMETRY_PREPROCESS_ID) {
+        let mode = match geom_entries.get("metadata").map(String::as_str) {
+            Some("stripped") => MetadataMode::Stripped,
+            _ => MetadataMode::Full,
+        };
+        ctx.insert(std::sync::Arc::new(MetadataModeOption(mode)));
+    }
+
+    // Geometry producer format
+    if let Some(geom_entries) = module_configs.get(GEOMETRY_PRODUCER_ID) {
+        let format = geom_entries.get("format")
+            .and_then(|s| GeometryFormat::from_str(s))
+            .unwrap_or_default();
+        ctx.insert(std::sync::Arc::new(GeometryProducerConfig { format }));
+    }
+    let (sidecar_tx, sidecar_rx) = crossbeam::channel::bounded(SERIALIZER_CHANNEL_CAPACITY);
+    ctx.sidecar_tx = Some(sidecar_tx);
     if preprocess_ids.iter().any(|id| id == lbd_pipeline::QTO_PREPROCESS_ID) {
         ctx.insert(std::sync::Arc::new(plugin_qto_preprocess::QtoOptions::default()));
     }
@@ -267,6 +309,9 @@ fn main() -> anyhow::Result<()> {
     let (output_dir, lbd_filename) =
         resolve_output_dir_and_filename(args.output_file.as_deref(), input_path, output_format);
     ctx.insert(std::sync::Arc::new(OutputDir(output_dir.clone())));
+    if settings.compress_output {
+        ctx.insert(std::sync::Arc::new(pipeline_plugins::CompressOutput(true)));
+    }
 
     let preprocess_start = Instant::now();
     lbd_pipeline::spawn_preprocessors(&preprocess_ids, &built_in_registry, &mut ctx)
@@ -518,6 +563,20 @@ fn main() -> anyhow::Result<()> {
         "phase triple_production completed in {:.3}s",
         producer_start.elapsed().as_secs_f64()
     );
+
+    let sidecar_drain_start = Instant::now();
+    let mut sidecar_count = 0usize;
+    for file in sidecar_rx.try_iter() {
+        sidecar_count += 1;
+        session::accept_derived_file(&session, file)
+            .map_err(|e| anyhow::anyhow!("failed to export derived sidecar file: {}", e))?;
+    }
+    tracing::info!(
+        "phase sidecar_delivery completed in {:.3}s ({} files)",
+        sidecar_drain_start.elapsed().as_secs_f64(),
+        sidecar_count
+    );
+
     drop(converter_lbd_sender);
     drop(ifcowl_sender);
 
@@ -712,6 +771,46 @@ fn validate_typed_module_configs(
         if module_id == lbd_pipeline::BSDD_PRODUCER_ID {
             validate_bsdd_producer_module_config(entries)?;
         }
+        if module_id == GEOMETRY_PRODUCER_ID {
+            validate_geometry_producer_module_config(entries)?;
+        }
+        if module_id == lbd_pipeline::FILE_EXPORT_ID {
+            validate_file_export_module_config(entries)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_file_export_module_config(entries: &HashMap<String, String>) -> Result<(), String> {
+    for (key, value) in entries {
+        match key.as_str() {
+            "output_stem" => {}
+            "compress" => {
+                if !matches!(value.as_str(), "none" | "gzip") {
+                    return Err(format!("`neo-file-export.compress` must be none|gzip, got `{value}`"));
+                }
+            }
+            other => return Err(format!("unknown option `neo-file-export.{other}`")),
+        }
+    }
+    Ok(())
+}
+
+fn validate_geometry_producer_module_config(entries: &std::collections::HashMap<String, String>) -> Result<(), String> {
+    for (key, value) in entries {
+        match key.as_str() {
+            "format" => {
+                if !matches!(value.as_str(), "fragments" | "gltf" | "parquet" | "ifc5") {
+                    return Err(format!("`neo-geometry-producer.format` must be fragments|gltf|parquet|ifc5, got `{value}`"));
+                }
+            }
+            "metadata" => {
+                if !matches!(value.as_str(), "full" | "stripped") {
+                    return Err(format!("`neo-geometry-producer.metadata` must be full|stripped, got `{value}`"));
+                }
+            }
+            other => return Err(format!("unknown option `neo-geometry-producer.{other}`")),
+        }
     }
     Ok(())
 }
@@ -775,7 +874,9 @@ fn validate_activation_plan_with_args(
         || active.contains(lbd_pipeline::BSDD_PRODUCER_ID)
         || active.contains(lbd_pipeline::PROPS_OPM_PRODUCER_ID)
         || active.contains(lbd_pipeline::OMG_FOG_PRODUCER_ID)
-        || active.contains(lbd_pipeline::IFCOWL_PRODUCER_ID);
+        || active.contains(lbd_pipeline::IFCOWL_PRODUCER_ID)
+        || active.contains(FRAGMENTS_PRODUCER_ID)
+        || active.contains(GEOMETRY_PRODUCER_ID);
     if !has_any_producer {
         anyhow::bail!(
             "module plan must include at least one producer (`{}`, `{}`, `{}`, or similar)",
@@ -794,6 +895,13 @@ fn validate_activation_plan_with_args(
             lbd_pipeline::FILE_EXPORT_ID,
             lbd_pipeline::LOG_EXPORT_ID,
             lbd_pipeline::STDOUT_EXPORT_ID,
+        );
+    }
+    if settings.output_format == OutputFormat::Turtle
+        && settings.turtle_layout == TurtleLayout::Separate
+    {
+        anyhow::bail!(
+            "`neo-turtle-serializer.layout=separate` is not implemented in CLI yet; use `joined`"
         );
     }
     Ok(())
@@ -815,6 +923,10 @@ fn resolve_execution_settings(
             "conflicting serializer modules enabled (`{}` and N-Quads serializer)",
             lbd_pipeline::TURTLE_SERIALIZER_ID,
         ),
+        // Geometry-only workflow: neo-geometry-producer emits a sidecar, no triple serializer needed.
+        (false, false) if active.contains(GEOMETRY_PRODUCER_ID) || active.contains(FRAGMENTS_PRODUCER_ID) => {
+            OutputFormat::Turtle // placeholder — no triple output, sidecar only
+        }
         (false, false) => anyhow::bail!(
             "no serializer module enabled; add `--module {}`, `--module {}`, or `--module {}`",
             lbd_pipeline::TURTLE_SERIALIZER_ID,
@@ -859,6 +971,18 @@ fn resolve_execution_settings(
             other
         ),
     };
+    let turtle_layout = match turtle_entries
+        .and_then(|e| e.get("layout"))
+        .map(String::as_str)
+        .unwrap_or("joined")
+    {
+        "joined" => TurtleLayout::Joined,
+        "separate" => TurtleLayout::Separate,
+        other => anyhow::bail!(
+            "invalid `neo-turtle-serializer.layout={}` (expected joined|separate)",
+            other
+        ),
+    };
     let ifcowl_entries = configs.get(lbd_pipeline::IFCOWL_PRODUCER_ID);
     let ifcowl_mode = match ifcowl_entries
         .and_then(|e| e.get("mode"))
@@ -888,6 +1012,12 @@ fn resolve_execution_settings(
         .map(|v| v == "true")
         .unwrap_or(false);
 
+    let file_export_entries = configs.get(lbd_pipeline::FILE_EXPORT_ID);
+    let compress_output = file_export_entries
+        .and_then(|e| e.get("compress"))
+        .map(|v| v == "gzip")
+        .unwrap_or(false);
+
     Ok(ExecutionSettings {
         output_format,
         emit_ifcowl: active.contains(lbd_pipeline::IFCOWL_PRODUCER_ID),
@@ -900,11 +1030,13 @@ fn resolve_execution_settings(
             chunk_core_count,
         },
         turtle_grouping,
+        turtle_layout,
         ifcowl_mode,
         bsdd_profile,
         bsdd_compact,
         bsdd_include_standard_attrs,
         bsdd_dedup_properties,
+        compress_output,
     })
 }
 
@@ -1047,9 +1179,17 @@ fn validate_turtle_serializer_module_config(
                     ));
                 }
             }
+            "layout" => {
+                if !matches!(value.as_str(), "joined" | "separate") {
+                    return Err(format!(
+                        "`neo-turtle-serializer.layout` must be one of joined|separate, got `{}`",
+                        value
+                    ));
+                }
+            }
             other => {
                 return Err(format!(
-                    "unknown option `neo-turtle-serializer.{}` (supported: grouping)",
+                    "unknown option `neo-turtle-serializer.{}` (supported: grouping, layout)",
                     other
                 ));
             }
@@ -1229,15 +1369,48 @@ fn validate_args(args: &Args, settings: &ExecutionSettings) -> anyhow::Result<()
 mod tests {
     use super::{
         build_requested_module_list,
-        chunk_writer::{self, QuadChunkWriter, QuadChunkingMode},
-        parse_module_configs, validate_args, Args, ExecutionSettings, NquadsModuleOptions,
-        OutputFormat, TurtleGrouping,
+        chunk_writer::{self},
+        parse_module_configs, session, validate_args, Args, ExecutionSettings, NquadsModuleOptions,
+        OutputFormat, TurtleGrouping, TurtleLayout,
     };
     use lbd_converter::IfcowlMode;
+    use lbd_pipeline::{DerivedFile, ExportError, ExportFileSummary, ExportSession};
     use clap::Parser;
     use std::io::Write;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct DirFileSession {
+        dir: PathBuf,
+    }
+
+    impl ExportSession for DirFileSession {
+        fn open_sink(
+            &mut self,
+            filename: &str,
+            _mime_type: &str,
+            _role: &str,
+        ) -> Result<Box<dyn Write + Send>, ExportError> {
+            let path = self.dir.join(filename);
+            let file = std::fs::File::create(&path)
+                .map_err(|e| ExportError::Export(e.to_string()))?;
+            Ok(Box::new(std::io::BufWriter::new(file)))
+        }
+
+        fn accept_derived_file(&mut self, file: DerivedFile) -> Result<(), ExportError> {
+            let path = self.dir.join(&file.filename);
+            std::fs::write(&path, &file.bytes)
+                .map_err(|e| ExportError::Export(e.to_string()))
+        }
+
+        fn finalize(self: Box<Self>) -> Result<Vec<ExportFileSummary>, ExportError> {
+            Ok(Vec::new())
+        }
+    }
+
+    fn dir_session(dir: PathBuf) -> session::SharedSession {
+        session::new_shared(Box::new(DirFileSession { dir }))
+    }
 
     #[test]
     fn cli_defaults_are_minimal() {
@@ -1318,7 +1491,7 @@ mod tests {
         std::fs::create_dir_all(&out_dir).expect("mkdir");
 
         let mut writer = chunk_writer::QuadChunkWriter::new(
-            out_dir.clone(),
+            dir_session(out_dir.clone()),
             "test".to_string(),
             chunk_writer::QuadChunkingMode::Lines,
             2,
@@ -1352,7 +1525,7 @@ mod tests {
         std::fs::create_dir_all(&out_dir).expect("mkdir");
 
         let mut writer = chunk_writer::QuadChunkWriter::new(
-            out_dir.clone(),
+            dir_session(out_dir.clone()),
             "core".to_string(),
             chunk_writer::QuadChunkingMode::Cores,
             2_000_000,
@@ -1408,11 +1581,13 @@ mod tests {
                 chunk_core_count: None,
             },
             turtle_grouping: TurtleGrouping::Streaming,
+            turtle_layout: TurtleLayout::Joined,
             ifcowl_mode: IfcowlMode::Full,
             bsdd_profile: None,
             bsdd_compact: false,
             bsdd_include_standard_attrs: true,
             bsdd_dedup_properties: false,
+            compress_output: false,
         }
     }
 }

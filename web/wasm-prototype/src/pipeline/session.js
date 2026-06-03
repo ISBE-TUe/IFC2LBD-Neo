@@ -334,11 +334,21 @@ function drawConnections() {
       });
 
     for (const fromEl of fromCells) {
+      const fromId = fromEl.getAttribute('data-plugin-id');
       const fromRect = fromEl.getBoundingClientRect();
       const x1 = fromRect.right - bodyRect.left;
       const y1 = fromRect.top + fromRect.height / 2 - bodyRect.top;
 
       for (const toEl of toCells) {
+        const toId = toEl.getAttribute('data-plugin-id');
+
+        // Geometry preprocess feeds only geometry producer — skip all other targets
+        if (fromId === 'neo-geometry-preprocess' && toId !== 'neo-geometry-producer') continue;
+        // Non-geometry preprocess does not feed geometry producer
+        if (fromId !== 'neo-geometry-preprocess' && toId === 'neo-geometry-producer') continue;
+        // Geometry producer outputs files directly — skip serializer connections
+        if (fromId === 'neo-geometry-producer') continue;
+
         const toRect = toEl.getBoundingClientRect();
         const x2 = toRect.left - bodyRect.left;
         const y2 = toRect.top + toRect.height / 2 - bodyRect.top;
@@ -369,6 +379,71 @@ function drawConnections() {
         svg.appendChild(path);
       }
     }
+  }
+
+  // ── Geometry skip connection: producer → waypoint dot in Serialize column → file exporter ──
+  // Only drawn when geometry producer is active. The dot sits in the Serialize column at the
+  // same vertical height as the geometry producer cell, making the bypass visually obvious.
+  const geoProducerEl = body.querySelector('.session-cell.active[data-plugin-id="neo-geometry-producer"]');
+  const fileExporterEl = body.querySelector('.session-cell.active[data-plugin-id="neo-file-export"]');
+  const serializeColIdx = stageKeys.indexOf("Serialize");
+  const serializeColEl = serializeColIdx >= 0 ? cols[serializeColIdx] : null;
+
+  if (geoProducerEl && fileExporterEl && serializeColEl) {
+    const geoRect = geoProducerEl.getBoundingClientRect();
+    const expRect = fileExporterEl.getBoundingClientRect();
+    const serRect = serializeColEl.getBoundingClientRect();
+
+    const geoY = geoRect.top + geoRect.height / 2 - bodyRect.top;
+    const dotX = serRect.right - bodyRect.left;
+    const dotY = geoY;
+
+    const x1 = geoRect.right - bodyRect.left;
+    const x2 = expRect.left - bodyRect.left;
+    const expY = expRect.top + expRect.height / 2 - bodyRect.top;
+
+    // Same color/animation rules as normal adjacent connections:
+    // upstream (Produce) must be reached; color driven by export stage state.
+    const upstreamReached = stageReached.has("Produce");
+    if (!upstreamReached) { body.style.position = "relative"; body.appendChild(svg); return; }
+
+    const exportCells = cols[stageKeys.indexOf("Export")]?.querySelectorAll('.session-cell.active') || [];
+    const skipDownstreamRunning = stageReached.has("Export") &&
+      [...exportCells].some(c => stageStatuses[c.getAttribute('data-plugin-id')]?.status === 'running');
+    const skipDownstreamDone = stageReached.has("Export") &&
+      [...exportCells].some(c => stageStatuses[c.getAttribute('data-plugin-id')]?.status === 'success');
+
+    const stroke = skipDownstreamDone ? "#00E676" : skipDownstreamRunning ? "#5BA8C8" : "#A0A0A0";
+    const animated = skipDownstreamRunning;
+
+    function makePath(d) {
+      const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      p.setAttribute("d", d);
+      p.setAttribute("fill", "none");
+      p.setAttribute("stroke", stroke);
+      p.setAttribute("stroke-width", "1.2");
+      if (animated) {
+        p.setAttribute("stroke-dasharray", "5 3");
+        p.style.animation = "flow-dash 0.6s linear infinite";
+      }
+      return p;
+    }
+
+    // Segment 1: geo producer → waypoint dot
+    const cp1 = Math.max((dotX - x1) * 0.4, 12);
+    svg.appendChild(makePath(`M${x1},${geoY} C${x1+cp1},${geoY} ${dotX-cp1},${dotY} ${dotX},${dotY}`));
+
+    // Segment 2: waypoint dot → file exporter
+    const cp2 = Math.max((x2 - dotX) * 0.4, 12);
+    svg.appendChild(makePath(`M${dotX},${dotY} C${dotX+cp2},${dotY} ${x2-cp2},${expY} ${x2},${expY}`));
+
+    // Waypoint dot
+    const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    circle.setAttribute("cx", dotX);
+    circle.setAttribute("cy", dotY);
+    circle.setAttribute("r", "4");
+    circle.setAttribute("fill", stroke);
+    svg.appendChild(circle);
   }
 
   body.style.position = "relative";

@@ -1,0 +1,22 @@
+[package]
+name = "fragments-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "frag-diff"
+path = "src/bin/frag_diff.rs"
+
+[dependencies]
+flatbuffers = { workspace = true }
+flate2 = { workspace = true }
+fragments-schema = { workspace = true }
+ifc-model = { workspace = true }
+ifc-step = { workspace = true }
+rayon = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+smol_str = { workspace = true }

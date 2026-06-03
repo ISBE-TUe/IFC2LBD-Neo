@@ -16,6 +16,28 @@ use lbd_serializer::{
     write_turtle_prefixes_for_stream,
 };
 
+use plugin_geometry_preprocess::{IFCContent, MetadataModeOption, GEOMETRY_PREPROCESS_ID};
+use plugin_geometry_producer::{GeometryFormat, GeometryProducerConfig, GEOMETRY_PRODUCER_ID};
+use crate::plugins::CompressOutput;
+use tessellated_model::MetadataMode;
+
+fn base64_encode(data: &[u8]) -> String {
+    use std::fmt::Write;
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(CHARS[((n >> 18) & 63) as usize] as char);
+        out.push(CHARS[((n >> 12) & 63) as usize] as char);
+        out.push(if chunk.len() > 1 { CHARS[((n >> 6) & 63) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 2 { CHARS[(n & 63) as usize] as char } else { '=' });
+    }
+    out
+}
+
 use crate::memory::{
     effective_ifcowl_workers, effective_stream_batch_size, execution_mode_str,
     select_execution_mode,
@@ -80,6 +102,7 @@ fn active_producer_ids_from_settings(settings: &ExecutionSettings) -> Vec<String
         PROPS_OPM_PRODUCER_ID,
         OMG_FOG_PRODUCER_ID,
         IFCOWL_PRODUCER_ID,
+        GEOMETRY_PRODUCER_ID,
     ] {
         if settings.has(id) {
             ids.push(id.to_string());
@@ -368,17 +391,49 @@ impl PipelineRunner {
         let stream_batch_size = options.stream_batch_size;
         let ifcowl_max_workers = options.ifcowl_max_workers;
 
+        // Geometry pipeline: runs with cloned model (IfcModel is Clone) + raw input bytes.
+        // LBD pipeline: runs with owned step (StepFile is not Clone) + owned model.
+        // rayon::join runs both in parallel on the thread pool.
+        let run_geometry = settings.has(GEOMETRY_PRODUCER_ID) || settings.has(GEOMETRY_PREPROCESS_ID);
+        // Geometry pipeline runs first (uses rayon internally for parallel tessellation).
+        // LBD pipeline follows. JS sink (&Function) is not Send so rayon::join can't be used.
+        // The geometry pipeline is CPU-bound and benefits from rayon's internal parallelism.
+        let input_bytes = input.to_vec();
+        let geo_sidecars = if run_geometry {
+            let model_arc = std::sync::Arc::new(model.clone()); // IfcModel is Clone
+            // Re-parse StepFile for geometry (StepFile is not Clone; ifc-step parse is ~50ms).
+            // Uses the same bytes we just parsed for LBD — will not fail.
+            let step_arc = std::sync::Arc::new(
+                parse_step_bytes(&input_bytes).expect("re-parse of already-validated IFC failed")
+            );
+            run_geometry_pipeline(&input_bytes, model_arc, step_arc, &settings, sink)
+        } else {
+            Vec::new()
+        };
+        let settings_clone = settings.clone();
+
+        let lbd_result = export_browser_files_to_sink_streaming(
+            step,
+            model,
+            options,
+            &base_uri,
+            &settings_clone,
+            sink,
+            &sink_config,
+        );
+
         let (output_files, sink_max_pending_bytes, sink_chunk_size_bytes, stage_durations) =
-            export_browser_files_to_sink_streaming(
-                step,
-                model,
-                options,
-                &base_uri,
-                &settings,
-                sink,
-                &sink_config,
-            )
-            .map_err(|err| WasmApiError::Serialization(err.to_string()))?;
+            lbd_result.map_err(|err| WasmApiError::Serialization(err.to_string()))?;
+
+        let geometry_files: Vec<crate::types::GeometryFile> = geo_sidecars
+            .into_iter()
+            .map(|f| crate::types::GeometryFile {
+                filename: f.filename.clone(),
+                mime_type: f.mime_type.to_string(),
+                data_base64: base64_encode(&f.bytes),
+                bytes: f.bytes.len() as u64,
+            })
+            .collect();
 
         // Emit completion events for serialize + export
         let total_output_bytes: u64 = output_files.iter().map(|f| f.bytes).sum();
@@ -411,6 +466,7 @@ impl PipelineRunner {
             total_output_bytes,
             output_files,
             warnings,
+            geometry_files,
             telemetry: ConversionTelemetry {
                 execution_mode: execution_mode_str(mode).to_string(),
                 stream_batch_size,
@@ -995,6 +1051,7 @@ fn serialize_turtle_receiver_to_file(
     options: &ConvertOptions,
     grouping: TurtleGrouping,
     instance_base: &str,
+    compress: bool,
 ) -> Result<(OutputFileSummary, u64), lbd_serializer::SerializerError> {
     let mut writer = SinkChunkWriter::new(
         sink,
@@ -1003,6 +1060,7 @@ fn serialize_turtle_receiver_to_file(
         role,
         sink_config.chunk_size,
         sink_config.max_pending_bytes,
+        compress,
     )?;
     let grouping = effective_turtle_grouping(grouping, options);
     let grouped = matches!(grouping, TurtleGrouping::Sorted);
@@ -1109,10 +1167,13 @@ fn turtle_to_sink_joined(
     if settings.has(QTO_PREPROCESS_ID) {
         ctx.insert(std::sync::Arc::new(plugin_qto_preprocess::QtoOptions::default()));
     }
+    if settings.module_option(FILE_EXPORT_ID, "compress").as_deref() == Some("gzip") {
+        ctx.insert(std::sync::Arc::new(CompressOutput(true)));
+    }
     let preprocess_ids: Vec<String> = registry
         .manifests_for_stage(PipelineStage::Preprocess)
         .into_iter()
-        .filter(|m| settings.has(m.id))
+        .filter(|m| settings.has(m.id) && m.id != GEOMETRY_PREPROCESS_ID)
         .map(|m| m.id.to_string())
         .collect();
     let preprocess_durations =
@@ -1138,13 +1199,16 @@ fn turtle_to_sink_joined(
     let omg_receiver = raw_receivers.remove(OMG_FOG_PRODUCER_ID);
     let ifcowl_receiver = raw_receivers.remove(IFCOWL_PRODUCER_ID);
 
+    let compress = settings.module_option(FILE_EXPORT_ID, "compress").as_deref() == Some("gzip");
+    let gz = if compress { ".gz" } else { "" };
     let mut writer = SinkChunkWriter::new(
         sink,
-        format!("{}.ttl", settings.output_stem),
+        format!("{}.ttl{gz}", settings.output_stem),
         "text/turtle;charset=utf-8",
         "joined",
         sink_config.chunk_size,
         sink_config.max_pending_bytes,
+        compress,
     )?;
     let effective_grouping = effective_turtle_grouping(settings.turtle_grouping, &options);
     if !options.low_memory_mode && !matches!(effective_grouping, TurtleGrouping::Sorted) {
@@ -1265,10 +1329,13 @@ fn turtle_to_sink_separate(
     if settings.has(QTO_PREPROCESS_ID) {
         ctx.insert(std::sync::Arc::new(plugin_qto_preprocess::QtoOptions::default()));
     }
+    if settings.module_option(FILE_EXPORT_ID, "compress").as_deref() == Some("gzip") {
+        ctx.insert(std::sync::Arc::new(CompressOutput(true)));
+    }
     let preprocess_ids: Vec<String> = registry
         .manifests_for_stage(PipelineStage::Preprocess)
         .into_iter()
-        .filter(|m| settings.has(m.id))
+        .filter(|m| settings.has(m.id) && m.id != GEOMETRY_PREPROCESS_ID)
         .map(|m| m.id.to_string())
         .collect();
     let preprocess_durations =
@@ -1303,19 +1370,22 @@ fn turtle_to_sink_separate(
     )?;
     let serialize_t0 = now_ms();
 
+    let compress = settings.module_option(FILE_EXPORT_ID, "compress").as_deref() == Some("gzip");
+    let gz = if compress { ".gz" } else { "" };
     macro_rules! drain_sep_and_emit {
         ($rx_opt:expr, $slug:literal, $id:expr, $grouping:expr) => {
             if let Some(rx) = $rx_opt {
                 let t0 = now_ms();
                 let (summary, triples) = serialize_turtle_receiver_to_file(
                     rx,
-                    format!("{}_{}.ttl", settings.output_stem, $slug),
+                    format!("{}_{}.ttl{gz}", settings.output_stem, $slug),
                     $slug,
                     sink,
                     sink_config,
                     &options,
                     $grouping,
                     &instance_base,
+                    compress,
                 )?;
                 let ms = now_ms() - t0;
                 produce_triples.insert($id, triples);
@@ -1390,6 +1460,7 @@ fn serialize_nquads_receiver_to_chunks(
     chunk_size_lines: usize,
     chunk_size_bytes: usize,
     sink_config: &SinkConfig,
+    compress: bool,
 ) -> Result<(Vec<OutputFileSummary>, u64), lbd_serializer::SerializerError> {
     let mut chunk_writer = SinkQuadChunkWriter::new(
         sink,
@@ -1399,6 +1470,7 @@ fn serialize_nquads_receiver_to_chunks(
         chunk_size_bytes,
         sink_config.chunk_size,
         sink_config.max_pending_bytes,
+        compress,
     )?;
     let mut triple_count: u64 = 0;
     for batch in rx {
@@ -1454,10 +1526,13 @@ fn nquads_to_sink(
     if settings.has(QTO_PREPROCESS_ID) {
         ctx.insert(std::sync::Arc::new(plugin_qto_preprocess::QtoOptions::default()));
     }
+    if settings.module_option(FILE_EXPORT_ID, "compress").as_deref() == Some("gzip") {
+        ctx.insert(std::sync::Arc::new(CompressOutput(true)));
+    }
     let preprocess_ids: Vec<String> = registry
         .manifests_for_stage(PipelineStage::Preprocess)
         .into_iter()
-        .filter(|m| settings.has(m.id))
+        .filter(|m| settings.has(m.id) && m.id != GEOMETRY_PREPROCESS_ID)
         .map(|m| m.id.to_string())
         .collect();
     let preprocess_durations =
@@ -1488,6 +1563,7 @@ fn nquads_to_sink(
     emit_stage_event(sink, serializer_id, "Serialize", "running", 0, 0, 0, None)?;
     let serialize_t0 = now_ms();
 
+    let compress = settings.module_option(FILE_EXPORT_ID, "compress").as_deref() == Some("gzip");
     if is_chunked {
         // Chunked: each active producer → its own set of chunk files
         macro_rules! drain_chunked {
@@ -1503,6 +1579,7 @@ fn nquads_to_sink(
                         chunk_size_lines,
                         chunk_size_bytes,
                         sink_config,
+                        compress,
                     )?;
                     let ms = now_ms() - t0;
                     produce_triples.insert($producer_id, triples);
@@ -1538,13 +1615,16 @@ fn nquads_to_sink(
         Ok((summaries, 0, sink_config.chunk_size, sd))
     } else {
         // Merged: all active producers → one .nq file, each triple tagged with its producer's graph IRI
+        let compress = settings.module_option(FILE_EXPORT_ID, "compress").as_deref() == Some("gzip");
+        let gz = if compress { ".gz" } else { "" };
         let mut writer = SinkChunkWriter::new(
             sink,
-            format!("{}.nq", settings.output_stem),
+            format!("{}.nq{gz}", settings.output_stem),
             "application/n-quads",
             "merged",
             sink_config.chunk_size,
             sink_config.max_pending_bytes,
+            compress,
         )?;
         macro_rules! drain_merged {
             ($rx_opt:expr, $slug:literal, $producer_id:expr) => {
@@ -1591,6 +1671,96 @@ fn nquads_to_sink(
     }
 }
 
+/// Run the geometry pipeline (neo-geometry-preprocess + neo-geometry-producer)
+/// as a self-contained pass using raw IFC bytes.
+/// Emits `running`/`success` stage events through `sink` so the UI DAG shows
+/// live status and timing for both modules, matching the LBD pipeline UX.
+/// Returns the emitted sidecar file(s) with their actual binary content.
+#[cfg(target_arch = "wasm32")]
+fn run_geometry_pipeline(
+    input: &[u8],
+    model: std::sync::Arc<ifc_model::IfcModel>,
+    step: std::sync::Arc<ifc_step::StepFile>,
+    settings: &ExecutionSettings,
+    sink: &js_sys::Function,
+) -> Vec<lbd_pipeline::DerivedFile> {
+    use lbd_pipeline::{spawn_preprocessors, spawn_producers, ResourceLimits, PipelineContext};
+    use plugin_geometry_preprocess::{IFCContent, MetadataModeOption, GEOMETRY_PREPROCESS_ID};
+    use plugin_geometry_producer::{GeometryFormat, GeometryProducerConfig, GEOMETRY_PRODUCER_ID};
+    use tessellated_model::MetadataMode;
+
+    let chan_cap = 8usize;
+    let limits = ResourceLimits {
+        memory_budget_bytes: 0,
+        thread_count: rayon::current_num_threads().max(1),
+        channel_capacity: chan_cap,
+        batch_size: 8192,
+    };
+
+    let mut ctx = PipelineContext::new(limits);
+    ctx.insert(model);
+    ctx.insert(step);
+
+    // IFCContent: raw IFC text for ifc-lite's EntityDecoder
+    if let Ok(content) = std::str::from_utf8(input) {
+        ctx.insert(std::sync::Arc::new(IFCContent(std::sync::Arc::new(content.to_string()))));
+    }
+
+    // Metadata mode: stripped or full based on settings
+    let metadata = if settings.module_option("neo-geometry-preprocess", "metadata")
+        .map(|v| v == "stripped")
+        .unwrap_or(false)
+    {
+        MetadataMode::Stripped
+    } else {
+        MetadataMode::Full
+    };
+    ctx.insert(std::sync::Arc::new(MetadataModeOption(metadata)));
+
+    // Geometry format from module option
+    let format = settings
+        .module_option("neo-geometry-producer", "format")
+        .and_then(|v| GeometryFormat::from_str(&v))
+        .unwrap_or_default();
+    ctx.insert(std::sync::Arc::new(GeometryProducerConfig { format }));
+
+    // Sidecar channel to collect geometry output bytes
+    let (sidecar_tx, sidecar_rx) = crossbeam::channel::bounded(chan_cap);
+    ctx.sidecar_tx = Some(sidecar_tx);
+
+    let registry = crate::plugins::browser_registry();
+
+    // ── Preprocess phase: tessellation ───────────────────────────────────────
+    let _ = emit_stage_event(sink, GEOMETRY_PREPROCESS_ID, "Preprocess", "running", 0, 0, 0, None);
+    let t0_pre = now_ms();
+    let preprocess_ids = vec![GEOMETRY_PREPROCESS_ID.to_string()];
+    if lbd_pipeline::spawn_preprocessors(&preprocess_ids, &registry, &mut ctx).is_err() {
+        let _ = emit_stage_event(sink, GEOMETRY_PREPROCESS_ID, "Preprocess", "failed", now_ms().saturating_sub(t0_pre), 0, 0, None);
+        return Vec::new();
+    }
+    let pre_ms = now_ms().saturating_sub(t0_pre);
+    let _ = emit_stage_event(sink, GEOMETRY_PREPROCESS_ID, "Preprocess", "success", pre_ms, 0, 0, None);
+
+    // Wrap in Arc for producers
+    let ctx = std::sync::Arc::new(ctx);
+
+    // ── Produce phase: serialize geometry ─────────────────────────────────────
+    let _ = emit_stage_event(sink, GEOMETRY_PRODUCER_ID, "Produce", "running", 0, 0, 0, None);
+    let t0_prod = now_ms();
+    let producer_ids = vec![GEOMETRY_PRODUCER_ID.to_string()];
+    let receivers = spawn_producers(&producer_ids, &registry, &ctx, chan_cap);
+    for (_id, rx) in receivers { for _batch in rx {} }
+
+    // Drop ctx to release the sidecar_tx sender, then collect all emitted files
+    drop(ctx);
+    let sidecars: Vec<lbd_pipeline::DerivedFile> = sidecar_rx.try_iter().collect();
+    let prod_ms = now_ms().saturating_sub(t0_prod);
+    let bytes_out: u64 = sidecars.iter().map(|f| f.bytes.len() as u64).sum();
+    let _ = emit_stage_event(sink, GEOMETRY_PRODUCER_ID, "Produce", "success", prod_ms, bytes_out, 0, None);
+
+    sidecars
+}
+
 /// Serialize per-module log JSON sidecars from `PipelineLogBundle` in context.
 /// Writes one `{module_id}.log.json` file per module through the JS sink.
 #[cfg(target_arch = "wasm32")]
@@ -1621,6 +1791,7 @@ fn emit_log_sidecar(
             "log",
             json.len().max(sink_config.chunk_size),
             json.len().max(sink_config.chunk_size),
+            false,
         )?;
         w.write_all(&json).map_err(lbd_serializer::SerializerError::Io)?;
         let (summary, _, _) = w.finish()?;

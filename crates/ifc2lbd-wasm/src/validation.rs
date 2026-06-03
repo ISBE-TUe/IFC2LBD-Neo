@@ -203,6 +203,7 @@ pub(crate) fn resolve_execution_settings(
     Ok(ExecutionSettings {
         output_formats,
         active_plugin_ids: active.iter().map(|s| s.to_string()).collect(),
+        module_configs: configs.clone(),
         nquads: NquadsModuleOptions {
             chunking: nquads_chunking,
             chunk_size_lines,
@@ -283,6 +284,34 @@ pub(crate) fn validate_typed_module_configs(
             }
             IFCOWL_PRODUCER_ID => validate_ifcowl_producer_options(entries)?,
             BSDD_PRODUCER_ID => validate_bsdd_producer_options(entries)?,
+            "neo-geometry-preprocess" => {
+                for (k, v) in entries {
+                    match k.as_str() {
+                        "metadata" => if !matches!(v.as_str(), "full" | "stripped") {
+                            return Err(WasmApiError::Message(format!(
+                                "`neo-geometry-preprocess.metadata` must be full|stripped, got `{v}`"
+                            )));
+                        },
+                        other => return Err(WasmApiError::Message(format!(
+                            "unknown option `neo-geometry-preprocess.{other}`"
+                        ))),
+                    }
+                }
+            }
+            "neo-geometry-producer" => {
+                for (k, v) in entries {
+                    match k.as_str() {
+                        "format" => if !matches!(v.as_str(), "fragments" | "gltf" | "parquet" | "ifc5") {
+                            return Err(WasmApiError::Message(format!(
+                                "`neo-geometry-producer.format` must be fragments|gltf|parquet|ifc5, got `{v}`"
+                            )));
+                        },
+                        other => return Err(WasmApiError::Message(format!(
+                            "unknown option `neo-geometry-producer.{other}`"
+                        ))),
+                    }
+                }
+            }
             _ => {
                 return Err(WasmApiError::Message(format!(
                     "unsupported module `{}`",
@@ -448,16 +477,28 @@ pub(crate) fn validate_file_export_options(
     entries: &HashMap<String, String>,
 ) -> Result<(), WasmApiError> {
     for (key, value) in entries {
-        if key != "output_stem" {
-            return Err(WasmApiError::Message(format!(
-                "unsupported option `neo-file-export.{}` in wasm phase 1",
-                key
-            )));
-        }
-        if value.trim().is_empty() {
-            return Err(WasmApiError::Message(
-                "`neo-file-export.output_stem` must be non-empty".to_string(),
-            ));
+        match key.as_str() {
+            "output_stem" => {
+                if value.trim().is_empty() {
+                    return Err(WasmApiError::Message(
+                        "`neo-file-export.output_stem` must be non-empty".to_string(),
+                    ));
+                }
+            }
+            "compress" => {
+                if !matches!(value.as_str(), "none" | "gzip") {
+                    return Err(WasmApiError::Message(format!(
+                        "`neo-file-export.compress` must be none|gzip, got `{}`",
+                        value
+                    )));
+                }
+            }
+            other => {
+                return Err(WasmApiError::Message(format!(
+                    "unsupported option `neo-file-export.{}` in wasm phase 1",
+                    other
+                )));
+            }
         }
     }
     Ok(())

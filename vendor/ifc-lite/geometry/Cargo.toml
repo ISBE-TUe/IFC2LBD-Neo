@@ -1,0 +1,21 @@
+[package]
+name = "ifc-lite-geometry"
+version = "3.0.0"
+edition = "2021"
+license = "MPL-2.0"
+
+[features]
+default = []
+manifold-csg = ["dep:manifold-csg"]
+debug_geometry = []
+
+[dependencies]
+earcutr = "0.5"
+i_overlay = "6.0"
+ifc-lite-core = { path = "../core" }
+manifold-csg = { version = "0.2.0", default-features = false, optional = true }
+nalgebra = { version = "0.35", default-features = false, features = ["std"] }
+rayon = "1.10"
+rustc-hash = "2.1"
+smallvec = "1.13"
+thiserror = "2.0"
