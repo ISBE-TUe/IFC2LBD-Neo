@@ -24,6 +24,7 @@ plugin-geometry-preprocess = { workspace = true }
 plugin-geometry-producer = { workspace = true, features = ["fmt-fragments", "fmt-parquet", "fmt-gltf"] }
 tessellated-model = { workspace = true }
 crossbeam = { workspace = true }
+flate2 = { workspace = true }
 rayon = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

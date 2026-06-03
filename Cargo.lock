@@ -1404,6 +1404,7 @@ dependencies = [
  "clap",
  "criterion",
  "crossbeam",
+ "flate2",
  "fragments-core",
  "ifc-geometry",
  "ifc-model",
@@ -1438,6 +1439,7 @@ name = "ifc2lbd-wasm"
 version = "0.1.0"
 dependencies = [
  "crossbeam",
+ "flate2",
  "ifc-model",
  "ifc-step",
  "js-sys",

@@ -147,6 +147,7 @@ struct ExecutionSettings {
     bsdd_compact: bool,
     bsdd_include_standard_attrs: bool,
     bsdd_dedup_properties: bool,
+    compress_output: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -308,6 +309,9 @@ fn main() -> anyhow::Result<()> {
     let (output_dir, lbd_filename) =
         resolve_output_dir_and_filename(args.output_file.as_deref(), input_path, output_format);
     ctx.insert(std::sync::Arc::new(OutputDir(output_dir.clone())));
+    if settings.compress_output {
+        ctx.insert(std::sync::Arc::new(pipeline_plugins::CompressOutput(true)));
+    }
 
     let preprocess_start = Instant::now();
     lbd_pipeline::spawn_preprocessors(&preprocess_ids, &built_in_registry, &mut ctx)
@@ -770,6 +774,24 @@ fn validate_typed_module_configs(
         if module_id == GEOMETRY_PRODUCER_ID {
             validate_geometry_producer_module_config(entries)?;
         }
+        if module_id == lbd_pipeline::FILE_EXPORT_ID {
+            validate_file_export_module_config(entries)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_file_export_module_config(entries: &HashMap<String, String>) -> Result<(), String> {
+    for (key, value) in entries {
+        match key.as_str() {
+            "output_stem" => {}
+            "compress" => {
+                if !matches!(value.as_str(), "none" | "gzip") {
+                    return Err(format!("`neo-file-export.compress` must be none|gzip, got `{value}`"));
+                }
+            }
+            other => return Err(format!("unknown option `neo-file-export.{other}`")),
+        }
     }
     Ok(())
 }
@@ -990,6 +1012,12 @@ fn resolve_execution_settings(
         .map(|v| v == "true")
         .unwrap_or(false);
 
+    let file_export_entries = configs.get(lbd_pipeline::FILE_EXPORT_ID);
+    let compress_output = file_export_entries
+        .and_then(|e| e.get("compress"))
+        .map(|v| v == "gzip")
+        .unwrap_or(false);
+
     Ok(ExecutionSettings {
         output_format,
         emit_ifcowl: active.contains(lbd_pipeline::IFCOWL_PRODUCER_ID),
@@ -1008,6 +1036,7 @@ fn resolve_execution_settings(
         bsdd_compact,
         bsdd_include_standard_attrs,
         bsdd_dedup_properties,
+        compress_output,
     })
 }
 
@@ -1558,6 +1587,7 @@ mod tests {
             bsdd_compact: false,
             bsdd_include_standard_attrs: true,
             bsdd_dedup_properties: false,
+            compress_output: false,
         }
     }
 }

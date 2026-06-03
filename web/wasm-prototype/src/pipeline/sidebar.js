@@ -234,6 +234,17 @@ function optionControl(pluginId, key) {
         </select>
       </div>`;
   }
+  if (key === "compress") {
+    const compressVal = current || "none";
+    return `
+      <div class="detail-row">
+        <span class="detail-label">compress</span>
+        <select data-option-key="compress" class="detail-select">
+          <option value="none" ${compressVal === "none" ? "selected" : ""}>None — plain file</option>
+          <option value="gzip" ${compressVal === "gzip" ? "selected" : ""}>gzip — smaller file, Blazegraph-compatible</option>
+        </select>
+      </div>`;
+  }
   // Default: text input with contextual placeholder
   const placeholders = {
     chunk_size_lines: "2000000 (2M lines)",

@@ -51,13 +51,24 @@ pub fn stream_meshes(ifc_content: Arc<String>, element_ids: &[u64]) -> Vec<FlatM
     // Native TUX-class models need materially more headroom than rayon's default
     // worker stack. Keep geometry on a dedicated large-stack thread and allow a
     // local override for diagnostics without another rebuild.
-    std::thread::Builder::new()
-        .name("ifc-geometry".to_string())
-        .stack_size(geometry_thread_stack_bytes())
-        .spawn(move || tessellate_parallel(ifc_content, element_ids_vec))
-        .expect("failed to spawn ifc-geometry thread")
-        .join()
-        .unwrap_or_default()
+    //
+    // WASM: std::thread::Builder::new().stack_size() is not supported on wasm32.
+    // Geometry runs directly on the rayon worker thread; the WASM shadow stack
+    // handles BSP recursion depth there without a custom stack_size.
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::thread::Builder::new()
+            .name("ifc-geometry".to_string())
+            .stack_size(geometry_thread_stack_bytes())
+            .spawn(move || tessellate_parallel(ifc_content, element_ids_vec))
+            .expect("failed to spawn ifc-geometry thread")
+            .join()
+            .unwrap_or_default()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        tessellate_parallel(ifc_content, element_ids_vec)
+    }
 }
 
 /// Run sequential element tessellation on the 256 MB geometry thread.

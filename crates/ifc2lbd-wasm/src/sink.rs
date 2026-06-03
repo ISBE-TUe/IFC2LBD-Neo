@@ -1,4 +1,6 @@
 use std::io::{self, Write};
+use flate2::write::GzEncoder;
+use flate2::Compression;
 
 #[cfg(target_arch = "wasm32")]
 use js_sys::{Function, Object, Reflect, Uint8Array};
@@ -101,6 +103,9 @@ pub(crate) struct SinkChunkWriter<'a> {
     /// the writer flushes immediately regardless of chunk_size. Zero means "no limit"
     /// (backward compatible — behaves like before).
     max_pending_bytes: usize,
+    /// When true, suppress intermediate chunk flushes and gzip-compress all accumulated
+    /// bytes in `finish()` before sending to JS.
+    compress: bool,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -112,6 +117,7 @@ impl<'a> SinkChunkWriter<'a> {
         role: &str,
         chunk_size: usize,
         max_pending_bytes: usize,
+        compress: bool,
     ) -> Result<Self, SerializerError> {
         let writer = Self {
             sink,
@@ -123,12 +129,21 @@ impl<'a> SinkChunkWriter<'a> {
             pending: Vec::with_capacity(chunk_size),
             max_pending: 0,
             max_pending_bytes,
+            compress,
         };
         writer.emit_start()?;
         Ok(writer)
     }
 
     pub fn finish(mut self) -> Result<(OutputFileSummary, usize, usize), SerializerError> {
+        if self.compress && !self.pending.is_empty() {
+            let uncompressed = std::mem::take(&mut self.pending);
+            let mut enc = GzEncoder::new(Vec::new(), Compression::fast());
+            enc.write_all(&uncompressed)
+                .map_err(|e| SerializerError::Io(io::Error::new(io::ErrorKind::Other, e.to_string())))?;
+            self.pending = enc.finish()
+                .map_err(|e| SerializerError::Io(io::Error::new(io::ErrorKind::Other, e.to_string())))?;
+        }
         self.flush_pending()?;
         self.emit_end()?;
         Ok((
@@ -227,7 +242,9 @@ impl Write for SinkChunkWriter<'_> {
             self.max_pending = self.pending.len();
         }
         self.bytes += buf.len() as u64;
-        if self.should_flush() {
+        // When compressing, accumulate everything — gzip requires a single contiguous
+        // stream finalized in finish(). Intermediate flushes would produce invalid chunks.
+        if !self.compress && self.should_flush() {
             self.flush_pending()
                 .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
         }
@@ -293,6 +310,7 @@ pub(crate) struct SinkQuadChunkWriter<'a> {
     pending_line: Vec<u8>,
     /// Completed chunk entries for manifest
     entries: Vec<SinkChunkEntry>,
+    compress: bool,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -305,6 +323,7 @@ impl<'a> SinkQuadChunkWriter<'a> {
         bytes_per_chunk: usize,
         chunk_size: usize,
         max_pending_bytes: usize,
+        compress: bool,
     ) -> Result<Self, SerializerError> {
         Ok(Self {
             sink,
@@ -322,12 +341,14 @@ impl<'a> SinkQuadChunkWriter<'a> {
             total_lines: 0,
             pending_line: Vec::new(),
             entries: Vec::new(),
+            compress,
         })
     }
 
     fn ensure_open(&mut self) -> Result<(), SerializerError> {
         if self.current_writer.is_none() {
-            let filename = format!("{}.part-{:03}.nq", self.chunk_prefix, self.current_index);
+            let gz = if self.compress { ".gz" } else { "" };
+            let filename = format!("{}.part-{:03}.nq{gz}", self.chunk_prefix, self.current_index);
             let writer = SinkChunkWriter::new(
                 self.sink,
                 filename.clone(),
@@ -335,6 +356,7 @@ impl<'a> SinkQuadChunkWriter<'a> {
                 "chunk",
                 self.chunk_size,
                 self.max_pending_bytes,
+                self.compress,
             )?;
             self.current_writer = Some(writer);
         }
@@ -410,6 +432,7 @@ impl<'a> SinkQuadChunkWriter<'a> {
             "manifest",
             self.chunk_size,
             self.max_pending_bytes,
+            false,
         )?;
         manifest_writer
             .write_all(manifest_bytes)

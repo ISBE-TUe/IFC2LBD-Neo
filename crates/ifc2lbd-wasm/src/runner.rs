@@ -18,6 +18,7 @@ use lbd_serializer::{
 
 use plugin_geometry_preprocess::{IFCContent, MetadataModeOption, GEOMETRY_PREPROCESS_ID};
 use plugin_geometry_producer::{GeometryFormat, GeometryProducerConfig, GEOMETRY_PRODUCER_ID};
+use crate::plugins::CompressOutput;
 use tessellated_model::MetadataMode;
 
 fn base64_encode(data: &[u8]) -> String {
@@ -1050,6 +1051,7 @@ fn serialize_turtle_receiver_to_file(
     options: &ConvertOptions,
     grouping: TurtleGrouping,
     instance_base: &str,
+    compress: bool,
 ) -> Result<(OutputFileSummary, u64), lbd_serializer::SerializerError> {
     let mut writer = SinkChunkWriter::new(
         sink,
@@ -1058,6 +1060,7 @@ fn serialize_turtle_receiver_to_file(
         role,
         sink_config.chunk_size,
         sink_config.max_pending_bytes,
+        compress,
     )?;
     let grouping = effective_turtle_grouping(grouping, options);
     let grouped = matches!(grouping, TurtleGrouping::Sorted);
@@ -1164,6 +1167,9 @@ fn turtle_to_sink_joined(
     if settings.has(QTO_PREPROCESS_ID) {
         ctx.insert(std::sync::Arc::new(plugin_qto_preprocess::QtoOptions::default()));
     }
+    if settings.module_option(FILE_EXPORT_ID, "compress").as_deref() == Some("gzip") {
+        ctx.insert(std::sync::Arc::new(CompressOutput(true)));
+    }
     let preprocess_ids: Vec<String> = registry
         .manifests_for_stage(PipelineStage::Preprocess)
         .into_iter()
@@ -1193,13 +1199,16 @@ fn turtle_to_sink_joined(
     let omg_receiver = raw_receivers.remove(OMG_FOG_PRODUCER_ID);
     let ifcowl_receiver = raw_receivers.remove(IFCOWL_PRODUCER_ID);
 
+    let compress = settings.module_option(FILE_EXPORT_ID, "compress").as_deref() == Some("gzip");
+    let gz = if compress { ".gz" } else { "" };
     let mut writer = SinkChunkWriter::new(
         sink,
-        format!("{}.ttl", settings.output_stem),
+        format!("{}.ttl{gz}", settings.output_stem),
         "text/turtle;charset=utf-8",
         "joined",
         sink_config.chunk_size,
         sink_config.max_pending_bytes,
+        compress,
     )?;
     let effective_grouping = effective_turtle_grouping(settings.turtle_grouping, &options);
     if !options.low_memory_mode && !matches!(effective_grouping, TurtleGrouping::Sorted) {
@@ -1320,6 +1329,9 @@ fn turtle_to_sink_separate(
     if settings.has(QTO_PREPROCESS_ID) {
         ctx.insert(std::sync::Arc::new(plugin_qto_preprocess::QtoOptions::default()));
     }
+    if settings.module_option(FILE_EXPORT_ID, "compress").as_deref() == Some("gzip") {
+        ctx.insert(std::sync::Arc::new(CompressOutput(true)));
+    }
     let preprocess_ids: Vec<String> = registry
         .manifests_for_stage(PipelineStage::Preprocess)
         .into_iter()
@@ -1358,19 +1370,22 @@ fn turtle_to_sink_separate(
     )?;
     let serialize_t0 = now_ms();
 
+    let compress = settings.module_option(FILE_EXPORT_ID, "compress").as_deref() == Some("gzip");
+    let gz = if compress { ".gz" } else { "" };
     macro_rules! drain_sep_and_emit {
         ($rx_opt:expr, $slug:literal, $id:expr, $grouping:expr) => {
             if let Some(rx) = $rx_opt {
                 let t0 = now_ms();
                 let (summary, triples) = serialize_turtle_receiver_to_file(
                     rx,
-                    format!("{}_{}.ttl", settings.output_stem, $slug),
+                    format!("{}_{}.ttl{gz}", settings.output_stem, $slug),
                     $slug,
                     sink,
                     sink_config,
                     &options,
                     $grouping,
                     &instance_base,
+                    compress,
                 )?;
                 let ms = now_ms() - t0;
                 produce_triples.insert($id, triples);
@@ -1445,6 +1460,7 @@ fn serialize_nquads_receiver_to_chunks(
     chunk_size_lines: usize,
     chunk_size_bytes: usize,
     sink_config: &SinkConfig,
+    compress: bool,
 ) -> Result<(Vec<OutputFileSummary>, u64), lbd_serializer::SerializerError> {
     let mut chunk_writer = SinkQuadChunkWriter::new(
         sink,
@@ -1454,6 +1470,7 @@ fn serialize_nquads_receiver_to_chunks(
         chunk_size_bytes,
         sink_config.chunk_size,
         sink_config.max_pending_bytes,
+        compress,
     )?;
     let mut triple_count: u64 = 0;
     for batch in rx {
@@ -1509,6 +1526,9 @@ fn nquads_to_sink(
     if settings.has(QTO_PREPROCESS_ID) {
         ctx.insert(std::sync::Arc::new(plugin_qto_preprocess::QtoOptions::default()));
     }
+    if settings.module_option(FILE_EXPORT_ID, "compress").as_deref() == Some("gzip") {
+        ctx.insert(std::sync::Arc::new(CompressOutput(true)));
+    }
     let preprocess_ids: Vec<String> = registry
         .manifests_for_stage(PipelineStage::Preprocess)
         .into_iter()
@@ -1543,6 +1563,7 @@ fn nquads_to_sink(
     emit_stage_event(sink, serializer_id, "Serialize", "running", 0, 0, 0, None)?;
     let serialize_t0 = now_ms();
 
+    let compress = settings.module_option(FILE_EXPORT_ID, "compress").as_deref() == Some("gzip");
     if is_chunked {
         // Chunked: each active producer → its own set of chunk files
         macro_rules! drain_chunked {
@@ -1558,6 +1579,7 @@ fn nquads_to_sink(
                         chunk_size_lines,
                         chunk_size_bytes,
                         sink_config,
+                        compress,
                     )?;
                     let ms = now_ms() - t0;
                     produce_triples.insert($producer_id, triples);
@@ -1593,13 +1615,16 @@ fn nquads_to_sink(
         Ok((summaries, 0, sink_config.chunk_size, sd))
     } else {
         // Merged: all active producers → one .nq file, each triple tagged with its producer's graph IRI
+        let compress = settings.module_option(FILE_EXPORT_ID, "compress").as_deref() == Some("gzip");
+        let gz = if compress { ".gz" } else { "" };
         let mut writer = SinkChunkWriter::new(
             sink,
-            format!("{}.nq", settings.output_stem),
+            format!("{}.nq{gz}", settings.output_stem),
             "application/n-quads",
             "merged",
             sink_config.chunk_size,
             sink_config.max_pending_bytes,
+            compress,
         )?;
         macro_rules! drain_merged {
             ($rx_opt:expr, $slug:literal, $producer_id:expr) => {
@@ -1766,6 +1791,7 @@ fn emit_log_sidecar(
             "log",
             json.len().max(sink_config.chunk_size),
             json.len().max(sink_config.chunk_size),
+            false,
         )?;
         w.write_all(&json).map_err(lbd_serializer::SerializerError::Io)?;
         let (summary, _, _) = w.finish()?;

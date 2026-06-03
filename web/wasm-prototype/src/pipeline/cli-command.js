@@ -17,6 +17,24 @@ const MODULE_DEFAULTS = {
     chunk_size_bytes: "268435456",
     chunk_prefix: "out",
   },
+  "neo-bsdd-producer": {
+    profile: "base",
+    compact: "false",
+    include_standard_attrs: "true",
+    dedup_properties: "false",
+  },
+  "neo-geometry-preprocess": {
+    metadata: "full",
+  },
+  "neo-geometry-producer": {
+    format: "fragments",
+  },
+  "neo-ifcowl-producer": {
+    mode: "full",
+  },
+  "neo-file-export": {
+    compress: "none",
+  },
 };
 
 function outputExtension(activeModules) {
