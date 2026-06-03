@@ -5,7 +5,7 @@
 //! Core element processing: resolving representations, processing items, and caching.
 
 use super::GeometryRouter;
-use crate::{Error, Mesh, Result, SubMeshCollection};
+use crate::{Error, Mesh, Result, SubMesh, SubMeshCollection};
 use ifc_lite_core::{
     has_geometry_by_name, DecodedEntity, EntityDecoder, GeometryCategory, IfcType,
 };
@@ -730,7 +730,9 @@ impl GeometryRouter {
             )));
         }
 
-        // For MappedItem, recurse into the mapped representation
+        // For MappedItem: recurse into the mapped representation, accumulating T×O transforms.
+        // Each leaf geometry item becomes one sub-mesh (oracle granularity: one per leaf item).
+        // local_matrix accumulates: parent_T×O × this_T×O × item_own_placement.
         if item.ifc_type == IfcType::IfcMappedItem {
             if !visited.insert(item.id) {
                 return Err(Error::geometry(format!(
@@ -743,87 +745,146 @@ impl GeometryRouter {
             let source_attr = item
                 .get(0)
                 .ok_or_else(|| Error::geometry("MappedItem missing MappingSource".to_string()))?;
-
             let source_entity = decoder
                 .resolve_ref(source_attr)?
                 .ok_or_else(|| Error::geometry("Failed to resolve MappingSource".to_string()))?;
 
-            // Get MappedRepresentation from RepresentationMap (attribute 1)
+            // MappingTarget: IfcCartesianTransformationOperator (MappedItem arg[1])
+            let mapping_target = if let Some(target_attr) = item.get(1) {
+                if !target_attr.is_null() {
+                    if let Some(target_entity) = decoder.resolve_ref(target_attr)? {
+                        let mut t = self.parse_cartesian_transformation_operator(&target_entity, decoder)?;
+                        self.scale_transform(&mut t);
+                        t
+                    } else { nalgebra::Matrix4::identity() }
+                } else { nalgebra::Matrix4::identity() }
+            } else { nalgebra::Matrix4::identity() };
+
+            // MappingOrigin: IfcAxis2Placement3D (RepresentationMap arg[0])
+            let mapping_origin = if let Some(origin_attr) = source_entity.get(0) {
+                if !origin_attr.is_null() {
+                    if let Some(origin_entity) = decoder.resolve_ref(origin_attr)? {
+                        let mut o = self.parse_axis2_placement_3d(&origin_entity, decoder)?;
+                        self.scale_transform(&mut o);
+                        o
+                    } else { nalgebra::Matrix4::identity() }
+                } else { nalgebra::Matrix4::identity() }
+            } else { nalgebra::Matrix4::identity() };
+
+            // Accumulated mapping transform for this level: T × O
+            let this_mapping = mapping_target * mapping_origin;
+
+            // Get MappedRepresentation (RepresentationMap arg[1])
             let mapped_repr_attr = source_entity.get(1).ok_or_else(|| {
                 Error::geometry("RepresentationMap missing MappedRepresentation".to_string())
             })?;
-
             let mapped_repr = decoder.resolve_ref(mapped_repr_attr)?.ok_or_else(|| {
                 Error::geometry("Failed to resolve MappedRepresentation".to_string())
             })?;
 
-            // Get MappingTarget transformation
-            let mapping_transform = if let Some(target_attr) = item.get(1) {
-                if !target_attr.is_null() {
-                    if let Some(target_entity) = decoder.resolve_ref(target_attr)? {
-                        Some(self.parse_cartesian_transformation_operator(&target_entity, decoder)?)
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-
-            // Get items from the mapped representation
+            // Recurse: accumulate this T×O and pass down to child items
             if let Some(items_attr) = mapped_repr.get(3) {
                 let items = decoder.resolve_ref_list(items_attr)?;
                 for nested_item in items {
-                    // Recursively collect sub-meshes (skip unsupported geometry types)
                     let count_before = sub_meshes.len();
                     if let Err(_e) = self.collect_submeshes_from_item_inner(
-                        &nested_item,
-                        decoder,
-                        sub_meshes,
-                        depth + 1,
-                        visited,
+                        &nested_item, decoder, sub_meshes, depth + 1, visited,
                     ) {
                         #[cfg(debug_assertions)]
-                        eprintln!(
-                            "[ifc-lite] Skipping unsupported nested geometry #{} ({:?}): {}",
-                            nested_item.id, nested_item.ifc_type, _e
-                        );
+                        eprintln!("[ifc-lite] Skipping unsupported nested geometry #{} ({:?}): {}",
+                            nested_item.id, nested_item.ifc_type, _e);
                         continue;
                     }
-
-                    // Apply MappedItem transform to newly added sub-meshes
-                    if let Some(mut transform) = mapping_transform.clone() {
-                        self.scale_transform(&mut transform);
-                        for sub in &mut sub_meshes.sub_meshes[count_before..] {
-                            self.transform_mesh_local(&mut sub.mesh, &transform);
-                        }
+                    // Compose this mapping into whatever local_matrix children set
+                    for sub in &mut sub_meshes.sub_meshes[count_before..] {
+                        sub.local_matrix = Some(match sub.local_matrix {
+                            Some(child) => this_mapping * child,
+                            None        => this_mapping,
+                        });
                     }
                 }
             }
 
             visited.remove(&item.id);
         } else {
-            // Regular geometry item - process and record with its ID
-            // Skip unsupported geometry types (e.g. IfcGeometricSet) instead of failing
-            match self.process_representation_item(item, decoder) {
-                Ok(mesh) => {
-                    if !mesh.is_empty() {
-                        sub_meshes.add(item.id, mesh);
+            // Leaf geometry item: get position-free mesh + item's own placement.
+            // Item placement (e.g. IFCEXTRUDEDAREASOLID.Position) stays separate so that
+            // identical shapes at different positions share the same shell (oracle dedup).
+            match self.process_item_definition_space(item, decoder) {
+                Ok((mesh, item_placement)) if !mesh.is_empty() => {
+                    let mut sm = SubMesh::new(item.id, mesh);
+                    // local_matrix starts as just the item's own placement; callers above
+                    // accumulate the parent T×O on top.
+                    if !is_identity_matrix(&item_placement) {
+                        sm.local_matrix = Some(item_placement);
                     }
+                    sub_meshes.sub_meshes.push(sm);
                 }
+                Ok(_) => {}
                 Err(_e) => {
                     #[cfg(debug_assertions)]
-                    eprintln!(
-                        "[ifc-lite] Skipping unsupported geometry #{} ({:?}): {}",
-                        item.id, item.ifc_type, _e
-                    );
+                    eprintln!("[ifc-lite] Skipping unsupported geometry #{} ({:?}): {}",
+                        item.id, item.ifc_type, _e);
                 }
             }
         }
 
         Ok(())
+    }
+
+    /// Process a leaf geometry item in definition space: returns (position-free mesh, item_placement).
+    ///
+    /// For items with their own Position attribute (IFCEXTRUDEDAREASOLID, IFCADVANCEDSWEPTSOLID, etc.):
+    /// - mesh vertices are in the item's OWN local space (Position NOT applied)
+    /// - item_placement contains the Position matrix
+    ///
+    /// For other items (IFCFACETEDBREP, IFCTRIANGULATEDFACESET, etc.) that have no Position:
+    /// - mesh is returned as-is from the normal path
+    /// - item_placement = identity
+    ///
+    /// This matches oracle's `shell_from_item_direct` behavior: geometry in item-local space
+    /// so identical shapes at different positions share the same shell content (dedup).
+    fn process_item_definition_space(
+        &self,
+        item: &DecodedEntity,
+        decoder: &mut EntityDecoder,
+    ) -> Result<(Mesh, nalgebra::Matrix4<f64>)> {
+        // For IFCEXTRUDEDAREASOLID: the Position (arg[1]) is baked into ifc-lite's mesh.
+        // Un-bake it: get the mesh, then apply inverse(Position) to restore item-local geometry.
+        if item.ifc_type == IfcType::IfcExtrudedAreaSolid
+            || item.ifc_type == IfcType::IfcExtrudedAreaSolidTapered
+        {
+            // Read Position (arg[1]) — same attribute the extrusion processor uses
+            let item_placement = if let Some(pos_attr) = item.get(1) {
+                if !pos_attr.is_null() {
+                    if let Some(pos_entity) = decoder.resolve_ref(pos_attr)? {
+                        let mut p = self.parse_axis2_placement_3d(&pos_entity, decoder)?;
+                        self.scale_transform(&mut p);
+                        p
+                    } else { nalgebra::Matrix4::identity() }
+                } else { nalgebra::Matrix4::identity() }
+            } else { nalgebra::Matrix4::identity() };
+
+            // Get normal (baked) mesh from the processor path
+            let baked_mesh = self.process_representation_item(item, decoder)?;
+
+            // Un-bake: apply inverse(Position) to strip the placement from vertices.
+            // This gives position-free geometry identical to oracle's shell_from_item_direct.
+            if baked_mesh.is_empty() || is_identity_matrix(&item_placement) {
+                return Ok((baked_mesh, nalgebra::Matrix4::identity()));
+            }
+            let inv = match item_placement.try_inverse() {
+                Some(m) => m,
+                None => return Ok((baked_mesh, item_placement)), // degenerate, keep baked
+            };
+            let raw_mesh = apply_matrix_to_mesh(baked_mesh, &inv);
+            return Ok((raw_mesh, item_placement));
+        }
+
+        // For all other types: Position is either absent or identity.
+        // Return the mesh as-is with identity placement.
+        let mesh = self.process_representation_item(item, decoder)?;
+        Ok((mesh, nalgebra::Matrix4::identity()))
     }
 
     /// Process a single representation item (IfcExtrudedAreaSolid, etc.)
@@ -1069,4 +1130,33 @@ impl GeometryRouter {
         self.apply_placement(element, decoder, &mut mesh)?;
         Ok(Some(mesh))
     }
+}
+
+/// Returns true when `m` is the identity transform within floating-point tolerance.
+fn is_identity_matrix(m: &nalgebra::Matrix4<f64>) -> bool {
+    (m[(0,0)] - 1.0).abs() < 1e-9 && m[(0,1)].abs() < 1e-9 && m[(0,2)].abs() < 1e-9 && m[(0,3)].abs() < 1e-9
+    && m[(1,0)].abs() < 1e-9 && (m[(1,1)] - 1.0).abs() < 1e-9 && m[(1,2)].abs() < 1e-9 && m[(1,3)].abs() < 1e-9
+    && m[(2,0)].abs() < 1e-9 && m[(2,1)].abs() < 1e-9 && (m[(2,2)] - 1.0).abs() < 1e-9 && m[(2,3)].abs() < 1e-9
+}
+
+/// Apply a 4×4 matrix to all positions (and normals rotation) of a mesh.
+/// Used to un-bake the item Position from ifc-lite's tessellated output.
+fn apply_matrix_to_mesh(mut mesh: Mesh, m: &nalgebra::Matrix4<f64>) -> Mesh {
+    // Extract rotation 3×3 for normals (no translation)
+    let rot = m.fixed_view::<3, 3>(0, 0);
+    for chunk in mesh.positions.chunks_exact_mut(3) {
+        let p = nalgebra::Point3::new(chunk[0] as f64, chunk[1] as f64, chunk[2] as f64);
+        let tp = m.transform_point(&p);
+        chunk[0] = tp.x as f32;
+        chunk[1] = tp.y as f32;
+        chunk[2] = tp.z as f32;
+    }
+    for chunk in mesh.normals.chunks_exact_mut(3) {
+        let n = nalgebra::Vector3::new(chunk[0] as f64, chunk[1] as f64, chunk[2] as f64);
+        let tn = (rot * n).normalize();
+        chunk[0] = tn.x as f32;
+        chunk[1] = tn.y as f32;
+        chunk[2] = tn.z as f32;
+    }
+    mesh
 }

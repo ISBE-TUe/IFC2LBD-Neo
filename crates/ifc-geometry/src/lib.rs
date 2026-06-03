@@ -71,10 +71,8 @@ pub fn stream_meshes(ifc_content: &str, element_ids: &[u64]) -> Vec<FlatMesh> {
             Err(_) => IDENTITY_4X4,
         };
 
-        // Use definition-space version: geometry is NOT world-transformed.
-        // World transform is stored separately in world_transform field.
-        // This enables content-hash dedup: identical shapes at different positions
-        // produce the same vertex data → same hash → shared shell.
+        // Oracle granularity: one sub-mesh per leaf geometry item (IFCEXTRUDEDAREASOLID etc.).
+        // sub.local_matrix = accumulated(T×O) × itemPosition, geometry in item-local space (no Position baked).
         let sub_meshes = match router.process_element_submeshes_in_definition_space(&element, &mut decoder) {
             Ok(s) if !s.sub_meshes.is_empty() => s,
             _ => continue,
@@ -83,6 +81,18 @@ pub fn stream_meshes(ifc_content: &str, element_ids: &[u64]) -> Vec<FlatMesh> {
         let n = sub_meshes.sub_meshes.len();
         let mut geometries = Vec::with_capacity(n);
 
+        // Oracle: globalTransform = elementPlacement × T0 × O0
+        //         localTransform[0] = identity
+        //         localTransform[i] = (T0×O0)^-1 × (Ti×Oi)
+        let elem_placement = nalgebra::Matrix4::from_column_slice(&world_flat);
+        let first_to = sub_meshes.sub_meshes.first()
+            .and_then(|s| s.local_matrix)
+            .unwrap_or_else(nalgebra::Matrix4::identity);
+        let first_to_inv = first_to.try_inverse()
+            .unwrap_or_else(nalgebra::Matrix4::identity);
+        // globalTransform = elementPlacement × T0 × O0 (matches oracle flatTransformation[0])
+        let world_transform = mat4_to_col16(&(elem_placement * first_to));
+
         for (i, sub) in sub_meshes.sub_meshes.into_iter().enumerate() {
             if sub.mesh.positions.is_empty() { continue; }
 
@@ -90,18 +100,20 @@ pub fn stream_meshes(ifc_content: &str, element_ids: &[u64]) -> Vec<FlatMesh> {
                 .copied()
                 .unwrap_or(DEFAULT_COLOR);
 
-            // Local transform: identity for first geometry, relative for subsequent.
-            // (ifc-lite merges transforms via process_element_with_submeshes so all
-            // sub-meshes are already in element-local space → local transform = identity
-            // for all. Relative transforms will be computed once ifc-lite exposes
-            // per-instance world matrices separately.)
-            let local_transform = IDENTITY_4X4;
+            // localTransform[0] = identity (oracle: first geometry is reference frame)
+            // localTransform[i] = (T0×O0)^-1 × (Ti×Oi)
+            let local_transform = if i == 0 {
+                IDENTITY_4X4
+            } else {
+                let ti_oi = sub.local_matrix.unwrap_or_else(nalgebra::Matrix4::identity);
+                mat4_to_col16(&(first_to_inv * ti_oi))
+            };
 
             geometries.push(GeometryInstance {
                 geometry_id: sub.geometry_id as u64,
                 mesh: sub.mesh,
                 color,
-                world_transform: world_flat,
+                world_transform,
                 local_transform,
             });
         }
@@ -201,5 +213,11 @@ const IDENTITY_4X4: [f64; 16] = [
     0.0, 0.0, 1.0, 0.0,
     0.0, 0.0, 0.0, 1.0,
 ];
+
+/// Convert nalgebra Matrix4 to column-major [f64; 16] array.
+fn mat4_to_col16(m: &nalgebra::Matrix4<f64>) -> [f64; 16] {
+    let s = m.as_slice();
+    [s[0],s[1],s[2],s[3], s[4],s[5],s[6],s[7], s[8],s[9],s[10],s[11], s[12],s[13],s[14],s[15]]
+}
 
 const DEFAULT_COLOR: [f32; 4] = [0.8, 0.8, 0.8, 1.0];

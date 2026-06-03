@@ -887,12 +887,11 @@ mod fragments {
         }
     }
 
-    /// Port of oracle's dedup hash from ifc-file-reader.ts.
+    /// Oracle-style content hash from ifc-file-reader.ts.
     ///
-    /// Hash string (oracle): `${vertexCount}-${triangleCount}-${hashAreaSum}-${hashBigArea}-${hashVolume}-${cx}-${cy}-${cz}-${x1}-${y1}-${z1}`
-    /// All floats rounded to precision p = 10000.
-    /// centroid divided by index.length (= triangle_count * 3).
-    /// volume = abs(sum of signed tetrahedron volumes per triangle).
+    /// Metrics: vertexCount, triangleCount, areaSum, biggestArea, volume, centroid, firstVertex.
+    /// All floats rounded to precision p=10000. More tolerant than exact-bit hashing
+    /// — catches near-identical geometry that differs only in floating point precision.
     fn hash_ifc_mesh(mesh: &ifc_geometry::Mesh) -> u64 {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
@@ -918,35 +917,20 @@ mod fragments {
             let (ax, ay, az) = (pos[i1*3], pos[i1*3+1], pos[i1*3+2]);
             let (bx, by, bz) = (pos[i2*3], pos[i2*3+1], pos[i2*3+2]);
             let (px, py, pz) = (pos[i3*3], pos[i3*3+1], pos[i3*3+2]);
-
-            // Area via cross product (oracle: triangle.getArea())
-            let abx = bx-ax; let aby = by-ay; let abz = bz-az;
-            let acx = px-ax; let acy = py-ay; let acz = pz-az;
-            let cross_len = ((aby*acz - abz*acy).powi(2) + (abz*acx - abx*acz).powi(2) + (abx*acy - aby*acx).powi(2)).sqrt();
-            let area = cross_len * 0.5;
+            let (abx, aby, abz) = (bx-ax, by-ay, bz-az);
+            let (acx, acy, acz) = (px-ax, py-ay, pz-az);
+            let cross = ((aby*acz-abz*acy).powi(2)+(abz*acx-abx*acz).powi(2)+(abx*acy-aby*acx).powi(2)).sqrt();
+            let area = cross * 0.5;
             area_sum += area;
             if area > biggest_area { biggest_area = area; }
-
-            // Centroid (oracle: centroid.add(v1, v2, v3); centroid.divideScalar(index.length))
-            cx += ax + bx + px;
-            cy += ay + by + py;
-            cz += az + bz + pz;
-
-            // Signed volume of tetrahedron (oracle: getSignedVolumeOfTriangle)
-            // v321, v231, v312, v132, v213, v123
-            let v321 = px*by*az;
-            let v231 = bx*py*az;
-            let v312 = px*ay*bz;
-            let v132 = ax*py*bz;
-            let v213 = bx*ay*pz;
-            let v123 = ax*by*pz;
-            volume += (1.0/6.0) * (-v321 + v231 + v312 - v132 - v213 + v123);
+            cx += ax+bx+px; cy += ay+by+py; cz += az+bz+pz;
+            let (v321,v231,v312,v132,v213,v123) = (px*by*az, bx*py*az, px*ay*bz, ax*py*bz, bx*ay*pz, ax*by*pz);
+            volume += (1.0/6.0)*(-v321+v231+v312-v132-v213+v123);
         }
-
         let n = (triangle_count * 3) as f32;
         if n > 0.0 { cx /= n; cy /= n; cz /= n; }
         volume = volume.abs();
-        let (x1, y1, z1) = if vertex_count > 0 { (pos[0], pos[1], pos[2]) } else { (0.0, 0.0, 0.0) };
+        let (x1,y1,z1) = if vertex_count > 0 { (pos[0],pos[1],pos[2]) } else { (0.0,0.0,0.0) };
 
         let mut s = DefaultHasher::new();
         vertex_count.hash(&mut s);
@@ -954,12 +938,8 @@ mod fragments {
         round(area_sum).hash(&mut s);
         round(biggest_area).hash(&mut s);
         round(volume).hash(&mut s);
-        round(cx).hash(&mut s);
-        round(cy).hash(&mut s);
-        round(cz).hash(&mut s);
-        round(x1).hash(&mut s);
-        round(y1).hash(&mut s);
-        round(z1).hash(&mut s);
+        round(cx).hash(&mut s); round(cy).hash(&mut s); round(cz).hash(&mut s);
+        round(x1).hash(&mut s); round(y1).hash(&mut s); round(z1).hash(&mut s);
         s.finish()
     }
 
