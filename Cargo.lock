@@ -1357,6 +1357,7 @@ dependencies = [
  "earcutr",
  "i_overlay",
  "ifc-lite-core",
+ "manifold-csg",
  "nalgebra",
  "rayon",
  "rustc-hash",
@@ -1778,6 +1779,26 @@ name = "log"
 version = "0.4.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
+
+[[package]]
+name = "manifold-csg"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3527339ef694b0e3052c07c3da997d8d64100cb0348189b202868ccf123f5385"
+dependencies = [
+ "log",
+ "manifold-csg-sys",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "manifold-csg-sys"
+version = "3.5.101"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8c4a9823453e446bbbd356f4a7b3a9bac04d105991cdb4d0a4170ba789cad868"
+dependencies = [
+ "cmake",
+]
 
 [[package]]
 name = "matchers"

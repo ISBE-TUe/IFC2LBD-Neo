@@ -7,6 +7,9 @@
 //! ifc-lite is MPL-2.0. This wrapper is Apache-2.0 as part of the larger work.
 
 pub use ifc_lite_geometry::mesh::Mesh;
+use std::sync::Arc;
+
+const DEFAULT_GEOMETRY_THREAD_STACK_BYTES: usize = 1024 * 1024 * 1024;
 
 /// A single geometry instance for one IFC element.
 #[derive(Debug, Clone)]
@@ -36,26 +39,60 @@ pub struct GeometryInstance {
 
 /// Process all elements in `element_ids` and return their tessellated meshes.
 ///
-/// `ifc_content`: full raw IFC/STEP text (UTF-8).
-/// `element_ids`: express IDs of elements to tessellate.
-pub fn stream_meshes(ifc_content: &str, element_ids: &[u64]) -> Vec<FlatMesh> {
+/// Accepts `Arc<String>` so the content can be shared across threads without copying.
+/// Runs tessellation on a dedicated thread with a 256 MB stack to safely handle
+/// deep BSP recursion from complex boolean/CSG operations on native targets.
+/// Inside that thread, elements are processed in parallel chunks via rayon::scope.
+pub fn stream_meshes(ifc_content: Arc<String>, element_ids: &[u64]) -> Vec<FlatMesh> {
+    if element_ids.is_empty() { return Vec::new(); }
+
+    let element_ids_vec: Vec<u64> = element_ids.to_vec();
+
+    // Native TUX-class models need materially more headroom than rayon's default
+    // worker stack. Keep geometry on a dedicated large-stack thread and allow a
+    // local override for diagnostics without another rebuild.
+    std::thread::Builder::new()
+        .name("ifc-geometry".to_string())
+        .stack_size(geometry_thread_stack_bytes())
+        .spawn(move || tessellate_parallel(ifc_content, element_ids_vec))
+        .expect("failed to spawn ifc-geometry thread")
+        .join()
+        .unwrap_or_default()
+}
+
+/// Run sequential element tessellation on the 256 MB geometry thread.
+///
+/// Sequential: BSP/CSG recursion for each element runs entirely on this thread's
+/// 256 MB stack — no rayon work-stealing that would put BSP frames on 8 MB workers.
+/// ifc-lite's internal par_iter (brep face triangulation) still dispatches to the
+/// rayon pool, but those tasks are leaf-level and don't recurse into BSP themselves.
+fn tessellate_parallel(ifc_content: Arc<String>, element_ids: Vec<u64>) -> Vec<FlatMesh> {
     use ifc_lite_core::{build_entity_index, EntityDecoder};
     use ifc_lite_geometry::router::GeometryRouter;
 
-    if element_ids.is_empty() {
-        return Vec::new();
-    }
+    let content_str: &str = &ifc_content;
+    let index = build_entity_index(content_str);
+    let mut decoder = EntityDecoder::with_index(content_str, index);
+    let router = GeometryRouter::with_units(content_str, &mut decoder);
+    let color_map = build_color_map(content_str, &mut decoder);
 
-    let index = build_entity_index(ifc_content);
-    let mut decoder = EntityDecoder::with_index(ifc_content, index);
-    let router = GeometryRouter::with_units(ifc_content, &mut decoder);
+    tessellate_chunk(&element_ids, &router, &mut decoder, &color_map)
+}
 
-    // Pre-build IFCSTYLEDITEM color map: geometry item express ID → RGBA
-    let color_map = build_color_map(ifc_content, &mut decoder);
-
-    let mut results = Vec::with_capacity(element_ids.len());
+/// Tessellate a slice of element IDs using the given (thread-local) router and decoder.
+fn tessellate_chunk(
+    element_ids: &[u64],
+    router: &ifc_lite_geometry::router::GeometryRouter,
+    decoder: &mut ifc_lite_core::EntityDecoder,
+    color_map: &std::collections::HashMap<u32, [f32; 4]>,
+) -> Vec<FlatMesh> {
+    let mut results = Vec::new();
+    let trace_elements = std::env::var_os("IFC_GEOMETRY_TRACE_ELEMENTS").is_some();
 
     for &eid in element_ids {
+        if trace_elements {
+            eprintln!("[ifc-geometry] element {eid}");
+        }
         let id = eid as u32;
         let element = match decoder.decode_by_id(id) {
             Ok(e) => e,
@@ -65,50 +102,35 @@ pub fn stream_meshes(ifc_content: &str, element_ids: &[u64]) -> Vec<FlatMesh> {
         let guid = element.get(0).and_then(|a| a.as_string()).unwrap_or("").to_string();
         let category = element.ifc_type.to_string();
 
-        // World transform
-        let world_flat = match router.resolve_scaled_placement(&element, &mut decoder) {
+        let world_flat = match router.resolve_scaled_placement(&element, decoder) {
             Ok(t) => t,
             Err(_) => IDENTITY_4X4,
         };
 
-        // Oracle granularity: one sub-mesh per leaf geometry item (IFCEXTRUDEDAREASOLID etc.).
-        // sub.local_matrix = accumulated(T×O) × itemPosition, geometry in item-local space (no Position baked).
-        let sub_meshes = match router.process_element_submeshes_in_definition_space(&element, &mut decoder) {
+        let sub_meshes = match router.process_element_submeshes_in_definition_space(&element, decoder) {
             Ok(s) if !s.sub_meshes.is_empty() => s,
             _ => continue,
         };
 
-        let n = sub_meshes.sub_meshes.len();
-        let mut geometries = Vec::with_capacity(n);
+        let mut geometries = Vec::with_capacity(sub_meshes.sub_meshes.len());
 
-        // Oracle: globalTransform = elementPlacement × T0 × O0
-        //         localTransform[0] = identity
-        //         localTransform[i] = (T0×O0)^-1 × (Ti×Oi)
         let elem_placement = nalgebra::Matrix4::from_column_slice(&world_flat);
         let first_to = sub_meshes.sub_meshes.first()
             .and_then(|s| s.local_matrix)
             .unwrap_or_else(nalgebra::Matrix4::identity);
         let first_to_inv = first_to.try_inverse()
             .unwrap_or_else(nalgebra::Matrix4::identity);
-        // globalTransform = elementPlacement × T0 × O0 (matches oracle flatTransformation[0])
         let world_transform = mat4_to_col16(&(elem_placement * first_to));
 
         for (i, sub) in sub_meshes.sub_meshes.into_iter().enumerate() {
             if sub.mesh.positions.is_empty() { continue; }
-
-            let color = color_map.get(&sub.geometry_id)
-                .copied()
-                .unwrap_or(DEFAULT_COLOR);
-
-            // localTransform[0] = identity (oracle: first geometry is reference frame)
-            // localTransform[i] = (T0×O0)^-1 × (Ti×Oi)
+            let color = color_map.get(&sub.geometry_id).copied().unwrap_or(DEFAULT_COLOR);
             let local_transform = if i == 0 {
                 IDENTITY_4X4
             } else {
                 let ti_oi = sub.local_matrix.unwrap_or_else(nalgebra::Matrix4::identity);
                 mat4_to_col16(&(first_to_inv * ti_oi))
             };
-
             geometries.push(GeometryInstance {
                 geometry_id: sub.geometry_id as u64,
                 mesh: sub.mesh,
@@ -118,9 +140,9 @@ pub fn stream_meshes(ifc_content: &str, element_ids: &[u64]) -> Vec<FlatMesh> {
             });
         }
 
-        if geometries.is_empty() { continue; }
-
-        results.push(FlatMesh { express_id: eid, guid, category, geometries });
+        if !geometries.is_empty() {
+            results.push(FlatMesh { express_id: eid, guid, category, geometries });
+        }
     }
 
     results
@@ -218,6 +240,15 @@ const IDENTITY_4X4: [f64; 16] = [
 fn mat4_to_col16(m: &nalgebra::Matrix4<f64>) -> [f64; 16] {
     let s = m.as_slice();
     [s[0],s[1],s[2],s[3], s[4],s[5],s[6],s[7], s[8],s[9],s[10],s[11], s[12],s[13],s[14],s[15]]
+}
+
+fn geometry_thread_stack_bytes() -> usize {
+    std::env::var("IFC_GEOMETRY_STACK_MB")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|mb| *mb >= 64)
+        .map(|mb| mb.saturating_mul(1024 * 1024))
+        .unwrap_or(DEFAULT_GEOMETRY_THREAD_STACK_BYTES)
 }
 
 const DEFAULT_COLOR: [f32; 4] = [0.8, 0.8, 0.8, 1.0];

@@ -6,6 +6,7 @@ license.workspace = true
 
 [features]
 default = []
+manifold-csg = ["ifc-lite-geometry/manifold-csg"]
 # proof-bin: only for the ifc-lite-proof diagnostic binary, not for library use
 proof-bin = ["dep:parquet", "dep:arrow-array", "dep:arrow-schema", "dep:zip"]
 
