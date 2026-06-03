@@ -20,7 +20,6 @@ use lbd_serializer::{
 };
 
 use crate::pipeline_plugins::OutputDir;
-use plugin_fragments_producer::FRAGMENTS_PRODUCER_ID;
 use plugin_geometry_preprocess::{IFCContent, MetadataModeOption, GEOMETRY_PREPROCESS_ID};
 use plugin_geometry_producer::{GeometryFormat, GeometryProducerConfig, GEOMETRY_PRODUCER_ID};
 use tessellated_model::MetadataMode;
@@ -875,7 +874,6 @@ fn validate_activation_plan_with_args(
         || active.contains(lbd_pipeline::PROPS_OPM_PRODUCER_ID)
         || active.contains(lbd_pipeline::OMG_FOG_PRODUCER_ID)
         || active.contains(lbd_pipeline::IFCOWL_PRODUCER_ID)
-        || active.contains(FRAGMENTS_PRODUCER_ID)
         || active.contains(GEOMETRY_PRODUCER_ID);
     if !has_any_producer {
         anyhow::bail!(
@@ -924,7 +922,7 @@ fn resolve_execution_settings(
             lbd_pipeline::TURTLE_SERIALIZER_ID,
         ),
         // Geometry-only workflow: neo-geometry-producer emits a sidecar, no triple serializer needed.
-        (false, false) if active.contains(GEOMETRY_PRODUCER_ID) || active.contains(FRAGMENTS_PRODUCER_ID) => {
+        (false, false) if active.contains(GEOMETRY_PRODUCER_ID) => {
             OutputFormat::Turtle // placeholder — no triple output, sidecar only
         }
         (false, false) => anyhow::bail!(

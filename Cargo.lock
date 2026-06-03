@@ -1416,7 +1416,6 @@ dependencies = [
  "lbd-pipeline",
  "lbd-serializer",
  "lbd-topology",
- "plugin-fragments-producer",
  "plugin-geometry-preprocess",
  "plugin-geometry-producer",
  "plugin-property-preprocess",
@@ -1447,7 +1446,6 @@ dependencies = [
  "lbd-ontology",
  "lbd-pipeline",
  "lbd-serializer",
- "plugin-fragments-producer",
  "plugin-geometry-preprocess",
  "plugin-geometry-producer",
  "plugin-property-preprocess",
@@ -2215,18 +2213,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "51bae2ac328883f7acdfea3d66a7c35751187f870bc81f94563733a154d7a670"
 dependencies = [
  "plotters-backend",
-]
-
-[[package]]
-name = "plugin-fragments-producer"
-version = "0.1.0"
-dependencies = [
- "crossbeam",
- "fragments-core",
- "ifc-model",
- "ifc-step",
- "lbd-pipeline",
- "serde_json",
 ]
 
 [[package]]

@@ -27,7 +27,6 @@ lbd-geometry = { workspace = true }
 lbd-serializer = { workspace = true }
 plugin-topology-full = { workspace = true }
 plugin-property-preprocess = { workspace = true }
-plugin-fragments-producer = { workspace = true }
 plugin-qto-preprocess = { workspace = true }
 plugin-geometry-preprocess = { workspace = true }
 tessellated-model = { workspace = true }

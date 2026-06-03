@@ -13,6 +13,100 @@ use tessellated_model::TessellatedModel;
 
 pub const GEOMETRY_PRODUCER_ID: &str = "neo-geometry-producer";
 
+/// Multiply two column-major 4×4 matrices: C = A * B.
+///
+/// Used by glTF and Parquet writers to combine world_transform and local_transform
+/// before baking into vertex positions. Fragments skips this because its viewer
+/// applies both transforms at runtime.
+pub(crate) fn mul_mat4(a: &[f64; 16], b: &[f64; 16]) -> [f64; 16] {
+    let mut c = [0.0f64; 16];
+    for col in 0..4 {
+        for row in 0..4 {
+            let mut s = 0.0;
+            for k in 0..4 { s += a[k * 4 + row] * b[col * 4 + k]; }
+            c[col * 4 + row] = s;
+        }
+    }
+    c
+}
+
+/// Content-signature hash of a position-free ifc-lite triangulated mesh, for shell dedup.
+///
+/// Mirrors `fragments_core::hash_shell` but operates on ifc-lite's deterministic
+/// triangulation instead of the oracle polygon mesh. Because ifc-lite produces the
+/// same triangle count and the same invariants (vertex/triangle counts, summed
+/// triangle area, signed volume, centroid) for the same shape regardless of where
+/// it sits in the model, two STEP entities with identical geometry hash identically
+/// — closing the dedup gap that per-STEP-entity-ID dedup leaves open.
+///
+/// Requires the mesh to be in position-free (definition) space, which the geometry
+/// un-bake guarantees; otherwise placement would leak into the centroid term.
+#[cfg(feature = "fmt-fragments")]
+pub(crate) fn hash_ifc_mesh(mesh: &ifc_geometry::Mesh) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let p = &mesh.positions;
+    let vertex_count = p.len() / 3;
+    let triangle_count = mesh.indices.len() / 3;
+
+    let precision = 10000.0f64;
+    let round = |v: f64| -> i64 { (v * precision).round() as i64 };
+    let at = |i: usize| -> [f64; 3] {
+        [p[i * 3] as f64, p[i * 3 + 1] as f64, p[i * 3 + 2] as f64]
+    };
+
+    let mut area_sum = 0.0f64;
+    let mut biggest_area = 0.0f64;
+    let mut volume = 0.0f64; // 6× signed volume (constant factor irrelevant for hashing)
+    let (mut cx, mut cy, mut cz) = (0.0f64, 0.0f64, 0.0f64);
+
+    for tri in mesh.indices.chunks_exact(3) {
+        let (i1, i2, i3) = (tri[0] as usize, tri[1] as usize, tri[2] as usize);
+        if i1 >= vertex_count || i2 >= vertex_count || i3 >= vertex_count {
+            continue;
+        }
+        let (a, b, c) = (at(i1), at(i2), at(i3));
+        let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+        let cross = [
+            ab[1] * ac[2] - ab[2] * ac[1],
+            ab[2] * ac[0] - ab[0] * ac[2],
+            ab[0] * ac[1] - ab[1] * ac[0],
+        ];
+        let area = 0.5 * (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt();
+        area_sum += area;
+        if area > biggest_area { biggest_area = area; }
+        // Signed tetra volume w.r.t. origin (a · (b × c))
+        volume += a[0] * (b[1] * c[2] - b[2] * c[1])
+            - a[1] * (b[0] * c[2] - b[2] * c[0])
+            + a[2] * (b[0] * c[1] - b[1] * c[0]);
+        cx += a[0] + b[0] + c[0];
+        cy += a[1] + b[1] + c[1];
+        cz += a[2] + b[2] + c[2];
+    }
+
+    let mut h = DefaultHasher::new();
+    vertex_count.hash(&mut h);
+    triangle_count.hash(&mut h);
+    round(area_sum).hash(&mut h);
+    round(biggest_area).hash(&mut h);
+    round(volume.abs()).hash(&mut h);
+    round(cx).hash(&mut h);
+    round(cy).hash(&mut h);
+    round(cz).hash(&mut h);
+    h.finish()
+}
+
+/// IFC uses a Z-up right-handed coordinate system; glTF expects Y-up right-handed.
+/// Conversion: x' = x, y' = z, z' = -y  (column-major, applied left of world*local).
+pub(crate) const IFC_TO_GLTF: [f64; 16] = [
+    1.0, 0.0,  0.0, 0.0,   // col 0
+    0.0, 0.0, -1.0, 0.0,   // col 1
+    0.0, 1.0,  0.0, 0.0,   // col 2
+    0.0, 0.0,  0.0, 1.0,   // col 3
+];
+
 /// Runtime config stored in PipelineContext by the CLI/WASM runner.
 #[derive(Clone, Copy)]
 pub struct GeometryProducerConfig {
@@ -174,10 +268,12 @@ fn serialize_fragments(
 
 #[cfg(feature = "fmt-gltf")]
 fn serialize_gltf(
-    _ctx: &PipelineContext,
+    ctx: &PipelineContext,
     tessellated: &TessellatedModel,
 ) -> Result<Vec<u8>, ProducerError> {
-    gltf_writer::write(tessellated)
+    use ifc_step::StepFile;
+    let step = ctx.get::<StepFile>();
+    gltf_writer::write(tessellated, step.as_deref())
         .map_err(|e| ProducerError::Conversion(format!("glTF: {e}")))
 }
 
@@ -198,7 +294,7 @@ mod gltf_writer {
     use super::*;
     use serde_json::json;
 
-    pub fn write(tessellated: &TessellatedModel) -> Result<Vec<u8>, String> {
+    pub fn write(tessellated: &TessellatedModel, _step: Option<&ifc_step::StepFile>) -> Result<Vec<u8>, String> {
         let mut bin: Vec<u8> = Vec::new();
 
         // Accessor indices and metadata for building the mesh JSON section
@@ -221,39 +317,17 @@ mod gltf_writer {
         for flat in &tessellated.meshes {
             if flat.geometries.is_empty() { continue; }
 
-            // Merge all sub-meshes for this element
             let mut all_pos: Vec<f32> = Vec::new();
             let mut all_nrm: Vec<f32> = Vec::new();
             let mut all_idx: Vec<u32> = Vec::new();
             let mut base_v: u32 = 0;
             let first_color = flat.geometries[0].color;
 
+            // Use ifc-lite transforms: translations are in meters (scale_transform applied),
+            // vertices are also in meters (scale_mesh applied) — consistent units throughout.
             for geom in &flat.geometries {
-                let pos = &geom.mesh.positions;
-                let nrm = &geom.mesh.normals;
-                let n = pos.len() / 3;
-                let m = &geom.world_transform;
-
-                for i in 0..n {
-                    let (lx, ly, lz) = (pos[i*3] as f64, pos[i*3+1] as f64, pos[i*3+2] as f64);
-                    all_pos.push((m[0]*lx + m[4]*ly + m[8]*lz + m[12]) as f32);
-                    all_pos.push((m[1]*lx + m[5]*ly + m[9]*lz + m[13]) as f32);
-                    all_pos.push((m[2]*lx + m[6]*ly + m[10]*lz + m[14]) as f32);
-                    if nrm.len() == pos.len() {
-                        let (nx, ny, nz) = (nrm[i*3] as f64, nrm[i*3+1] as f64, nrm[i*3+2] as f64);
-                        let wnx = m[0]*nx + m[4]*ny + m[8]*nz;
-                        let wny = m[1]*nx + m[5]*ny + m[9]*nz;
-                        let wnz = m[2]*nx + m[6]*ny + m[10]*nz;
-                        let len = (wnx*wnx + wny*wny + wnz*wnz).sqrt().max(1e-12);
-                        all_nrm.push((wnx/len) as f32);
-                        all_nrm.push((wny/len) as f32);
-                        all_nrm.push((wnz/len) as f32);
-                    } else {
-                        all_nrm.push(0.0); all_nrm.push(0.0); all_nrm.push(1.0);
-                    }
-                }
-                for idx in &geom.mesh.indices { all_idx.push(*idx + base_v); }
-                base_v += (pos.len() / 3) as u32;
+                let combined = mul_mat4(&IFC_TO_GLTF, &mul_mat4(&geom.world_transform, &geom.local_transform));
+                bake_geom(&geom.mesh, &combined, &mut all_pos, &mut all_nrm, &mut all_idx, &mut base_v);
             }
 
             if all_idx.is_empty() { continue; }
@@ -435,6 +509,24 @@ mod gltf_writer {
         for _ in 0..bin_padding { out.push(0); }
 
         Ok(out)
+    }
+
+    fn bake_geom(mesh: &ifc_geometry::Mesh, m: &[f64; 16], pos: &mut Vec<f32>, nrm: &mut Vec<f32>, idx: &mut Vec<u32>, base_v: &mut u32) {
+        let n = mesh.positions.len() / 3;
+        for i in 0..n {
+            let (lx, ly, lz) = (mesh.positions[i*3] as f64, mesh.positions[i*3+1] as f64, mesh.positions[i*3+2] as f64);
+            pos.push((m[0]*lx + m[4]*ly + m[8]*lz + m[12]) as f32);
+            pos.push((m[1]*lx + m[5]*ly + m[9]*lz + m[13]) as f32);
+            pos.push((m[2]*lx + m[6]*ly + m[10]*lz + m[14]) as f32);
+            if mesh.normals.len() == mesh.positions.len() {
+                let (nx, ny, nz) = (mesh.normals[i*3] as f64, mesh.normals[i*3+1] as f64, mesh.normals[i*3+2] as f64);
+                let (wnx, wny, wnz) = (m[0]*nx + m[4]*ny + m[8]*nz, m[1]*nx + m[5]*ny + m[9]*nz, m[2]*nx + m[6]*ny + m[10]*nz);
+                let len = (wnx*wnx + wny*wny + wnz*wnz).sqrt().max(1e-12);
+                nrm.push((wnx/len) as f32); nrm.push((wny/len) as f32); nrm.push((wnz/len) as f32);
+            } else { nrm.push(0.0); nrm.push(0.0); nrm.push(1.0); }
+        }
+        for i in &mesh.indices { idx.push(*i + *base_v); }
+        *base_v += n as u32;
     }
 }
 
@@ -666,6 +758,7 @@ mod fragments {
         let mut lt_dedup: HashMap<[u32; 9], u32> = HashMap::new();
         let mut material_dedup: HashMap<[u8; 4], u32> = HashMap::new();
         let mut item_counter = 0u32;
+        let mut dbg_shells_by_cat: HashMap<String, u32> = HashMap::new();
 
         for flat_mesh in &tessellated.meshes {
             let element_id = flat_mesh.express_id;
@@ -696,11 +789,19 @@ mod fragments {
                 let repr_idx = if let Some(&existing) = shell_dedup_by_id.get(&instance.item_id) {
                     existing
                 } else {
-                    let shell_hash = hash_shell(&instance.shell);
+                    // Prefer a content hash on the position-free ifc-lite mesh (deterministic
+                    // triangulation → identical shapes across distinct STEP entities collapse).
+                    // Fall back to the oracle polygon-shell hash when ifc-lite didn't tessellate
+                    // this item (so it shares the same key space as the stored fallback geometry).
+                    let shell_hash = match item_mesh_map.get(&instance.item_id) {
+                        Some(&mesh) => super::hash_ifc_mesh(mesh),
+                        None => hash_shell(&instance.shell),
+                    };
                     if let Some(&existing) = shell_dedup_by_hash.get(&shell_hash) {
                         shell_dedup_by_id.insert(instance.item_id, existing);
                         existing
                     } else {
+                        *dbg_shells_by_cat.entry(flat_mesh.category.clone()).or_insert(0u32) += 1;
                         let idx = shells.len() as u32;
                         shell_dedup_by_id.insert(instance.item_id, idx);
                         shell_dedup_by_hash.insert(shell_hash, idx);
@@ -783,6 +884,21 @@ mod fragments {
             }
 
             item_counter += 1;
+        }
+
+        if std::env::var_os("IFC_DEDUP_STATS").is_some() {
+            eprintln!(
+                "[dedup] elements={} samples={} unique_shells={} (reuse {:.2}x)",
+                item_counter,
+                samples.len(),
+                shells.len(),
+                samples.len() as f64 / shells.len().max(1) as f64,
+            );
+            let mut cats: Vec<_> = dbg_shells_by_cat.iter().collect();
+            cats.sort_by(|a, b| b.1.cmp(a.1));
+            for (cat, n) in cats.iter().take(12) {
+                eprintln!("[dedup]   {:>5} unique shells  {}", n, cat);
+            }
         }
 
         let shells_offset = builder.create_vector(&shells);

@@ -18,7 +18,6 @@ members = [
     "crates/plugin-template-postprocess",
     "crates/plugin-template-export",
     "crates/plugin-property-preprocess",
-    "crates/plugin-fragments-producer",
     "crates/plugin-qto-preprocess",
     # Vendored geometry engine (MPL-2.0)
     "vendor/geometry/core",
@@ -99,7 +98,6 @@ lbd-geometry = { path = "crates/lbd-geometry" }
 lbd-serializer = { path = "crates/lbd-serializer" }
 plugin-topology-full = { path = "crates/plugin-topology-full" }
 plugin-property-preprocess = { path = "crates/plugin-property-preprocess" }
-plugin-fragments-producer = { path = "crates/plugin-fragments-producer" }
 plugin-qto-preprocess = { path = "crates/plugin-qto-preprocess" }
 # Geometry pipeline
 ifc-geometry = { path = "crates/ifc-geometry" }

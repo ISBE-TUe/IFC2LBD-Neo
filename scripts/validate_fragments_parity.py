@@ -26,10 +26,12 @@ ROOT = Path(__file__).resolve().parents[1]
 ENGINE_DIR = Path("/tmp/engine_fragment")
 NATIVE_BIN = ROOT / "target" / "release" / "ifc2lbd-neo"
 MODULES = [
-    "neo-bot-producer",
-    "fragments-producer",
-    "neo-turtle-serializer",
+    "neo-geometry-preprocess",
+    "neo-geometry-producer",
     "neo-file-export",
+]
+MODULE_OPTS = [
+    "neo-geometry-producer.format=fragments",
 ]
 
 
@@ -126,6 +128,8 @@ def native_fragments(ifc_path: Path, out_dir: Path) -> Path:
     cmd = [str(NATIVE_BIN), str(ifc_path), "-o", str(out_dir / "model.ttl")]
     for module in MODULES:
         cmd += ["--module", module]
+    for opt in MODULE_OPTS:
+        cmd += ["--module-opt", opt]
     run(cmd, cwd=ROOT)
     candidate = out_dir / "model.frag"
     if not candidate.exists():

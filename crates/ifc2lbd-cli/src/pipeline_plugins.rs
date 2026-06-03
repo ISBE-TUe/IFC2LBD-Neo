@@ -20,7 +20,6 @@ use lbd_pipeline::{
     PROPS_OPM_PRODUCER_ID, STDOUT_EXPORT_ID, TURTLE_SERIALIZER_ID,
 };
 use plugin_property_preprocess::{BsddMatchPreprocessPlugin, CleanupPreprocessPlugin};
-use plugin_fragments_producer::FragmentsProducerPlugin;
 use plugin_qto_preprocess::QtoPreprocessPlugin;
 use plugin_geometry_preprocess::GeometryPreprocessPlugin;
 use plugin_geometry_producer::GeometryProducerPlugin;
@@ -79,7 +78,6 @@ pub fn built_in_registry() -> PluginRegistry {
     registry.register_producer(PropsOpmProducerPlugin).unwrap();
     registry.register_producer(OmgFogProducerPlugin).unwrap();
     registry.register_producer(IfcowlProducerPlugin).unwrap();
-    registry.register_producer(FragmentsProducerPlugin).unwrap();
     registry.register_preprocess(GeometryPreprocessPlugin).unwrap();
     registry.register_producer(GeometryProducerPlugin::default()).unwrap();
     registry.register_serializer(TurtleSerializerPlugin).unwrap();

@@ -1,5 +1,41 @@
 # Geometry Shell Dedup — Open Problem & Options
 
+## Empirical update (model-A.ifc)
+
+Measured with `IFC_DEDUP_STATS=1` on the `neo-geometry-producer format=fragments` path
+(the one the WASM viewer uses). Run the env-gated counter in `build_meshes` to reproduce.
+
+- **Option A implemented and verified working** (content hash on the position-free ifc-lite
+  mesh, `hash_ifc_mesh`): lookup hits 2573/2573 items, **0 fallbacks**. Result: 1502 → **1493**
+  shells. Essentially no gain — the hash was never the bottleneck. The doc's earlier 700–900
+  estimate assumed repeated inline geometry; it does not hold for this model.
+- **Prerequisite landed**: the extrusion un-bake spurious-`Rᵀ` bug is fixed (see
+  `vendor/geometry/.../router/processing.rs`), so position-free extrusion shells are now truly
+  position-free. Option A is correct on that foundation; it just isn't where the bloat is.
+
+**Where the 1493 shells actually come from (new-shell count by category):**
+
+| Category | Unique shells | Note |
+|----------|--------------|------|
+| IfcRailing | **768** | only **13** elements → ~59 shells each, no dedup across identical railings |
+| IfcWall | 234 | genuinely structural — 244 IfcOpeningElement CSG-subtracted into wall meshes |
+| IfcDoor | 119 | from only 64 doors |
+| IfcBuildingElementProxy | 97 | |
+| IfcStairFlight | 92 | |
+| (others) | ~183 | |
+
+**Root cause of the *fixable* bloat (railings, doors, stairs):** these are multi-component
+assemblies. Their sub-components (balusters, handrail segments, door panels) carry their
+placement **baked into the mesh**, so identical sub-components at different positions never
+hash-match. Position-free extraction currently covers only direct `IFCEXTRUDEDAREASOLID`
+(via the un-bake in `process_item_definition_space`); mapped items and assembly components
+are not made position-free, so they can't dedup. Walls (234) are the only genuinely
+structural bucket (openings baked in) and content-hashing cannot collapse them.
+
+**Next lever (not yet done):** extend position-free extraction to mapped items / assembly
+sub-components so repeated balusters/panels share one shell. Medium effort, touches vendored
+ifc-lite, correctness-sensitive. Expected to be the dominant win (railings alone are 51% of shells).
+
 ## Status
 
 Shell dedup currently matches the **old Rust fragments-core baseline** (STEP-entity-ID dedup + oracle content hash on polygon geometry):

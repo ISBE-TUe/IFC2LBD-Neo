@@ -70,10 +70,12 @@ pub fn write(
             let pos = &geom.mesh.positions;
             let nrm = &geom.mesh.normals;
             let n = pos.len() / 3;
-            let m = &geom.world_transform; // column-major 4×4
+            // Combine world_transform * local_transform so sub-meshes beyond the first
+            // (e.g. IFCMAPPEDITEM instances) land at their correct world-space positions.
+            let combined = crate::mul_mat4(&geom.world_transform, &geom.local_transform);
+            let m = &combined;
 
             for i in 0..n {
-                // Apply world transform → world-space positions (matching ifc-lite's vertex buffer)
                 let (lx, ly, lz) = (pos[i * 3] as f64, pos[i * 3 + 1] as f64, pos[i * 3 + 2] as f64);
                 all_x.push((m[0] * lx + m[4] * ly + m[8] * lz + m[12]) as f32);
                 all_y.push((m[1] * lx + m[5] * ly + m[9] * lz + m[13]) as f32);
