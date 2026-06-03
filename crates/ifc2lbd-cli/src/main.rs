@@ -833,7 +833,7 @@ fn validate_bsdd_producer_module_config(
 
 fn validate_activation_plan_with_args(
     plan: &lbd_pipeline::ActivationPlan,
-    settings: &ExecutionSettings,
+    _settings: &ExecutionSettings,
 ) -> anyhow::Result<()> {
     let active: HashSet<&str> = plan.enabled_ids.iter().map(|id| id.as_str()).collect();
     let has_any_producer = active.contains(lbd_pipeline::BOT_PRODUCER_ID)

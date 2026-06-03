@@ -12,7 +12,7 @@ use lbd_pipeline::BatchKind;
 use lbd_serializer::{
     serialize_lbd_batches_incremental_to_writer, serialize_nquads_batches_to_writer,
     serialize_nquads_merged_batches_to_writer, serialize_turtle_batch_raw_to_writer,
-    serialize_turtle_batch_to_writer, serialize_turtle_grouped_to_writer, serialize_turtle_to_writer,
+    serialize_turtle_batch_to_writer, serialize_turtle_to_writer,
     write_turtle_prefixes_for_stream,
 };
 

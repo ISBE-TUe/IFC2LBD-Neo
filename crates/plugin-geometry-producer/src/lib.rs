@@ -3,7 +3,6 @@
 //! Reads TessellatedModel from context, serializes to chosen format, emits
 //! via sidecar_tx. Supported formats: fragments (default), gltf, parquet, ifc5.
 
-use std::sync::Arc;
 
 use crossbeam::channel::Sender;
 use lbd_pipeline::{
@@ -197,20 +196,16 @@ fn serialize_gltf(
 #[cfg(feature = "fmt-gltf")]
 mod gltf_writer {
     use super::*;
-    use std::io::{Cursor, Write as IoWrite};
     use serde_json::json;
 
     pub fn write(tessellated: &TessellatedModel) -> Result<Vec<u8>, String> {
         let mut bin: Vec<u8> = Vec::new();
 
-        // Each accessor (one buffer view each): positions, normals, indices
+        // Accessor indices and metadata for building the mesh JSON section
         struct MeshInfo {
-            pos_bv: usize,   // buffer view index for positions
-            nrm_bv: usize,   // buffer view index for normals
-            idx_bv: usize,   // buffer view index for indices
-            idx_count: usize,
-            pos_min: [f32; 3],
-            pos_max: [f32; 3],
+            pos_bv: usize,
+            nrm_bv: usize,
+            idx_bv: usize,
             name: String,
             material_idx: usize,
         }
@@ -367,9 +362,6 @@ mod gltf_writer {
                 pos_bv: pos_acc_idx,
                 nrm_bv: nrm_acc_idx,
                 idx_bv: idx_acc_idx,
-                idx_count: all_idx.len(),
-                pos_min: min,
-                pos_max: max,
                 name: flat.guid.clone(),
                 material_idx: mat_idx,
             });
@@ -474,13 +466,12 @@ mod parquet_writer;
 
 #[cfg(feature = "fmt-fragments")]
 mod fragments {
-    use super::*;
     use flate2::{write::ZlibEncoder, Compression};
     use fragments_schema::*;
     use flatbuffers::{FlatBufferBuilder, WIPOffset};
     use ifc_model::IfcModel;
-    use ifc_step::{StepFile, StepValue};
-    use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+    use ifc_step::StepFile;
+    use std::collections::HashMap;
     use std::io::Write;
     use tessellated_model::TessellatedModel;
 
@@ -493,13 +484,10 @@ mod fragments {
 
         // Build meshes first and store as raw u32 to break the FlatBuffers
         // lifetime chain — this lets us re-borrow builder for entity section.
-        let meshes_raw = build_meshes(&mut builder, tessellated)?.value();
+        let meshes_raw = build_meshes(&mut builder, tessellated, step)?.value();
 
         // ── Entity/attribute/relation data — respects metadata mode ───────────
         let entity_data = build_entity_data(&mut builder, model, step, tessellated.metadata_mode)?;
-
-        // Reconstruct meshes offset (WIPOffset is just a u32 wrapper)
-        let meshes: flatbuffers::WIPOffset<Meshes> = flatbuffers::WIPOffset::new(meshes_raw);
 
         // ── Model FlatBuffer ──────────────────────────────────────────────────
         // Reconstruct typed WIPOffset values from raw u32 (no lifetime constraint)
@@ -631,8 +619,21 @@ mod fragments {
     fn build_meshes<'a>(
         builder: &mut FlatBufferBuilder<'a>,
         tessellated: &TessellatedModel,
+        step: &StepFile,
     ) -> Result<flatbuffers::WIPOffset<Meshes<'a>>, String> {
-        use ifc_geometry::Mesh as IFCMesh;
+        use fragments_core::{geometry_instances_for_product, hash_shell, product_world_transform};
+
+        // Build map: item_id (STEP entity ID) → position-free ifc-lite mesh + color.
+        // ifc-geometry's geometry_id = leaf item express ID = oracle's item_id.
+        let all_geoms: Vec<(u64, [f32; 4], &ifc_geometry::Mesh)> = tessellated.meshes.iter()
+            .flat_map(|fm| fm.geometries.iter().map(|g| (g.geometry_id, g.color, &g.mesh)))
+            .collect();
+        let mut item_mesh_map: HashMap<u64, &ifc_geometry::Mesh> = HashMap::new();
+        let mut item_id_to_color: HashMap<u64, [f32; 4]> = HashMap::new();
+        for &(gid, color, mesh) in &all_geoms {
+            item_mesh_map.entry(gid).or_insert(mesh);
+            item_id_to_color.insert(gid, color);
+        }
 
         let mut shells: Vec<flatbuffers::WIPOffset<Shell<'a>>> = Vec::new();
         let mut representations: Vec<Representation> = Vec::new();
@@ -657,66 +658,91 @@ mod fragments {
         let mut next_id: u32 = 1;
         lt_ids.push(next_id); next_id += 1;
 
-        // Dual dedup matching oracle's approach:
-        // 1. By geometry entity ID (fast, covers IFCMAPPEDITEM shared geometry)
-        // 2. By content hash (covers different STEP entities with identical geometry)
+        // Dedup: oracle item_id (STEP entity ID) → shell index.
+        // oracle content hash → shell index.
+        // Local transform key → lt index.
         let mut shell_dedup_by_id: HashMap<u64, u32> = HashMap::new();
         let mut shell_dedup_by_hash: HashMap<u64, u32> = HashMap::new();
+        let mut lt_dedup: HashMap<[u32; 9], u32> = HashMap::new();
         let mut material_dedup: HashMap<[u8; 4], u32> = HashMap::new();
         let mut item_counter = 0u32;
 
         for flat_mesh in &tessellated.meshes {
-            if flat_mesh.geometries.is_empty() { continue; }
+            let element_id = flat_mesh.express_id;
 
-            let first_geom = &flat_mesh.geometries[0];
+            // Use oracle's STEP traversal to get item_ids, local_transforms, and shells
+            // for content hashing. This ensures structural parity with oracle.
+            let instances = geometry_instances_for_product(step, element_id);
+            if instances.is_empty() { continue; }
 
-            // Global transform from first geometry world matrix (column-major)
-            let m = &first_geom.world_transform;
+            // Global transform: oracle algorithm = element_world × first_instance_transform
+            let world = product_world_transform(step, element_id);
+            let first_tf = &instances[0].local_transform;
+            let element_transform = world.mul(first_tf);
+            let translation = element_transform.translation();
+            let (x_axis, y_axis) = element_transform.axes();
             global_transforms.push(Transform::new(
-                &DoubleVector::new(m[12], m[13], m[14]),
-                &FloatVector::new(m[0] as f32, m[1] as f32, m[2] as f32),
-                &FloatVector::new(m[4] as f32, m[5] as f32, m[6] as f32),
+                &DoubleVector::new(translation[0], translation[1], translation[2]),
+                &FloatVector::new(x_axis[0], x_axis[1], x_axis[2]),
+                &FloatVector::new(y_axis[0], y_axis[1], y_axis[2]),
             ));
-            gt_ids.push(flat_mesh.express_id as u32);
+            gt_ids.push(element_id as u32);
             meshes_items.push(item_counter);
 
-            for (geom_idx, geom) in flat_mesh.geometries.iter().enumerate() {
-                // Dedup: entity ID first, then content hash (oracle: _previousGeometriesIDs + _previousGeometries)
-                let repr_idx = if let Some(&existing) = shell_dedup_by_id.get(&geom.geometry_id) {
+            let first_tf_inv = first_tf.inverse();
+
+            for (geom_idx, instance) in instances.iter().enumerate() {
+                // Dedup by oracle item_id, then oracle content hash
+                let repr_idx = if let Some(&existing) = shell_dedup_by_id.get(&instance.item_id) {
                     existing
                 } else {
-                    let mesh_hash = hash_ifc_mesh(&geom.mesh);
-                    if let Some(&existing) = shell_dedup_by_hash.get(&mesh_hash) {
-                        shell_dedup_by_id.insert(geom.geometry_id, existing);
+                    let shell_hash = hash_shell(&instance.shell);
+                    if let Some(&existing) = shell_dedup_by_hash.get(&shell_hash) {
+                        shell_dedup_by_id.insert(instance.item_id, existing);
                         existing
                     } else {
-                    let idx = shells.len() as u32;
-                    shell_dedup_by_id.insert(geom.geometry_id, idx);
-                    shell_dedup_by_hash.insert(mesh_hash, idx);
+                        let idx = shells.len() as u32;
+                        shell_dedup_by_id.insert(instance.item_id, idx);
+                        shell_dedup_by_hash.insert(shell_hash, idx);
 
-                    // Build Shell FlatBuffer from ifc-lite Mesh
-                    let shell_offset = build_shell(builder, &geom.mesh);
-                    let (bbox_min, bbox_max) = mesh_bbox(&geom.mesh);
-                    representations.push(Representation::new(
-                        idx,
-                        &BoundingBox::new(
-                            &FloatVector::new(bbox_min[0], bbox_min[1], bbox_min[2]),
-                            &FloatVector::new(bbox_max[0], bbox_max[1], bbox_max[2]),
-                        ),
-                        RepresentationClass::SHELL,
-                    ));
-                    representation_ids.push(next_id); next_id += 1;
-                    shells.push(shell_offset);
-                    idx
-                    } // end else (content hash miss)
-                }; // end if let (entity ID dedup)
+                        // Shell content: ifc-lite position-free mesh (best quality).
+                        // Fallback to oracle's triangle mesh if ifc-lite didn't process this item.
+                        let shell_offset = if let Some(&mesh) = item_mesh_map.get(&instance.item_id) {
+                            build_shell(builder, mesh)
+                        } else {
+                            let (pos, norms, tris) = instance.shell.to_triangulated();
+                            let fallback_mesh = oracle_to_ifc_mesh(&pos, &norms, &tris);
+                            build_shell(builder, &fallback_mesh)
+                        };
 
-                // Material dedup by RGBA
+                        let bbox = if let Some(&mesh) = item_mesh_map.get(&instance.item_id) {
+                            mesh_bbox(mesh)
+                        } else {
+                            let (bbox_min, bbox_max) = instance.shell.bbox();
+                            (bbox_min, bbox_max)
+                        };
+                        representations.push(Representation::new(
+                            idx,
+                            &BoundingBox::new(
+                                &FloatVector::new(bbox.0[0], bbox.0[1], bbox.0[2]),
+                                &FloatVector::new(bbox.1[0], bbox.1[1], bbox.1[2]),
+                            ),
+                            RepresentationClass::SHELL,
+                        ));
+                        representation_ids.push(next_id); next_id += 1;
+                        shells.push(shell_offset);
+                        idx
+                    }
+                };
+
+                // Material from ifc-lite's color for this item_id
+                let color = item_id_to_color.get(&instance.item_id).copied()
+                    .unwrap_or([0.8, 0.8, 0.8, 1.0]);
                 let color_bytes = [
-                    (geom.color[0] * 255.0) as u8,
-                    (geom.color[1] * 255.0) as u8,
-                    (geom.color[2] * 255.0) as u8,
-                    (geom.color[3] * 255.0) as u8,
+                    (color[0] * 255.0) as u8,
+                    (color[1] * 255.0) as u8,
+                    (color[2] * 255.0) as u8,
+                    (color[3] * 255.0) as u8,
                 ];
                 let mat_idx = *material_dedup.entry(color_bytes).or_insert_with(|| {
                     let idx = materials.len() as u32;
@@ -728,10 +754,28 @@ mod fragments {
                     idx
                 });
 
-                // Local transform (0 = identity for first geometry)
-                let lt_id = if geom_idx == 0 { 0u32 } else {
-                    // TODO: compute relative local transform when ifc-lite exposes per-instance transforms
+                // Local transform: oracle algorithm = first_tf^-1 × this_tf
+                let lt_id = if geom_idx == 0 {
                     0u32
+                } else {
+                    let relative = first_tf_inv.mul(&instance.local_transform);
+                    if relative.is_identity() {
+                        0u32
+                    } else {
+                        let key = affine3_to_transform_key(&relative);
+                        *lt_dedup.entry(key).or_insert_with(|| {
+                            let idx = local_transforms.len() as u32;
+                            let pos = relative.translation();
+                            let (lx, ly) = relative.axes();
+                            local_transforms.push(Transform::new(
+                                &DoubleVector::new(pos[0], pos[1], pos[2]),
+                                &FloatVector::new(lx[0], lx[1], lx[2]),
+                                &FloatVector::new(ly[0], ly[1], ly[2]),
+                            ));
+                            lt_ids.push(next_id); next_id += 1;
+                            idx
+                        })
+                    }
                 };
 
                 samples.push(Sample::new(item_counter, mat_idx, repr_idx, lt_id));
@@ -889,60 +933,6 @@ mod fragments {
 
     /// Oracle-style content hash from ifc-file-reader.ts.
     ///
-    /// Metrics: vertexCount, triangleCount, areaSum, biggestArea, volume, centroid, firstVertex.
-    /// All floats rounded to precision p=10000. More tolerant than exact-bit hashing
-    /// — catches near-identical geometry that differs only in floating point precision.
-    fn hash_ifc_mesh(mesh: &ifc_geometry::Mesh) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-
-        let p = 10000.0f32;
-        let round = |v: f32| -> i32 { (v * p).round() as i32 };
-
-        let vertex_count = mesh.positions.len() / 3;
-        let triangle_count = mesh.indices.len() / 3;
-        let pos = &mesh.positions;
-        let idx = &mesh.indices;
-
-        let mut area_sum = 0.0f32;
-        let mut biggest_area = 0.0f32;
-        let mut volume = 0.0f32;
-        let mut cx = 0.0f32;
-        let mut cy = 0.0f32;
-        let mut cz = 0.0f32;
-
-        for tri in idx.chunks_exact(3) {
-            let (i1, i2, i3) = (tri[0] as usize, tri[1] as usize, tri[2] as usize);
-            if i1*3+2 >= pos.len() || i2*3+2 >= pos.len() || i3*3+2 >= pos.len() { continue; }
-            let (ax, ay, az) = (pos[i1*3], pos[i1*3+1], pos[i1*3+2]);
-            let (bx, by, bz) = (pos[i2*3], pos[i2*3+1], pos[i2*3+2]);
-            let (px, py, pz) = (pos[i3*3], pos[i3*3+1], pos[i3*3+2]);
-            let (abx, aby, abz) = (bx-ax, by-ay, bz-az);
-            let (acx, acy, acz) = (px-ax, py-ay, pz-az);
-            let cross = ((aby*acz-abz*acy).powi(2)+(abz*acx-abx*acz).powi(2)+(abx*acy-aby*acx).powi(2)).sqrt();
-            let area = cross * 0.5;
-            area_sum += area;
-            if area > biggest_area { biggest_area = area; }
-            cx += ax+bx+px; cy += ay+by+py; cz += az+bz+pz;
-            let (v321,v231,v312,v132,v213,v123) = (px*by*az, bx*py*az, px*ay*bz, ax*py*bz, bx*ay*pz, ax*by*pz);
-            volume += (1.0/6.0)*(-v321+v231+v312-v132-v213+v123);
-        }
-        let n = (triangle_count * 3) as f32;
-        if n > 0.0 { cx /= n; cy /= n; cz /= n; }
-        volume = volume.abs();
-        let (x1,y1,z1) = if vertex_count > 0 { (pos[0],pos[1],pos[2]) } else { (0.0,0.0,0.0) };
-
-        let mut s = DefaultHasher::new();
-        vertex_count.hash(&mut s);
-        triangle_count.hash(&mut s);
-        round(area_sum).hash(&mut s);
-        round(biggest_area).hash(&mut s);
-        round(volume).hash(&mut s);
-        round(cx).hash(&mut s); round(cy).hash(&mut s); round(cz).hash(&mut s);
-        round(x1).hash(&mut s); round(y1).hash(&mut s); round(z1).hash(&mut s);
-        s.finish()
-    }
-
     fn mesh_bbox(mesh: &ifc_geometry::Mesh) -> ([f32; 3], [f32; 3]) {
         let mut min = [f32::MAX; 3];
         let mut max = [f32::MIN; 3];
@@ -953,6 +943,30 @@ mod fragments {
             }
         }
         (min, max)
+    }
+
+    /// 9-component key for local transform deduplication.
+    fn affine3_to_transform_key(t: &fragments_core::Affine3) -> [u32; 9] {
+        let pos = t.translation();
+        let (x, y) = t.axes();
+        [
+            (pos[0] as f32).to_bits(), (pos[1] as f32).to_bits(), (pos[2] as f32).to_bits(),
+            x[0].to_bits(), x[1].to_bits(), x[2].to_bits(),
+            y[0].to_bits(), y[1].to_bits(), y[2].to_bits(),
+        ]
+    }
+
+    /// Convert oracle's triangle soup to an ifc-lite Mesh (fallback when ifc-lite didn't tessellate).
+    fn oracle_to_ifc_mesh(
+        positions: &[[f32; 3]],
+        normals: &[[f32; 3]],
+        triangles: &[[u32; 3]],
+    ) -> ifc_geometry::Mesh {
+        let mut mesh = ifc_geometry::Mesh::new();
+        for p in positions { mesh.positions.extend_from_slice(p); }
+        for n in normals   { mesh.normals.extend_from_slice(n); }
+        for t in triangles { mesh.indices.extend_from_slice(t); }
+        mesh
     }
 
     fn compress(bytes: &[u8]) -> Result<Vec<u8>, std::io::Error> {
