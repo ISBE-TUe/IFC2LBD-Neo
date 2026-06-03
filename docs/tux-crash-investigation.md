@@ -1,5 +1,14 @@
 # TUX Crash Investigation — Observed Facts Only
 
+## Current status (2026-06-03)
+
+- Native CLI no longer uses the legacy BSP path for the failing solid-solid boolean chain on TUX.
+- Native CLI now succeeds on TUX with Manifold CSG enabled.
+- The browser/WASM build remains on the legacy non-Manifold path.
+- A direct Manifold enable for `wasm32-unknown-unknown` was built and tested, but the browser trapped during `neo-geometry-preprocess` with `ERROR: unreachable executed`.
+- That WASM target is explicitly provisional upstream and runs without a C++ exception runtime, so an internal Manifold throw becomes a hard wasm trap rather than a recoverable Rust error.
+- Decision: keep Manifold enabled for native CLI only; keep WASM on the previous working path until either `wasm32-unknown-emscripten` is adopted or the `wasm32-unknown-unknown` Manifold failure is reproduced and fixed upstream.
+
 ## What is known with certainty
 
 ### Test matrix (release build, current committed code)

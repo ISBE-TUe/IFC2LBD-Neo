@@ -45,6 +45,13 @@ enum TurtleGrouping {
     Sorted,
     Streaming,
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TurtleLayout {
+    Joined,
+    Separate,
+}
+
 #[derive(Debug, Parser)]
 #[command(name = "ifc2lbd-neo")]
 #[command(about = "Convert IFC STEP files to a first-slice LBD Turtle model")]
@@ -134,6 +141,7 @@ struct ExecutionSettings {
     emit_ifcowl: bool,
     nquads: NquadsModuleOptions,
     turtle_grouping: TurtleGrouping,
+    turtle_layout: TurtleLayout,
     ifcowl_mode: IfcowlMode,
     bsdd_profile: Option<String>,
     bsdd_compact: bool,
@@ -836,7 +844,7 @@ fn validate_bsdd_producer_module_config(
 
 fn validate_activation_plan_with_args(
     plan: &lbd_pipeline::ActivationPlan,
-    _settings: &ExecutionSettings,
+    settings: &ExecutionSettings,
 ) -> anyhow::Result<()> {
     let active: HashSet<&str> = plan.enabled_ids.iter().map(|id| id.as_str()).collect();
     let has_any_producer = active.contains(lbd_pipeline::BOT_PRODUCER_ID)
@@ -865,6 +873,13 @@ fn validate_activation_plan_with_args(
             lbd_pipeline::FILE_EXPORT_ID,
             lbd_pipeline::LOG_EXPORT_ID,
             lbd_pipeline::STDOUT_EXPORT_ID,
+        );
+    }
+    if settings.output_format == OutputFormat::Turtle
+        && settings.turtle_layout == TurtleLayout::Separate
+    {
+        anyhow::bail!(
+            "`neo-turtle-serializer.layout=separate` is not implemented in CLI yet; use `joined`"
         );
     }
     Ok(())
@@ -934,6 +949,18 @@ fn resolve_execution_settings(
             other
         ),
     };
+    let turtle_layout = match turtle_entries
+        .and_then(|e| e.get("layout"))
+        .map(String::as_str)
+        .unwrap_or("joined")
+    {
+        "joined" => TurtleLayout::Joined,
+        "separate" => TurtleLayout::Separate,
+        other => anyhow::bail!(
+            "invalid `neo-turtle-serializer.layout={}` (expected joined|separate)",
+            other
+        ),
+    };
     let ifcowl_entries = configs.get(lbd_pipeline::IFCOWL_PRODUCER_ID);
     let ifcowl_mode = match ifcowl_entries
         .and_then(|e| e.get("mode"))
@@ -975,6 +1002,7 @@ fn resolve_execution_settings(
             chunk_core_count,
         },
         turtle_grouping,
+        turtle_layout,
         ifcowl_mode,
         bsdd_profile,
         bsdd_compact,
@@ -1122,9 +1150,17 @@ fn validate_turtle_serializer_module_config(
                     ));
                 }
             }
+            "layout" => {
+                if !matches!(value.as_str(), "joined" | "separate") {
+                    return Err(format!(
+                        "`neo-turtle-serializer.layout` must be one of joined|separate, got `{}`",
+                        value
+                    ));
+                }
+            }
             other => {
                 return Err(format!(
-                    "unknown option `neo-turtle-serializer.{}` (supported: grouping)",
+                    "unknown option `neo-turtle-serializer.{}` (supported: grouping, layout)",
                     other
                 ));
             }
@@ -1304,9 +1340,9 @@ fn validate_args(args: &Args, settings: &ExecutionSettings) -> anyhow::Result<()
 mod tests {
     use super::{
         build_requested_module_list,
-        chunk_writer::{self, QuadChunkWriter, QuadChunkingMode},
+        chunk_writer::{self},
         parse_module_configs, session, validate_args, Args, ExecutionSettings, NquadsModuleOptions,
-        OutputFormat, TurtleGrouping,
+        OutputFormat, TurtleGrouping, TurtleLayout,
     };
     use lbd_converter::IfcowlMode;
     use lbd_pipeline::{DerivedFile, ExportError, ExportFileSummary, ExportSession};
@@ -1516,6 +1552,7 @@ mod tests {
                 chunk_core_count: None,
             },
             turtle_grouping: TurtleGrouping::Streaming,
+            turtle_layout: TurtleLayout::Joined,
             ifcowl_mode: IfcowlMode::Full,
             bsdd_profile: None,
             bsdd_compact: false,
