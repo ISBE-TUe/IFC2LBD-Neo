@@ -3,10 +3,10 @@
 export const benchmarkConvertIfc: (a: number, b: number, c: any) => [number, number, number];
 export const convertIfc: (a: number, b: number, c: any) => [number, number, number];
 export const convertIfcToSink: (a: number, b: number, c: any, d: any) => [number, number, number];
+export const initNeoThreadPool: (a: number) => any;
 export const listModules: () => [number, number, number];
 export const planExecution: (a: number, b: any) => [number, number, number];
 export const resolvePlan: (a: any, b: any) => [number, number, number];
-export const initNeoThreadPool: (a: number) => any;
 export const __wbg_wbg_rayon_poolbuilder_free: (a: number, b: number) => void;
 export const initThreadPool: (a: number) => any;
 export const wbg_rayon_poolbuilder_build: (a: number) => void;

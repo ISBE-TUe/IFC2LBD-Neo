@@ -34,10 +34,10 @@ export interface InitOutput {
     readonly benchmarkConvertIfc: (a: number, b: number, c: any) => [number, number, number];
     readonly convertIfc: (a: number, b: number, c: any) => [number, number, number];
     readonly convertIfcToSink: (a: number, b: number, c: any, d: any) => [number, number, number];
+    readonly initNeoThreadPool: (a: number) => any;
     readonly listModules: () => [number, number, number];
     readonly planExecution: (a: number, b: any) => [number, number, number];
     readonly resolvePlan: (a: any, b: any) => [number, number, number];
-    readonly initNeoThreadPool: (a: number) => any;
     readonly __wbg_wbg_rayon_poolbuilder_free: (a: number, b: number) => void;
     readonly initThreadPool: (a: number) => any;
     readonly wbg_rayon_poolbuilder_build: (a: number) => void;

@@ -21,6 +21,7 @@ if [[ ! -x "$NIGHTLY_CARGO" || ! -x "$NIGHTLY_RUSTC" ]]; then
   exit 1
 fi
 
+# opt-level=z is set in .cargo/config.toml for wasm32-unknown-unknown alongside the threading flags.
 RUSTC="$NIGHTLY_RUSTC" "$NIGHTLY_CARGO" build \
   -Z build-std=std,panic_abort \
   --target wasm32-unknown-unknown \
@@ -32,9 +33,21 @@ wasm-bindgen \
   --out-dir "$OUT_DIR" \
   "$ROOT_DIR/target/wasm32-unknown-unknown/release/ifc2lbd_wasm.wasm"
 
+BG_WASM="$OUT_DIR/ifc2lbd_wasm_bg.wasm"
+
+# wasm-opt -Oz: second-pass size optimisation (typically saves another 10-15 %).
+# Must run BEFORE the shared-memory patch (wasm-opt does not preserve the shared flag).
+if command -v wasm-opt >/dev/null 2>&1; then
+  echo "Running wasm-opt -Oz …"
+  wasm-opt -Oz \
+    --enable-bulk-memory \
+    --enable-threads \
+    --enable-simd \
+    "$BG_WASM" -o "$BG_WASM"
+fi
+
 # Ensure wasm-bindgen output preserves shared memory for threaded rayon runtime.
 # In some toolchain combinations the generated *_bg.wasm memory loses `shared`.
-BG_WASM="$OUT_DIR/ifc2lbd_wasm_bg.wasm"
 if command -v wasm2wat >/dev/null 2>&1 && command -v wat2wasm >/dev/null 2>&1; then
   TMP_WAT="$(mktemp)"
   wasm2wat "$BG_WASM" -o "$TMP_WAT" --enable-all
