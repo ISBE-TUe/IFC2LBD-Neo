@@ -157,8 +157,8 @@ fn main() -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .init();
     // BSP-tree CSG operations recurse deeply on complex IFC geometry (TUX-class models).
-    // Give rayon workers 256 MB so the same recursion that works in WASM (shadow stack)
-    // also works natively. The geometry thread in ifc-geometry also has 256 MB.
+    // ifc-geometry::stream_meshes runs tessellation on a dedicated OS thread with a 256 MB
+    // stack, keeping deep BSP recursion off the rayon workers entirely.
     let built_in_registry = pipeline_plugins::built_in_registry();
     tracing::debug!(
         "pipeline registry initialized with {} built-in modules",
