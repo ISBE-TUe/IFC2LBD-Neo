@@ -1,0 +1,15 @@
+ifc2lbd-neo — Mozilla Public License 2.0
+Copyright: IFC2LBD-Neo Contributors
+
+This Source Code Form is subject to the terms of the Mozilla Public
+License, v. 2.0. If a copy of the MPL was not distributed with this
+file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+---
+
+Third-party components
+----------------------
+
+The vendored geometry engine in vendor/geometry/ is derived from ifc-lite
+(https://github.com/LTplus-AG/ifc-lite), also licensed under the Mozilla
+Public License 2.0. Copyright: IFC-Lite Contributors.

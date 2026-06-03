@@ -43,8 +43,8 @@ The **local_transforms gap** (595 vs 1499): same root cause — oracle's `flatTr
 **How it works**: ifc-lite already runs `get_or_cache_by_hash` internally for every geometry item. Two STEP entities that produce the same tessellation (identical profile, depth, orientation) share the same `Arc<Mesh>` pointer from the cache. Use the **Arc pointer address** (or the FxHash used internally) as the shell's `geometry_id` instead of the STEP entity ID.
 
 **What this changes**:
-1. In `vendor/ifc-lite/geometry/src/mesh.rs`: expose a method on `GeometryRouter` that returns the cache hash for a given item (or expose the `Arc<Mesh>` pointer from the cache).
-2. In `vendor/ifc-lite/geometry/src/router/processing.rs`: `collect_submeshes_from_item_inner` sets `SubMesh.geometry_id` to the ifc-lite cache key rather than `item.id`.
+1. In `vendor/geometry/geometry/src/mesh.rs`: expose a method on `GeometryRouter` that returns the cache hash for a given item (or expose the `Arc<Mesh>` pointer from the cache).
+2. In `vendor/geometry/geometry/src/router/processing.rs`: `collect_submeshes_from_item_inner` sets `SubMesh.geometry_id` to the ifc-lite cache key rather than `item.id`.
 3. In `crates/ifc-geometry/src/lib.rs`: surface the new geometry_id through `GeometryInstance.geometry_id`.
 4. In `crates/plugin-geometry-producer/src/lib.rs`: `item_mesh_map` keyed by cache-based geometry_id instead of STEP ID.
 

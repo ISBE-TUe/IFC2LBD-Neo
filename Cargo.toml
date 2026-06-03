@@ -20,9 +20,9 @@ members = [
     "crates/plugin-property-preprocess",
     "crates/plugin-fragments-producer",
     "crates/plugin-qto-preprocess",
-    # Vendored ifc-lite (MPL-2.0)
-    "vendor/ifc-lite/core",
-    "vendor/ifc-lite/geometry",
+    # Vendored geometry engine (MPL-2.0)
+    "vendor/geometry/core",
+    "vendor/geometry/geometry",
     # Geometry pipeline
     "crates/ifc-geometry",
     "crates/tessellated-model",
@@ -107,6 +107,6 @@ tessellated-model = { path = "crates/tessellated-model" }
 plugin-geometry-preprocess = { path = "crates/plugin-geometry-preprocess" }
 plugin-geometry-producer = { path = "crates/plugin-geometry-producer" }
 # ifc-lite (MPL-2.0) — geometry engine, vendored into workspace (WASM-safe, no manifold-csg)
-ifc-lite-core = { path = "vendor/ifc-lite/core", default-features = false }
-ifc-lite-geometry = { path = "vendor/ifc-lite/geometry", default-features = false }
+ifc-lite-core = { path = "vendor/geometry/core", default-features = false }
+ifc-lite-geometry = { path = "vendor/geometry/geometry", default-features = false }
 nalgebra = { version = "0.35", default-features = false, features = ["std"] }
