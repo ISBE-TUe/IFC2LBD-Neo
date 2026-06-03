@@ -69,15 +69,27 @@ function notify(prev) {
 
 const SERIALIZERS = ["neo-turtle-serializer", "neo-nquads-serializer", "neo-nquads-chunked-serializer"];
 
+// Preprocess is an internal dependency of the producer — always enabled together.
+const GEO_PREPROCESS = "neo-geometry-preprocess";
+const GEO_PRODUCER   = "neo-geometry-producer";
+
 export function toggleModule(id) {
   const mods = new Set(state.activeModules);
   if (mods.has(id)) {
     mods.delete(id);
+    // Turning off producer also removes its dependency
+    if (id === GEO_PRODUCER) mods.delete(GEO_PREPROCESS);
+    // Turning off preprocess also removes its dependent producer
+    if (id === GEO_PREPROCESS) mods.delete(GEO_PRODUCER);
   } else {
     if (SERIALIZERS.includes(id)) {
       SERIALIZERS.forEach(s => mods.delete(s));
     }
     mods.add(id);
+    // Enabling producer always enables its preprocess dependency too
+    if (id === GEO_PRODUCER) mods.add(GEO_PREPROCESS);
+    // Enabling preprocess also enables its natural consumer
+    if (id === GEO_PREPROCESS) mods.add(GEO_PRODUCER);
   }
   update({ activeModules: mods });
 }

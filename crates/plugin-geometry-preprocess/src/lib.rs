@@ -89,8 +89,7 @@ impl PreprocessPlugin for GeometryPreprocessPlugin {
         element_ids.sort_unstable();
         element_ids.dedup();
 
-        // Tessellate using ifc-lite
-        let meshes = ifc_geometry::stream_meshes(&content.0, &element_ids);
+        let meshes = ifc_geometry::stream_meshes(Arc::clone(&content.0), &element_ids);
 
         let tessellated = Arc::new(TessellatedModel::new(meshes, metadata_mode));
         ctx.insert(tessellated);
@@ -100,9 +99,9 @@ impl PreprocessPlugin for GeometryPreprocessPlugin {
 }
 
 /// Raw IFC text content, stored in PipelineContext by runners.
-/// ifc-lite's EntityDecoder needs it for geometry resolution.
+/// Arc<String> so the string is shared with geometry worker threads without copying.
 #[derive(Clone)]
-pub struct IFCContent(pub String);
+pub struct IFCContent(pub std::sync::Arc<String>);
 
 /// Optional metadata mode override stored in context by runners.
 #[derive(Clone, Copy)]

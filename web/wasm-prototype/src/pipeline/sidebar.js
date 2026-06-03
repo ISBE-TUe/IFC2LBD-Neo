@@ -220,7 +220,6 @@ function optionControl(pluginId, key) {
           <option value="fragments" ${formatVal === "fragments" ? "selected" : ""}>Fragments (.frag) — ThatOpen viewer</option>
           <option value="parquet" ${formatVal === "parquet" ? "selected" : ""}>Parquet ZIP (.bos) — analytics / ifc-lite schema</option>
           <option value="gltf" ${formatVal === "gltf" ? "selected" : ""}>glTF binary (.glb) — 3D viewers</option>
-          <option value="ifc5" ${formatVal === "ifc5" ? "selected" : ""}>IFC5 / IFCX (.ifcx) — next-gen IFC</option>
         </select>
       </div>`;
   }

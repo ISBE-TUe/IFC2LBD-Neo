@@ -147,6 +147,9 @@ fn main() -> anyhow::Result<()> {
         .with_env_filter("info")
         .with_writer(std::io::stderr)
         .init();
+    // BSP-tree CSG operations recurse deeply on complex IFC geometry (TUX-class models).
+    // Give rayon workers 256 MB so the same recursion that works in WASM (shadow stack)
+    // also works natively. The geometry thread in ifc-geometry also has 256 MB.
     let built_in_registry = pipeline_plugins::built_in_registry();
     tracing::debug!(
         "pipeline registry initialized with {} built-in modules",
@@ -266,7 +269,7 @@ fn main() -> anyhow::Result<()> {
     ctx.insert(step.clone());
     // Raw IFC content needed by neo-geometry-preprocess (ifc-lite EntityDecoder)
     let raw_content = std::fs::read_to_string(input_path)
-        .map(|s| std::sync::Arc::new(IFCContent(s)))
+        .map(|s| std::sync::Arc::new(IFCContent(std::sync::Arc::new(s))))
         .ok();
     if let Some(content) = raw_content {
         ctx.insert(content);

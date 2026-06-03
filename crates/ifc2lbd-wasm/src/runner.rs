@@ -12,7 +12,7 @@ use lbd_pipeline::BatchKind;
 use lbd_serializer::{
     serialize_lbd_batches_incremental_to_writer, serialize_nquads_batches_to_writer,
     serialize_nquads_merged_batches_to_writer, serialize_turtle_batch_raw_to_writer,
-    serialize_turtle_batch_to_writer, serialize_turtle_to_writer,
+    serialize_turtle_batch_to_writer, serialize_turtle_grouped_to_writer, serialize_turtle_to_writer,
     write_turtle_prefixes_for_stream,
 };
 
@@ -405,7 +405,7 @@ impl PipelineRunner {
             let step_arc = std::sync::Arc::new(
                 parse_step_bytes(&input_bytes).expect("re-parse of already-validated IFC failed")
             );
-            run_geometry_pipeline(&input_bytes, model_arc, step_arc, &settings)
+            run_geometry_pipeline(&input_bytes, model_arc, step_arc, &settings, sink)
         } else {
             Vec::new()
         };
@@ -1167,7 +1167,7 @@ fn turtle_to_sink_joined(
     let preprocess_ids: Vec<String> = registry
         .manifests_for_stage(PipelineStage::Preprocess)
         .into_iter()
-        .filter(|m| settings.has(m.id))
+        .filter(|m| settings.has(m.id) && m.id != GEOMETRY_PREPROCESS_ID)
         .map(|m| m.id.to_string())
         .collect();
     let preprocess_durations =
@@ -1323,7 +1323,7 @@ fn turtle_to_sink_separate(
     let preprocess_ids: Vec<String> = registry
         .manifests_for_stage(PipelineStage::Preprocess)
         .into_iter()
-        .filter(|m| settings.has(m.id))
+        .filter(|m| settings.has(m.id) && m.id != GEOMETRY_PREPROCESS_ID)
         .map(|m| m.id.to_string())
         .collect();
     let preprocess_durations =
@@ -1512,7 +1512,7 @@ fn nquads_to_sink(
     let preprocess_ids: Vec<String> = registry
         .manifests_for_stage(PipelineStage::Preprocess)
         .into_iter()
-        .filter(|m| settings.has(m.id))
+        .filter(|m| settings.has(m.id) && m.id != GEOMETRY_PREPROCESS_ID)
         .map(|m| m.id.to_string())
         .collect();
     let preprocess_durations =
@@ -1648,13 +1648,16 @@ fn nquads_to_sink(
 
 /// Run the geometry pipeline (neo-geometry-preprocess + neo-geometry-producer)
 /// as a self-contained pass using raw IFC bytes.
+/// Emits `running`/`success` stage events through `sink` so the UI DAG shows
+/// live status and timing for both modules, matching the LBD pipeline UX.
 /// Returns the emitted sidecar file(s) with their actual binary content.
-/// Does NOT touch the existing LBD/turtle/nquads pipeline at all.
+#[cfg(target_arch = "wasm32")]
 fn run_geometry_pipeline(
     input: &[u8],
     model: std::sync::Arc<ifc_model::IfcModel>,
     step: std::sync::Arc<ifc_step::StepFile>,
     settings: &ExecutionSettings,
+    sink: &js_sys::Function,
 ) -> Vec<lbd_pipeline::DerivedFile> {
     use lbd_pipeline::{spawn_preprocessors, spawn_producers, ResourceLimits, PipelineContext};
     use plugin_geometry_preprocess::{IFCContent, MetadataModeOption, GEOMETRY_PREPROCESS_ID};
@@ -1675,14 +1678,13 @@ fn run_geometry_pipeline(
 
     // IFCContent: raw IFC text for ifc-lite's EntityDecoder
     if let Ok(content) = std::str::from_utf8(input) {
-        ctx.insert(std::sync::Arc::new(IFCContent(content.to_string())));
+        ctx.insert(std::sync::Arc::new(IFCContent(std::sync::Arc::new(content.to_string()))));
     }
 
     // Metadata mode: stripped or full based on settings
-    let metadata = if settings.has("neo-geometry-preprocess")
-        && settings.module_option("neo-geometry-preprocess", "metadata")
-            .map(|v| v == "stripped")
-            .unwrap_or(false)
+    let metadata = if settings.module_option("neo-geometry-preprocess", "metadata")
+        .map(|v| v == "stripped")
+        .unwrap_or(false)
     {
         MetadataMode::Stripped
     } else {
@@ -1703,26 +1705,35 @@ fn run_geometry_pipeline(
 
     let registry = crate::plugins::browser_registry();
 
-    // Run preprocess (geometry tessellation) — needs mutable ctx
+    // ── Preprocess phase: tessellation ───────────────────────────────────────
+    let _ = emit_stage_event(sink, GEOMETRY_PREPROCESS_ID, "Preprocess", "running", 0, 0, 0, None);
+    let t0_pre = now_ms();
     let preprocess_ids = vec![GEOMETRY_PREPROCESS_ID.to_string()];
     if lbd_pipeline::spawn_preprocessors(&preprocess_ids, &registry, &mut ctx).is_err() {
+        let _ = emit_stage_event(sink, GEOMETRY_PREPROCESS_ID, "Preprocess", "failed", now_ms().saturating_sub(t0_pre), 0, 0, None);
         return Vec::new();
     }
+    let pre_ms = now_ms().saturating_sub(t0_pre);
+    let _ = emit_stage_event(sink, GEOMETRY_PREPROCESS_ID, "Preprocess", "success", pre_ms, 0, 0, None);
 
     // Wrap in Arc for producers
     let ctx = std::sync::Arc::new(ctx);
 
-    // Run producer (serialize to fragments/parquet)
+    // ── Produce phase: serialize geometry ─────────────────────────────────────
+    let _ = emit_stage_event(sink, GEOMETRY_PRODUCER_ID, "Produce", "running", 0, 0, 0, None);
+    let t0_prod = now_ms();
     let producer_ids = vec![GEOMETRY_PRODUCER_ID.to_string()];
     let receivers = spawn_producers(&producer_ids, &registry, &ctx, chan_cap);
-    // Drain producer channels (geometry producer emits via sidecar_tx, not triple channels)
-    for (_id, rx) in receivers {
-        for _batch in rx {}
-    }
+    for (_id, rx) in receivers { for _batch in rx {} }
 
     // Drop ctx to release the sidecar_tx sender, then collect all emitted files
     drop(ctx);
-    sidecar_rx.try_iter().collect()
+    let sidecars: Vec<lbd_pipeline::DerivedFile> = sidecar_rx.try_iter().collect();
+    let prod_ms = now_ms().saturating_sub(t0_prod);
+    let bytes_out: u64 = sidecars.iter().map(|f| f.bytes.len() as u64).sum();
+    let _ = emit_stage_event(sink, GEOMETRY_PRODUCER_ID, "Produce", "success", prod_ms, bytes_out, 0, None);
+
+    sidecars
 }
 
 /// Serialize per-module log JSON sidecars from `PipelineLogBundle` in context.

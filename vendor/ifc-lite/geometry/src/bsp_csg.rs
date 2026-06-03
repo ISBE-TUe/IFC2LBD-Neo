@@ -228,18 +228,10 @@ impl BspNode {
     }
 
     fn invert(&mut self) {
-        for poly in &mut self.polygons {
-            poly.flip();
-        }
-        if let Some(ref mut plane) = self.plane {
-            plane.flip();
-        }
-        if let Some(ref mut front) = self.front {
-            front.invert();
-        }
-        if let Some(ref mut back) = self.back {
-            back.invert();
-        }
+        for poly in &mut self.polygons { poly.flip(); }
+        if let Some(ref mut plane) = self.plane { plane.flip(); }
+        if let Some(ref mut front) = self.front { front.invert(); }
+        if let Some(ref mut back)  = self.back  { back.invert();  }
         std::mem::swap(&mut self.front, &mut self.back);
     }
 
@@ -300,9 +292,7 @@ impl BspNode {
     }
 
     fn build(&mut self, polygons: Vec<Polygon>) {
-        if polygons.is_empty() {
-            return;
-        }
+        if polygons.is_empty() { return; }
 
         if self.plane.is_none() {
             for poly in &polygons {

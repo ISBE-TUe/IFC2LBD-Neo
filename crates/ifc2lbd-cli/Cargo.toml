@@ -31,7 +31,7 @@ plugin-fragments-producer = { workspace = true }
 plugin-qto-preprocess = { workspace = true }
 plugin-geometry-preprocess = { workspace = true }
 tessellated-model = { workspace = true }
-ifc-geometry = { workspace = true, features = ["proof-bin"] }
+ifc-geometry = { workspace = true, features = ["proof-bin", "manifold-csg"] }
 plugin-geometry-producer = { workspace = true, features = ["fmt-fragments", "fmt-parquet", "fmt-gltf"] }
 crossbeam = { workspace = true }
 clap = { workspace = true }

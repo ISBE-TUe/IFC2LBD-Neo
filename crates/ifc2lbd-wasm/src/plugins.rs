@@ -17,7 +17,6 @@ use lbd_pipeline::{
 };
 use serde_json;
 use plugin_property_preprocess::{BsddMatchPreprocessPlugin, CleanupPreprocessPlugin};
-use plugin_fragments_producer::FragmentsProducerPlugin;
 use plugin_qto_preprocess::QtoPreprocessPlugin;
 use plugin_geometry_preprocess::GeometryPreprocessPlugin;
 use plugin_geometry_producer::GeometryProducerPlugin;
@@ -77,7 +76,6 @@ pub(crate) fn browser_registry() -> PluginRegistry {
     registry.register_producer(BsddProducerPlugin).unwrap();
     registry.register_producer(PropsOpmProducerPlugin).unwrap();
     registry.register_producer(OmgFogProducerPlugin).unwrap();
-    registry.register_producer(FragmentsProducerPlugin).unwrap();
     // Geometry pipeline
     registry.register_preprocess(GeometryPreprocessPlugin).unwrap();
     registry.register_producer(GeometryProducerPlugin::default()).unwrap();
