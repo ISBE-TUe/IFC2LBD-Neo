@@ -71,14 +71,21 @@ pub struct Mesh {
 pub struct SubMesh {
     /// The geometry item ID (e.g., IfcFacetedBrep ID) for style lookup
     pub geometry_id: u32,
-    /// The triangulated mesh data
+    /// Triangulated mesh in element representation space (no world transform baked in)
     pub mesh: Mesh,
+    /// Per-sub-mesh local placement matrix from the MappedItem's mapping transform.
+    /// None = identity (first geometry or no IFCMAPPEDITEM transform).
+    /// Used to compute local_transform = firstSubMeshMatrix^-1 × thisSubMeshMatrix.
+    pub local_matrix: Option<nalgebra::Matrix4<f64>>,
 }
 
 impl SubMesh {
-    /// Create a new sub-mesh
     pub fn new(geometry_id: u32, mesh: Mesh) -> Self {
-        Self { geometry_id, mesh }
+        Self { geometry_id, mesh, local_matrix: None }
+    }
+
+    pub fn with_local_matrix(geometry_id: u32, mesh: Mesh, m: nalgebra::Matrix4<f64>) -> Self {
+        Self { geometry_id, mesh, local_matrix: Some(m) }
     }
 }
 

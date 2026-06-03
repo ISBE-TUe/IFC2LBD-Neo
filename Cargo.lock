@@ -2235,6 +2235,7 @@ dependencies = [
  "ifc-step",
  "lbd-pipeline",
  "parquet",
+ "rustc-hash",
  "serde_json",
  "tessellated-model",
  "thiserror 2.0.18",
