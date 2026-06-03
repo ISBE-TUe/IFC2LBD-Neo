@@ -4,9 +4,34 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>IFC2LBD-Neo Pipeline</title>
-    <style>body { visibility: hidden; } .preload * { transition-duration: 0s !important; }</style>
+    <style>
+      body { background: #d5d5d5; }
+      .preload * { transition-duration: 0s !important; }
+      #wasm-loading {
+        position: fixed; inset: 0;
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        gap: 12px;
+      }
+      .wasm-spin {
+        width: 28px; height: 28px;
+        border: 2px solid #c5c5c5;
+        border-top-color: #555;
+        border-radius: 50%;
+        animation: spin 0.7s linear infinite;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      .wasm-loading-label {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 11px; color: #888; letter-spacing: 0.05em;
+      }
+      .pipeline-app { visibility: hidden; }
+    </style>
   </head>
   <body class="preload">
+    <div id="wasm-loading">
+      <div class="wasm-spin"></div>
+      <span class="wasm-loading-label">Loading…</span>
+    </div>
     <div class="pipeline-app" id="pipeline-view">
 
       <!-- Top Bar: just brand + transport -->

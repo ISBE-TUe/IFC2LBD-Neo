@@ -269,9 +269,9 @@ async function runSinkConversionInMain(input, requestPayload, expectedFiles, req
 // ---------------------------------------------------------------------------
 
 async function init() {
-  document.body.style.visibility = "visible";
-  requestAnimationFrame(() => requestAnimationFrame(() => document.body.classList.remove("preload")));
   if (!window.isSecureContext || !window.crossOriginIsolated) {
+    document.querySelector("#wasm-loading")?.remove();
+    document.querySelector(".pipeline-app")?.style.setProperty("visibility", "visible");
     throw new Error("Requires secure+isolated context. Open http://localhost:3031 or use HTTPS with COOP/COEP.");
   }
 
@@ -283,6 +283,11 @@ async function init() {
   ]);
   const modules = listModules().filter((m) => !HIDDEN_MODULES.has(m.id));
   update({ modules });
+
+  // WASM and modules ready — remove spinner, reveal app
+  document.querySelector("#wasm-loading")?.remove();
+  document.querySelector(".pipeline-app")?.style.setProperty("visibility", "visible");
+  requestAnimationFrame(() => requestAnimationFrame(() => document.body.classList.remove("preload")));
 
   const sessionArea = document.querySelector("#session-area");
   if (!sessionArea) throw new Error("Missing #session-area");
