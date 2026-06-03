@@ -4,6 +4,7 @@ rustflags = ["-C", "link-arg=-Wl,-rpath,/Library/Developer/CommandLineTools/Libr
 [target.wasm32-unknown-unknown]
 rustflags = [
   "-C", "opt-level=z",
+  "-C", "strip=symbols",
   "-C", "target-feature=+atomics,+bulk-memory,+mutable-globals",
   "-C", "link-arg=--shared-memory",
   "-C", "link-arg=--import-memory",

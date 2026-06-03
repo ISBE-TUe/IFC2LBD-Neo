@@ -35,18 +35,6 @@ wasm-bindgen \
 
 BG_WASM="$OUT_DIR/ifc2lbd_wasm_bg.wasm"
 
-# wasm-opt -O2: second-pass size optimisation.
-# -O2 (not -Oz) avoids the most aggressive transforms that can break wasm-bindgen-rayon's
-# TLS init exports. --enable-simd omitted to avoid introducing SIMD that breaks browser init.
-# Must run BEFORE the shared-memory patch (wasm-opt resets the shared flag).
-if command -v wasm-opt >/dev/null 2>&1; then
-  echo "Running wasm-opt -O2 …"
-  wasm-opt -O2 \
-    --enable-bulk-memory \
-    --enable-threads \
-    "$BG_WASM" -o "$BG_WASM"
-fi
-
 # Ensure wasm-bindgen output preserves shared memory for threaded rayon runtime.
 # In some toolchain combinations the generated *_bg.wasm memory loses `shared`.
 if command -v wasm2wat >/dev/null 2>&1 && command -v wat2wasm >/dev/null 2>&1; then

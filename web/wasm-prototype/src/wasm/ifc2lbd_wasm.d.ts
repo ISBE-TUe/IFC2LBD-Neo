@@ -31,26 +31,24 @@ export function wbg_rayon_start_worker(receiver: number): void;
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
 export interface InitOutput {
-    readonly benchmarkConvertIfc: (a: number, b: number, c: any) => [number, number, number];
-    readonly convertIfc: (a: number, b: number, c: any) => [number, number, number];
-    readonly convertIfcToSink: (a: number, b: number, c: any, d: any) => [number, number, number];
-    readonly initNeoThreadPool: (a: number) => any;
-    readonly listModules: () => [number, number, number];
-    readonly planExecution: (a: number, b: any) => [number, number, number];
-    readonly resolvePlan: (a: any, b: any) => [number, number, number];
+    readonly benchmarkConvertIfc: (a: number, b: number, c: number, d: number) => void;
+    readonly convertIfc: (a: number, b: number, c: number, d: number) => void;
+    readonly convertIfcToSink: (a: number, b: number, c: number, d: number, e: number) => void;
+    readonly initNeoThreadPool: (a: number) => number;
+    readonly listModules: (a: number) => void;
+    readonly planExecution: (a: number, b: number, c: number) => void;
+    readonly resolvePlan: (a: number, b: number, c: number) => void;
     readonly __wbg_wbg_rayon_poolbuilder_free: (a: number, b: number) => void;
-    readonly initThreadPool: (a: number) => any;
+    readonly initThreadPool: (a: number) => number;
     readonly wbg_rayon_poolbuilder_build: (a: number) => void;
     readonly wbg_rayon_poolbuilder_numThreads: (a: number) => number;
     readonly wbg_rayon_poolbuilder_receiver: (a: number) => number;
     readonly wbg_rayon_start_worker: (a: number) => void;
     readonly memory: WebAssembly.Memory;
-    readonly __wbindgen_malloc: (a: number, b: number) => number;
-    readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
-    readonly __wbindgen_exn_store: (a: number) => void;
-    readonly __externref_table_alloc: () => number;
-    readonly __wbindgen_externrefs: WebAssembly.Table;
-    readonly __externref_table_dealloc: (a: number) => void;
+    readonly __wbindgen_export: (a: number, b: number) => number;
+    readonly __wbindgen_export2: (a: number, b: number, c: number, d: number) => number;
+    readonly __wbindgen_export3: (a: number) => void;
+    readonly __wbindgen_add_to_stack_pointer: (a: number) => number;
     readonly __wbindgen_thread_destroy: (a?: number, b?: number, c?: number) => void;
     readonly __wbindgen_start: (a: number) => void;
 }
