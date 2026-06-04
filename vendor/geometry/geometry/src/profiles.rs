@@ -400,6 +400,29 @@ fn same_point_3d(prev: Option<&Point3<f64>>, next: &Point3<f64>) -> bool {
     }
 }
 
+/// Read an `IfcCartesianPoint`'s coordinates as a 3D point (missing Z → 0).
+fn read_cartesian_point_3d(point: &DecodedEntity) -> Option<[f64; 3]> {
+    let coords = point.get(0)?.as_list()?;
+    Some([
+        coords.first().and_then(|v| v.as_float()).unwrap_or(0.0),
+        coords.get(1).and_then(|v| v.as_float()).unwrap_or(0.0),
+        coords.get(2).and_then(|v| v.as_float()).unwrap_or(0.0),
+    ])
+}
+
+/// Read an `IfcDirection`'s ratios as a normalized 3D vector (missing Z → 0).
+fn read_direction_3d(dir: &DecodedEntity) -> Option<[f64; 3]> {
+    let ratios = dir.get(0)?.as_list()?;
+    let v = [
+        ratios.first().and_then(|x| x.as_float()).unwrap_or(0.0),
+        ratios.get(1).and_then(|x| x.as_float()).unwrap_or(0.0),
+        ratios.get(2).and_then(|x| x.as_float()).unwrap_or(0.0),
+    ];
+    let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    if len < 1e-12 { return None; }
+    Some([v[0] / len, v[1] / len, v[2] / len])
+}
+
 /// Build a rectangle outline with quarter-circle fillets at the four
 /// corners. Used by `IfcRectangleHollowProfileDef` (outer + inner loops)
 /// — see issue #854 for the case where the inner fillet equals the inner
@@ -1477,7 +1500,15 @@ impl ProfileProcessor {
                 self.process_indexed_polycurve_3d(curve, decoder)
             }
             IfcType::IfcTrimmedCurve => {
-                // For trimmed curve, get 2D points and convert to 3D
+                // A trimmed straight line (IfcLine basis) is the common swept-disk directrix
+                // for reinforcing bars. The basis line lives in 3D and the trim parameters
+                // give the bar's extent, so it MUST be evaluated in 3D — the generic 2D
+                // trimmed-curve path drops Z and ignores the line trim, collapsing vertical
+                // or angled bars to a single point (empty tube).
+                if let Some(pts) = self.process_trimmed_line_3d(curve, decoder)? {
+                    return Ok(pts);
+                }
+                // Other basis curves (conics, etc.): get 2D points and lift to z=0.
                 let points_2d = self.process_trimmed_curve_with_depth(curve, decoder, depth)?;
                 Ok(points_2d
                     .into_iter()
@@ -1493,6 +1524,66 @@ impl ProfileProcessor {
                     .collect())
             }
         }
+    }
+
+    /// Evaluate a trimmed straight line (`IfcTrimmedCurve` whose BasisCurve is an
+    /// `IfcLine`) as two 3D endpoints. Returns `Ok(None)` when the basis is not a line,
+    /// so the caller falls back to the generic curve path.
+    ///
+    /// IfcLine = Pnt (IfcCartesianPoint) + Dir (IfcVector = Orientation·Magnitude).
+    /// A PARAMETER trim value `u` maps to the point `Pnt + u · Dir`. This is the standard
+    /// reinforcing-bar directrix (e.g. swept disk along a 3000 mm segment).
+    fn process_trimmed_line_3d(
+        &self,
+        curve: &DecodedEntity,
+        decoder: &mut EntityDecoder,
+    ) -> Result<Option<Vec<Point3<f64>>>> {
+        let basis = match curve.get(0).and_then(|a| decoder.resolve_ref(a).ok().flatten()) {
+            Some(b) => b,
+            None => return Ok(None),
+        };
+        if basis.ifc_type != IfcType::IfcLine {
+            return Ok(None);
+        }
+
+        // IfcLine.Pnt (attr 0) — origin point
+        let pnt = basis
+            .get(0)
+            .and_then(|a| decoder.resolve_ref(a).ok().flatten())
+            .and_then(|p| read_cartesian_point_3d(&p));
+        // IfcLine.Dir (attr 1) — IfcVector
+        let vec_ent = basis.get(1).and_then(|a| decoder.resolve_ref(a).ok().flatten());
+        let (pnt, vec_ent) = match (pnt, vec_ent) {
+            (Some(p), Some(v)) => (p, v),
+            _ => return Ok(None),
+        };
+
+        // IfcVector.Orientation (attr 0, IfcDirection) and Magnitude (attr 1)
+        let dir = vec_ent
+            .get(0)
+            .and_then(|a| decoder.resolve_ref(a).ok().flatten())
+            .and_then(|d| read_direction_3d(&d));
+        let magnitude = vec_ent.get_float(1).unwrap_or(1.0);
+        let dir = match dir {
+            Some(d) => d,
+            None => return Ok(None),
+        };
+
+        // Trim parameters (PARAMETER values). Default to 0 / |dir|-scaled length.
+        let t1 = curve.get(1).and_then(|v| self.extract_trim_param(v)).unwrap_or(0.0);
+        let t2 = match curve.get(2).and_then(|v| self.extract_trim_param(v)) {
+            Some(v) => v,
+            None => return Ok(None), // no end trim → unbounded line, can't sweep
+        };
+
+        // Curve point at parameter u: Pnt + u · (Magnitude · Orientation)
+        let step = [dir[0] * magnitude, dir[1] * magnitude, dir[2] * magnitude];
+        let at = |u: f64| Point3::new(pnt[0] + u * step[0], pnt[1] + u * step[1], pnt[2] + u * step[2]);
+        let (start, end) = (at(t1), at(t2));
+        if (end - start).norm() < 1e-9 {
+            return Ok(None); // degenerate
+        }
+        Ok(Some(vec![start, end]))
     }
 
     /// Process circle curve in 3D space (for swept disk solid, etc.)

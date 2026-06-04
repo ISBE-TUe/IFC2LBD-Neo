@@ -324,7 +324,11 @@ impl ProfileSet {
 
 // ─── Raw mode (when vertex count > threshold) ─────────────────────────────────
 
-fn get_raw_shell_data(
+/// Raw shell: one profile per triangle (welded points), no coplanar merging.
+/// Guaranteed faithful to the input triangulation — used for meshes whose
+/// triangulation the coplanar boundary tracer can't robustly reconstruct
+/// (e.g. ifc-lite's arbitrary fan/strip triangulations).
+pub fn get_raw_shell_data(
     position: &[[f32; 3]],
     triangles: &[[u32; 3]],
 ) -> ShellOutput {
@@ -380,7 +384,7 @@ fn get_raw_shell_data(
 /// `triangles`: triangle index triples.
 pub fn get_shell_data(
     position: &[[f32; 3]],
-    normals: &[[f32; 3]],
+    _normals: &[[f32; 3]], // retained for API compatibility; plane grouping uses geometric normals
     triangles: &[[u32; 3]],
 ) -> ShellOutput {
     let vertex_count = position.len();
@@ -403,10 +407,27 @@ pub fn get_shell_data(
     // plane_id → (plane, list of triangle indices)
     let mut plane_map: HashMap<String, (ShellPlane, Vec<usize>)> = HashMap::new();
 
-    for (tri_idx, &[i1, _i2, _i3]) in triangles.iter().enumerate() {
-        let n = normals[i1 as usize];
+    for (tri_idx, &[i1, i2, i3]) in triangles.iter().enumerate() {
+        // Plane membership is a GEOMETRIC property — derive the plane from the triangle's
+        // own face normal (cross product of its edges), NOT from a stored vertex normal.
+        // Vertex normals are frequently smooth/averaged (ifc-lite and many exporters share
+        // a corner vertex between perpendicular faces), so keying the plane on a vertex
+        // normal mis-buckets coplanar triangles and makes the boundary tracer stitch
+        // non-coplanar regions into giant spanning polygons.
         let p = position[i1 as usize];
-        let plane = ShellPlane::from_normal_and_point(n[0], n[1], n[2], p[0], p[1], p[2]);
+        let p2 = position[i2 as usize];
+        let p3 = position[i3 as usize];
+        let ab = [(p2[0] - p[0]) as f64, (p2[1] - p[1]) as f64, (p2[2] - p[2]) as f64];
+        let ac = [(p3[0] - p[0]) as f64, (p3[1] - p[1]) as f64, (p3[2] - p[2]) as f64];
+        let mut nx = ab[1] * ac[2] - ab[2] * ac[1];
+        let mut ny = ab[2] * ac[0] - ab[0] * ac[2];
+        let mut nz = ab[0] * ac[1] - ab[1] * ac[0];
+        let len = (nx * nx + ny * ny + nz * nz).sqrt();
+        if len < 1e-12 {
+            continue; // degenerate triangle — contributes no face
+        }
+        nx /= len; ny /= len; nz /= len;
+        let plane = ShellPlane::from_normal_and_point(nx as f32, ny as f32, nz as f32, p[0], p[1], p[2]);
         plane_map.entry(plane.id.clone())
             .or_insert_with(|| (plane, Vec::new()))
             .1.push(tri_idx);

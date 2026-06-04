@@ -91,6 +91,16 @@ impl PreprocessPlugin for GeometryPreprocessPlugin {
 
         let meshes = ifc_geometry::stream_meshes(Arc::clone(&content.0), &element_ids);
 
+        if std::env::var_os("IFC_DEDUP_STATS").is_some() {
+            let with_geom = meshes.iter().filter(|m| !m.geometries.is_empty()).count();
+            eprintln!(
+                "[coverage] selected_elements={} tessellated_with_geometry={} empty={}",
+                element_ids.len(),
+                with_geom,
+                element_ids.len().saturating_sub(with_geom),
+            );
+        }
+
         let tessellated = Arc::new(TessellatedModel::new(meshes, metadata_mode));
         ctx.insert(tessellated);
 

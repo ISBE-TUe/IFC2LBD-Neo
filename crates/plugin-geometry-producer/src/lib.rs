@@ -42,59 +42,58 @@ pub(crate) fn mul_mat4(a: &[f64; 16], b: &[f64; 16]) -> [f64; 16] {
 /// Requires the mesh to be in position-free (definition) space, which the geometry
 /// un-bake guarantees; otherwise placement would leak into the centroid term.
 #[cfg(feature = "fmt-fragments")]
-pub(crate) fn hash_ifc_mesh(mesh: &ifc_geometry::Mesh) -> u64 {
+/// Column-major 4×4 pure translation matrix.
+pub(crate) fn translate_colmajor(t: [f64; 3]) -> [f64; 16] {
+    [
+        1.0, 0.0, 0.0, 0.0,
+        0.0, 1.0, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0,
+        t[0], t[1], t[2], 1.0,
+    ]
+}
+
+/// Min-corner (axis-aligned bounding-box minimum) of a mesh, in f64.
+/// Used as the translation-normalization origin for shell dedup.
+pub(crate) fn mesh_min_corner(mesh: &ifc_geometry::Mesh) -> [f64; 3] {
+    let mut min = [f64::MAX; 3];
+    for c in mesh.positions.chunks_exact(3) {
+        min[0] = min[0].min(c[0] as f64);
+        min[1] = min[1].min(c[1] as f64);
+        min[2] = min[2].min(c[2] as f64);
+    }
+    if min[0] == f64::MAX { return [0.0; 3]; }
+    min
+}
+
+/// Exact content hash of a mesh: quantized vertices (relative to `off`) + index list.
+///
+/// Passing the mesh min-corner as `off` makes the hash TRANSLATION-INVARIANT, so
+/// identical shapes at different positions (repeated railing balusters, explicit
+/// IfcTriangulatedFaceSets with placement baked into vertices) collapse to one shell;
+/// the offset is re-applied per instance via the sample transform.
+///
+/// Hashing the actual vertex/index data (quantized to 0.1 mm) rather than a lossy
+/// area/volume signature is critical for CORRECTNESS: a signature hash collides on
+/// distinct shells that merely share invariants (e.g. a shape and its rotated/mirrored
+/// twin), which merges unrelated geometry and renders one element with another's shell.
+pub(crate) fn hash_ifc_mesh(mesh: &ifc_geometry::Mesh, off: [f64; 3]) -> u64 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
-    let p = &mesh.positions;
-    let vertex_count = p.len() / 3;
-    let triangle_count = mesh.indices.len() / 3;
-
-    let precision = 10000.0f64;
-    let round = |v: f64| -> i64 { (v * precision).round() as i64 };
-    let at = |i: usize| -> [f64; 3] {
-        [p[i * 3] as f64, p[i * 3 + 1] as f64, p[i * 3 + 2] as f64]
-    };
-
-    let mut area_sum = 0.0f64;
-    let mut biggest_area = 0.0f64;
-    let mut volume = 0.0f64; // 6× signed volume (constant factor irrelevant for hashing)
-    let (mut cx, mut cy, mut cz) = (0.0f64, 0.0f64, 0.0f64);
-
-    for tri in mesh.indices.chunks_exact(3) {
-        let (i1, i2, i3) = (tri[0] as usize, tri[1] as usize, tri[2] as usize);
-        if i1 >= vertex_count || i2 >= vertex_count || i3 >= vertex_count {
-            continue;
-        }
-        let (a, b, c) = (at(i1), at(i2), at(i3));
-        let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-        let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
-        let cross = [
-            ab[1] * ac[2] - ab[2] * ac[1],
-            ab[2] * ac[0] - ab[0] * ac[2],
-            ab[0] * ac[1] - ab[1] * ac[0],
-        ];
-        let area = 0.5 * (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt();
-        area_sum += area;
-        if area > biggest_area { biggest_area = area; }
-        // Signed tetra volume w.r.t. origin (a · (b × c))
-        volume += a[0] * (b[1] * c[2] - b[2] * c[1])
-            - a[1] * (b[0] * c[2] - b[2] * c[0])
-            + a[2] * (b[0] * c[1] - b[1] * c[0]);
-        cx += a[0] + b[0] + c[0];
-        cy += a[1] + b[1] + c[1];
-        cz += a[2] + b[2] + c[2];
-    }
-
     let mut h = DefaultHasher::new();
-    vertex_count.hash(&mut h);
-    triangle_count.hash(&mut h);
-    round(area_sum).hash(&mut h);
-    round(biggest_area).hash(&mut h);
-    round(volume.abs()).hash(&mut h);
-    round(cx).hash(&mut h);
-    round(cy).hash(&mut h);
-    round(cz).hash(&mut h);
+    (mesh.positions.len() / 3).hash(&mut h);
+    mesh.indices.len().hash(&mut h);
+
+    // Quantize to 0.1 mm to absorb fp noise from independent-but-identical tessellations.
+    let q = |v: f32, o: f64| -> i64 { ((v as f64 - o) * 10000.0).round() as i64 };
+    for c in mesh.positions.chunks_exact(3) {
+        q(c[0], off[0]).hash(&mut h);
+        q(c[1], off[1]).hash(&mut h);
+        q(c[2], off[2]).hash(&mut h);
+    }
+    for idx in &mesh.indices {
+        idx.hash(&mut h);
+    }
     h.finish()
 }
 
@@ -711,21 +710,12 @@ mod fragments {
     fn build_meshes<'a>(
         builder: &mut FlatBufferBuilder<'a>,
         tessellated: &TessellatedModel,
-        step: &StepFile,
+        _step: &StepFile,
     ) -> Result<flatbuffers::WIPOffset<Meshes<'a>>, String> {
-        use fragments_core::{geometry_instances_for_product, hash_shell, product_world_transform};
-
-        // Build map: item_id (STEP entity ID) → position-free ifc-lite mesh + color.
-        // ifc-geometry's geometry_id = leaf item express ID = oracle's item_id.
-        let all_geoms: Vec<(u64, [f32; 4], &ifc_geometry::Mesh)> = tessellated.meshes.iter()
-            .flat_map(|fm| fm.geometries.iter().map(|g| (g.geometry_id, g.color, &g.mesh)))
-            .collect();
-        let mut item_mesh_map: HashMap<u64, &ifc_geometry::Mesh> = HashMap::new();
-        let mut item_id_to_color: HashMap<u64, [f32; 4]> = HashMap::new();
-        for &(gid, color, mesh) in &all_geoms {
-            item_mesh_map.entry(gid).or_insert(mesh);
-            item_id_to_color.insert(gid, color);
-        }
+        // ifc-lite-native enumeration: shells, placements and per-instance transforms come
+        // straight from the TessellatedModel. Every element ifc-lite tessellated is emitted
+        // (no second fragments-core STEP walk gating coverage), and shell dedup keys on the
+        // position-free ifc-lite mesh content hash.
 
         let mut shells: Vec<flatbuffers::WIPOffset<Shell<'a>>> = Vec::new();
         let mut representations: Vec<Representation> = Vec::new();
@@ -759,74 +749,52 @@ mod fragments {
         let mut material_dedup: HashMap<[u8; 4], u32> = HashMap::new();
         let mut item_counter = 0u32;
         let mut dbg_shells_by_cat: HashMap<String, u32> = HashMap::new();
+        let normalize = std::env::var_os("IFC_NO_DEDUP_NORM").is_none();
 
         for flat_mesh in &tessellated.meshes {
+            if flat_mesh.geometries.is_empty() { continue; }
             let element_id = flat_mesh.express_id;
 
-            // Use oracle's STEP traversal to get item_ids, local_transforms, and shells
-            // for content hashing. This ensures structural parity with oracle.
-            let instances = geometry_instances_for_product(step, element_id);
-            if instances.is_empty() { continue; }
-
-            // Global transform: oracle algorithm = element_world × first_instance_transform
-            let world = product_world_transform(step, element_id);
-            let first_tf = &instances[0].local_transform;
-            let element_transform = world.mul(first_tf);
-            let translation = element_transform.translation();
-            let (x_axis, y_axis) = element_transform.axes();
-            global_transforms.push(Transform::new(
-                &DoubleVector::new(translation[0], translation[1], translation[2]),
-                &FloatVector::new(x_axis[0], x_axis[1], x_axis[2]),
-                &FloatVector::new(y_axis[0], y_axis[1], y_axis[2]),
-            ));
+            // Global transform = the element's world placement. ifc-lite stores the same
+            // world_transform on every geometry of an element (element_placement × firstGeom).
+            global_transforms.push(colmajor_to_transform(&flat_mesh.geometries[0].world_transform));
             gt_ids.push(element_id as u32);
             meshes_items.push(item_counter);
 
-            let first_tf_inv = first_tf.inverse();
+            for geom in &flat_mesh.geometries {
+                // Per-instance translation normalization: store the shell relative to its
+                // own min-corner and fold the offset back into this instance's transform.
+                // Identical shapes at different positions then share one shell (key dedup
+                // win for tessellated assemblies — railing balusters, door panels — whose
+                // placement is baked into the vertices with no IFC Position to un-bake).
+                // IFC_NO_DEDUP_NORM disables translation normalization (benchmark: measures
+                // shell count/size WITHOUT the positional dedup of repeated shapes).
+                let offset = if normalize { super::mesh_min_corner(&geom.mesh) } else { [0.0; 3] };
 
-            for (geom_idx, instance) in instances.iter().enumerate() {
-                // Dedup by oracle item_id, then oracle content hash
-                let repr_idx = if let Some(&existing) = shell_dedup_by_id.get(&instance.item_id) {
+                // Shell dedup: fast path by geometry express ID, then by translation-invariant
+                // content hash so geometrically-identical shapes collapse to one shell.
+                let repr_idx = if let Some(&existing) = shell_dedup_by_id.get(&geom.geometry_id) {
                     existing
                 } else {
-                    // Prefer a content hash on the position-free ifc-lite mesh (deterministic
-                    // triangulation → identical shapes across distinct STEP entities collapse).
-                    // Fall back to the oracle polygon-shell hash when ifc-lite didn't tessellate
-                    // this item (so it shares the same key space as the stored fallback geometry).
-                    let shell_hash = match item_mesh_map.get(&instance.item_id) {
-                        Some(&mesh) => super::hash_ifc_mesh(mesh),
-                        None => hash_shell(&instance.shell),
-                    };
+                    let shell_hash = super::hash_ifc_mesh(&geom.mesh, offset);
                     if let Some(&existing) = shell_dedup_by_hash.get(&shell_hash) {
-                        shell_dedup_by_id.insert(instance.item_id, existing);
+                        shell_dedup_by_id.insert(geom.geometry_id, existing);
                         existing
                     } else {
                         *dbg_shells_by_cat.entry(flat_mesh.category.clone()).or_insert(0u32) += 1;
                         let idx = shells.len() as u32;
-                        shell_dedup_by_id.insert(instance.item_id, idx);
+                        shell_dedup_by_id.insert(geom.geometry_id, idx);
                         shell_dedup_by_hash.insert(shell_hash, idx);
 
-                        // Shell content: ifc-lite position-free mesh (best quality).
-                        // Fallback to oracle's triangle mesh if ifc-lite didn't process this item.
-                        let shell_offset = if let Some(&mesh) = item_mesh_map.get(&instance.item_id) {
-                            build_shell(builder, mesh)
-                        } else {
-                            let (pos, norms, tris) = instance.shell.to_triangulated();
-                            let fallback_mesh = oracle_to_ifc_mesh(&pos, &norms, &tris);
-                            build_shell(builder, &fallback_mesh)
-                        };
-
-                        let bbox = if let Some(&mesh) = item_mesh_map.get(&instance.item_id) {
-                            mesh_bbox(mesh)
-                        } else {
-                            let (bbox_min, bbox_max) = instance.shell.bbox();
-                            (bbox_min, bbox_max)
-                        };
+                        let shell_offset = build_shell(builder, &geom.mesh, offset);
+                        // bbox of the normalized shell (relative to offset → min at origin)
+                        let (bmin, bmax) = mesh_bbox(&geom.mesh);
+                        let (ox, oy, oz) = (offset[0] as f32, offset[1] as f32, offset[2] as f32);
                         representations.push(Representation::new(
                             idx,
                             &BoundingBox::new(
-                                &FloatVector::new(bbox.0[0], bbox.0[1], bbox.0[2]),
-                                &FloatVector::new(bbox.1[0], bbox.1[1], bbox.1[2]),
+                                &FloatVector::new(bmin[0] - ox, bmin[1] - oy, bmin[2] - oz),
+                                &FloatVector::new(bmax[0] - ox, bmax[1] - oy, bmax[2] - oz),
                             ),
                             RepresentationClass::SHELL,
                         ));
@@ -836,14 +804,13 @@ mod fragments {
                     }
                 };
 
-                // Material from ifc-lite's color for this item_id
-                let color = item_id_to_color.get(&instance.item_id).copied()
-                    .unwrap_or([0.8, 0.8, 0.8, 1.0]);
+                // Material dedup by RGBA bytes.
+                let c = geom.color;
                 let color_bytes = [
-                    (color[0] * 255.0) as u8,
-                    (color[1] * 255.0) as u8,
-                    (color[2] * 255.0) as u8,
-                    (color[3] * 255.0) as u8,
+                    (c[0] * 255.0) as u8,
+                    (c[1] * 255.0) as u8,
+                    (c[2] * 255.0) as u8,
+                    (c[3] * 255.0) as u8,
                 ];
                 let mat_idx = *material_dedup.entry(color_bytes).or_insert_with(|| {
                     let idx = materials.len() as u32;
@@ -855,28 +822,20 @@ mod fragments {
                     idx
                 });
 
-                // Local transform: oracle algorithm = first_tf^-1 × this_tf
-                let lt_id = if geom_idx == 0 {
+                // Local transform = (firstGeom^-1 × thisGeom) × translate(offset), so the
+                // min-corner-normalized shell is placed back at its true position.
+                // ifc-lite stores local_transform as identity for the element's first geometry.
+                let local = super::mul_mat4(&geom.local_transform, &super::translate_colmajor(offset));
+                let lt_id = if colmajor_is_identity(&local) {
                     0u32
                 } else {
-                    let relative = first_tf_inv.mul(&instance.local_transform);
-                    if relative.is_identity() {
-                        0u32
-                    } else {
-                        let key = affine3_to_transform_key(&relative);
-                        *lt_dedup.entry(key).or_insert_with(|| {
-                            let idx = local_transforms.len() as u32;
-                            let pos = relative.translation();
-                            let (lx, ly) = relative.axes();
-                            local_transforms.push(Transform::new(
-                                &DoubleVector::new(pos[0], pos[1], pos[2]),
-                                &FloatVector::new(lx[0], lx[1], lx[2]),
-                                &FloatVector::new(ly[0], ly[1], ly[2]),
-                            ));
-                            lt_ids.push(next_id); next_id += 1;
-                            idx
-                        })
-                    }
+                    let key = colmajor_transform_key(&local);
+                    *lt_dedup.entry(key).or_insert_with(|| {
+                        let idx = local_transforms.len() as u32;
+                        local_transforms.push(colmajor_to_transform(&local));
+                        lt_ids.push(next_id); next_id += 1;
+                        idx
+                    })
                 };
 
                 samples.push(Sample::new(item_counter, mat_idx, repr_idx, lt_id));
@@ -938,41 +897,25 @@ mod fragments {
         }))
     }
 
-    fn build_shell<'a>(builder: &mut FlatBufferBuilder<'a>, mesh: &ifc_geometry::Mesh) -> flatbuffers::WIPOffset<Shell<'a>> {
-        use fragments_core::get_shell_data;
+    fn build_shell<'a>(builder: &mut FlatBufferBuilder<'a>, mesh: &ifc_geometry::Mesh, offset: [f64; 3]) -> flatbuffers::WIPOffset<Shell<'a>> {
+        use fragments_core::get_raw_shell_data;
 
-        // Convert flat ifc-lite buffers to slice arrays for get_shell_data
+        // Store vertices relative to `offset` (the mesh min-corner) so identical shapes at
+        // different positions share one shell; the offset is re-applied per instance via the
+        // sample's local transform.
+        let (ox, oy, oz) = (offset[0] as f32, offset[1] as f32, offset[2] as f32);
         let positions: Vec<[f32; 3]> = mesh.positions.chunks_exact(3)
-            .map(|c| [c[0], c[1], c[2]])
+            .map(|c| [c[0] - ox, c[1] - oy, c[2] - oz])
             .collect();
-        let normals: Vec<[f32; 3]> = if mesh.normals.len() == mesh.positions.len() {
-            mesh.normals.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect()
-        } else {
-            // Compute normals from triangles if not provided
-            let mut norms = vec![[0.0f32; 3]; positions.len()];
-            for tri in mesh.indices.chunks_exact(3) {
-                let (i1, i2, i3) = (tri[0] as usize, tri[1] as usize, tri[2] as usize);
-                if i1 >= positions.len() || i2 >= positions.len() || i3 >= positions.len() { continue; }
-                let (p1, p2, p3) = (positions[i1], positions[i2], positions[i3]);
-                let ab = [p2[0]-p1[0], p2[1]-p1[1], p2[2]-p1[2]];
-                let ac = [p3[0]-p1[0], p3[1]-p1[1], p3[2]-p1[2]];
-                let n = [ab[1]*ac[2]-ab[2]*ac[1], ab[2]*ac[0]-ab[0]*ac[2], ab[0]*ac[1]-ab[1]*ac[0]];
-                for &vi in &[i1, i2, i3] {
-                    norms[vi][0] += n[0]; norms[vi][1] += n[1]; norms[vi][2] += n[2];
-                }
-            }
-            for n in &mut norms {
-                let len = (n[0]*n[0]+n[1]*n[1]+n[2]*n[2]).sqrt();
-                if len > 1e-12 { n[0] /= len; n[1] /= len; n[2] /= len; }
-            }
-            norms
-        };
         let triangles: Vec<[u32; 3]> = mesh.indices.chunks_exact(3)
             .map(|t| [t[0], t[1], t[2]])
             .collect();
 
-        // Run oracle's getShellData for coplanar-face grouping
-        let shell_data = get_shell_data(&positions, &normals, &triangles);
+        // Raw per-triangle shells: faithful to ifc-lite's triangulation (same geometry the
+        // validated glTF path emits). The coplanar `get_shell_data` boundary tracer cannot
+        // robustly reconstruct face loops from ifc-lite's arbitrary triangulations and
+        // produced spanning-polygon garbage; raw mode is correct by construction.
+        let shell_data = get_raw_shell_data(&positions, &triangles);
         let is_big = shell_data.points.len() > 65000;
 
         let point_vec: Vec<FloatVector> = shell_data.points.iter()
@@ -1061,28 +1004,32 @@ mod fragments {
         (min, max)
     }
 
-    /// 9-component key for local transform deduplication.
-    fn affine3_to_transform_key(t: &fragments_core::Affine3) -> [u32; 9] {
-        let pos = t.translation();
-        let (x, y) = t.axes();
-        [
-            (pos[0] as f32).to_bits(), (pos[1] as f32).to_bits(), (pos[2] as f32).to_bits(),
-            x[0].to_bits(), x[1].to_bits(), x[2].to_bits(),
-            y[0].to_bits(), y[1].to_bits(), y[2].to_bits(),
-        ]
+    /// Build a fragments `Transform` (translation + X/Y basis axes; Z derived by the
+    /// viewer) from a column-major 4×4 matrix. Translation kept in f64, axes in f32.
+    fn colmajor_to_transform(m: &[f64; 16]) -> Transform {
+        Transform::new(
+            &DoubleVector::new(m[12], m[13], m[14]),
+            &FloatVector::new(m[0] as f32, m[1] as f32, m[2] as f32),
+            &FloatVector::new(m[4] as f32, m[5] as f32, m[6] as f32),
+        )
     }
 
-    /// Convert oracle's triangle soup to an ifc-lite Mesh (fallback when ifc-lite didn't tessellate).
-    fn oracle_to_ifc_mesh(
-        positions: &[[f32; 3]],
-        normals: &[[f32; 3]],
-        triangles: &[[u32; 3]],
-    ) -> ifc_geometry::Mesh {
-        let mut mesh = ifc_geometry::Mesh::new();
-        for p in positions { mesh.positions.extend_from_slice(p); }
-        for n in normals   { mesh.normals.extend_from_slice(n); }
-        for t in triangles { mesh.indices.extend_from_slice(t); }
-        mesh
+    /// True when a column-major 4×4 is the identity (within fp tolerance).
+    fn colmajor_is_identity(m: &[f64; 16]) -> bool {
+        const ID: [f64; 16] = [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+            0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ];
+        m.iter().zip(ID.iter()).all(|(a, b)| (a - b).abs() < 1e-9)
+    }
+
+    /// 9-component dedup key (translation + X/Y axes as f32 bits) for a column-major matrix.
+    fn colmajor_transform_key(m: &[f64; 16]) -> [u32; 9] {
+        [
+            (m[12] as f32).to_bits(), (m[13] as f32).to_bits(), (m[14] as f32).to_bits(),
+            (m[0] as f32).to_bits(), (m[1] as f32).to_bits(), (m[2] as f32).to_bits(),
+            (m[4] as f32).to_bits(), (m[5] as f32).to_bits(), (m[6] as f32).to_bits(),
+        ]
     }
 
     fn compress(bytes: &[u8]) -> Result<Vec<u8>, std::io::Error> {

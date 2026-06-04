@@ -35,3 +35,7 @@ benchmark_results/
 
 # Vendored build outputs
 vendor/chijin/target/
+
+# Debug viewers (local only, not pushed)
+web/fragments-debugviewer/
+web/ifclite-debugviewer/
