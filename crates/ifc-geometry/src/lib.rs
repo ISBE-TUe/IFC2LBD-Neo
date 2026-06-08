@@ -33,8 +33,34 @@ pub struct GeometryInstance {
     pub world_transform: [f64; 16],
     /// Column-major 4×4 relative transform: `firstGeom^-1 × thisGeom` (identity for first)
     pub local_transform: [f64; 16],
-    /// STEP express ID of the geometry entity — used as dedup key
+    /// STEP express ID of the geometry entity — used for style/color lookup.
     pub geometry_id: u64,
+    /// Optional reusable-geometry identity from ifc-lite's cache.
+    /// Distinct from `geometry_id`, which remains the style lookup key.
+    pub dedup_key: Option<u64>,
+}
+
+/// Coverage result for one selected IFC element in the geometry pipeline.
+#[derive(Debug, Clone)]
+pub struct GeometryCoverageEntry {
+    pub express_id: u64,
+    pub guid: String,
+    /// STEP entity name e.g. "IFCWALL"
+    pub category: String,
+    pub status: GeometryCoverageStatus,
+}
+
+#[derive(Debug, Clone)]
+pub enum GeometryCoverageStatus {
+    HasGeometry { geometry_count: usize },
+    Missing { reason: GeometryMissingReason },
+}
+
+#[derive(Debug, Clone)]
+pub enum GeometryMissingReason {
+    DecodeFailed(String),
+    EmptySubmeshes,
+    GeometryError(String),
 }
 
 /// Process all elements in `element_ids` and return their tessellated meshes.
@@ -71,6 +97,36 @@ pub fn stream_meshes(ifc_content: Arc<String>, element_ids: &[u64]) -> Vec<FlatM
     }
 }
 
+/// Analyze geometry coverage for selected elements without producing fragment output.
+///
+/// Returns one entry per requested element describing whether the geometry pipeline
+/// emitted any sub-meshes and, if not, the coarse failure reason.
+pub fn analyze_geometry_coverage(
+    ifc_content: Arc<String>,
+    element_ids: &[u64],
+) -> Vec<GeometryCoverageEntry> {
+    if element_ids.is_empty() {
+        return Vec::new();
+    }
+
+    let element_ids_vec: Vec<u64> = element_ids.to_vec();
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::thread::Builder::new()
+            .name("ifc-geometry".to_string())
+            .stack_size(geometry_thread_stack_bytes())
+            .spawn(move || analyze_coverage_parallel(ifc_content, element_ids_vec))
+            .expect("failed to spawn ifc-geometry thread")
+            .join()
+            .unwrap_or_default()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        analyze_coverage_parallel(ifc_content, element_ids_vec)
+    }
+}
+
 /// Run sequential element tessellation on the 256 MB geometry thread.
 ///
 /// Sequential: BSP/CSG recursion for each element runs entirely on this thread's
@@ -88,6 +144,21 @@ fn tessellate_parallel(ifc_content: Arc<String>, element_ids: Vec<u64>) -> Vec<F
     let color_map = build_color_map(content_str, &mut decoder);
 
     tessellate_chunk(&element_ids, &router, &mut decoder, &color_map)
+}
+
+fn analyze_coverage_parallel(
+    ifc_content: Arc<String>,
+    element_ids: Vec<u64>,
+) -> Vec<GeometryCoverageEntry> {
+    use ifc_lite_core::{build_entity_index, EntityDecoder};
+    use ifc_lite_geometry::router::GeometryRouter;
+
+    let content_str: &str = &ifc_content;
+    let index = build_entity_index(content_str);
+    let mut decoder = EntityDecoder::with_index(content_str, index);
+    let router = GeometryRouter::with_units(content_str, &mut decoder);
+
+    coverage_chunk(&element_ids, &router, &mut decoder)
 }
 
 /// Tessellate a slice of element IDs using the given (thread-local) router and decoder.
@@ -144,6 +215,7 @@ fn tessellate_chunk(
             };
             geometries.push(GeometryInstance {
                 geometry_id: sub.geometry_id as u64,
+                dedup_key: sub.dedup_key,
                 mesh: sub.mesh,
                 color,
                 world_transform,
@@ -154,6 +226,60 @@ fn tessellate_chunk(
         if !geometries.is_empty() {
             results.push(FlatMesh { express_id: eid, guid, category, geometries });
         }
+    }
+
+    results
+}
+
+fn coverage_chunk(
+    element_ids: &[u64],
+    router: &ifc_lite_geometry::router::GeometryRouter,
+    decoder: &mut ifc_lite_core::EntityDecoder,
+) -> Vec<GeometryCoverageEntry> {
+    let mut results = Vec::with_capacity(element_ids.len());
+
+    for &eid in element_ids {
+        let id = eid as u32;
+        let element = match decoder.decode_by_id(id) {
+            Ok(e) => e,
+            Err(err) => {
+                results.push(GeometryCoverageEntry {
+                    express_id: eid,
+                    guid: String::new(),
+                    category: "DECODE_FAILED".to_string(),
+                    status: GeometryCoverageStatus::Missing {
+                        reason: GeometryMissingReason::DecodeFailed(err.to_string()),
+                    },
+                });
+                continue;
+            }
+        };
+
+        let guid = element
+            .get(0)
+            .and_then(|a| a.as_string())
+            .unwrap_or("")
+            .to_string();
+        let category = element.ifc_type.to_string();
+
+        let status = match router.process_element_submeshes_in_definition_space(&element, decoder) {
+            Ok(sub_meshes) if !sub_meshes.sub_meshes.is_empty() => GeometryCoverageStatus::HasGeometry {
+                geometry_count: sub_meshes.sub_meshes.len(),
+            },
+            Ok(_) => GeometryCoverageStatus::Missing {
+                reason: GeometryMissingReason::EmptySubmeshes,
+            },
+            Err(err) => GeometryCoverageStatus::Missing {
+                reason: GeometryMissingReason::GeometryError(err.to_string()),
+            },
+        };
+
+        results.push(GeometryCoverageEntry {
+            express_id: eid,
+            guid,
+            category,
+            status,
+        });
     }
 
     results

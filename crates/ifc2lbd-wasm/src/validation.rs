@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use lbd_converter::IfcowlMode;
 use crate::types::{
-    ConversionRequest, ExecutionSettings, NquadsChunkingMode, NquadsModuleOptions, OutputFormats,
-    TurtleGrouping, TurtleLayout, WasmApiError,
+    ConversionRequest, ExecutionSettings, NquadsChunkingMode, NquadsGraphNaming,
+    NquadsModuleOptions, OutputFormats, TurtleGrouping, TurtleLayout, WasmApiError,
 };
 use lbd_pipeline::ActivationPlan;
 use lbd_pipeline::{
@@ -128,6 +128,20 @@ pub(crate) fn resolve_execution_settings(
         .and_then(|m| m.get("chunk_prefix"))
         .cloned()
         .unwrap_or_else(|| "out".to_string());
+    let graph_naming = match effective_nquads_entries
+        .and_then(|m| m.get("graph_naming"))
+        .map(String::as_str)
+        .unwrap_or("producers")
+    {
+        "producers" => NquadsGraphNaming::Producers,
+        "filename" => NquadsGraphNaming::Filename,
+        other => {
+            return Err(WasmApiError::Message(format!(
+                "invalid `neo-nquads-serializer.graph_naming={}` (expected producers|filename)",
+                other
+            )));
+        }
+    };
 
     let output_stem = configs
         .get(FILE_EXPORT_ID)
@@ -209,6 +223,7 @@ pub(crate) fn resolve_execution_settings(
             chunk_size_lines,
             chunk_size_bytes,
             chunk_prefix,
+            graph_naming,
         },
         output_stem,
         turtle_grouping,
@@ -431,10 +446,23 @@ pub(crate) fn validate_bsdd_producer_options(
 pub(crate) fn validate_nquads_serializer_options(
     entries: &HashMap<String, String>,
 ) -> Result<(), WasmApiError> {
-    if !entries.is_empty() {
-        return Err(WasmApiError::Message(
-            "neo-nquads-serializer has no configurable options (chunking options belong on neo-nquads-chunked-serializer)".to_string(),
-        ));
+    for (key, value) in entries {
+        match key.as_str() {
+            "graph_naming" => {
+                if !matches!(value.as_str(), "producers" | "filename") {
+                    return Err(WasmApiError::Message(format!(
+                        "`neo-nquads-serializer.graph_naming` must be one of producers|filename, got `{}`",
+                        value
+                    )));
+                }
+            }
+            other => {
+                return Err(WasmApiError::Message(format!(
+                    "unknown option `neo-nquads-serializer.{}` (supported: graph_naming)",
+                    other
+                )));
+            }
+        }
     }
     Ok(())
 }
@@ -447,6 +475,7 @@ pub(crate) fn validate_nquads_chunked_serializer_options(
         "chunk_size_lines",
         "chunk_size_bytes",
         "chunk_prefix",
+        "graph_naming",
     ];
     for (key, value) in entries {
         if !allowed.contains(&key.as_str()) {
@@ -466,6 +495,14 @@ pub(crate) fn validate_nquads_chunked_serializer_options(
         if key == "chunking" && !matches!(value.as_str(), "none" | "lines" | "bytes" | "cores") {
             return Err(WasmApiError::Message(format!(
                 "invalid `neo-nquads-chunked-serializer.chunking={}` (expected none|lines|bytes|cores)",
+                value
+            )));
+        }
+        if key == "graph_naming"
+            && !matches!(value.as_str(), "producers" | "filename")
+        {
+            return Err(WasmApiError::Message(format!(
+                "invalid `neo-nquads-chunked-serializer.graph_naming={}` (expected producers|filename)",
                 value
             )));
         }

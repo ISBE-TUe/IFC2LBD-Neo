@@ -16,6 +16,10 @@ const MODULE_DEFAULTS = {
     chunk_size_lines: "2000000",
     chunk_size_bytes: "268435456",
     chunk_prefix: "out",
+    graph_naming: "producers",
+  },
+  "neo-nquads-serializer": {
+    graph_naming: "producers",
   },
   "neo-bsdd-producer": {
     profile: "base",

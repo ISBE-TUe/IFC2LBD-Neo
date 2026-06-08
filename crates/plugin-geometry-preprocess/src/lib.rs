@@ -62,8 +62,10 @@ impl PreprocessPlugin for GeometryPreprocessPlugin {
             .map(|o| o.0)
             .unwrap_or_default();
 
-        // Collect element IDs: physical elements + IFCSPACE from spatial nodes.
-        // Matches oracle's classes.elements (IFCOPENINGELEMENT excluded).
+        // Collect geometry candidates: physical elements + spatial products.
+        // Keep IFCOPENINGELEMENT excluded, but include spatial nodes such as
+        // IFCSITE/IFCBUILDING/IFCBUILDINGSTOREY/IFCSPACE so site-scoped geometry
+        // is not silently dropped from fragment export.
         let mut element_ids: Vec<u64> = model
             .elements
             .keys()
@@ -77,10 +79,12 @@ impl PreprocessPlugin for GeometryPreprocessPlugin {
             })
             .collect();
 
-        // Include IFCSPACE from spatial nodes (oracle does this too)
+        // Include spatial nodes except IFCPROJECT. Some authoring tools export
+        // construction-site assets (fences, gates, scaffolding, terrain, etc.)
+        // directly as IFCSITE instances with real Body geometry.
         for id in model.spatial_nodes.keys().copied() {
             if let Some(e) = step.entities.get(&id) {
-                if e.entity_name == "IFCSPACE" {
+                if e.entity_name != "IFCPROJECT" {
                     element_ids.push(id);
                 }
             }

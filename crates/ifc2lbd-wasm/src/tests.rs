@@ -6,8 +6,8 @@ mod tests {
     use crate::runner::{convert_ifc_impl, resolve_plan_impl};
     use crate::types::ConversionRequest;
     use lbd_pipeline::{
-        FILE_EXPORT_ID, IFCOWL_PRODUCER_ID, LBD_PRODUCER_ID,
-        NQUADS_SERIALIZER_ID, TURTLE_SERIALIZER_ID,
+        BOT_PRODUCER_ID, FILE_EXPORT_ID, IFCOWL_PRODUCER_ID, NQUADS_SERIALIZER_ID,
+        TURTLE_SERIALIZER_ID,
     };
 
     fn tiny_ifc() -> Vec<u8> {
@@ -21,7 +21,7 @@ mod tests {
             .into_iter()
             .map(|m| m.id.to_string())
             .collect();
-        assert!(ids.contains(LBD_PRODUCER_ID));
+        assert!(ids.contains(BOT_PRODUCER_ID));
         assert!(ids.contains(IFCOWL_PRODUCER_ID));
         assert!(ids.contains(TURTLE_SERIALIZER_ID));
         assert!(ids.contains(NQUADS_SERIALIZER_ID));
@@ -40,7 +40,7 @@ mod tests {
             &tiny_ifc(),
             ConversionRequest {
                 module_ids: vec![
-                    LBD_PRODUCER_ID.to_string(),
+                    BOT_PRODUCER_ID.to_string(),
                     TURTLE_SERIALIZER_ID.to_string(),
                     FILE_EXPORT_ID.to_string(),
                 ],
@@ -71,7 +71,7 @@ mod tests {
             &tiny_ifc(),
             ConversionRequest {
                 module_ids: vec![
-                    LBD_PRODUCER_ID.to_string(),
+                    BOT_PRODUCER_ID.to_string(),
                     IFCOWL_PRODUCER_ID.to_string(),
                     NQUADS_SERIALIZER_ID.to_string(),
                     FILE_EXPORT_ID.to_string(),

@@ -203,6 +203,7 @@ pub struct NquadsModuleOptions {
     pub chunk_size_lines: usize,
     pub chunk_size_bytes: usize,
     pub chunk_prefix: String,
+    pub graph_naming: NquadsGraphNaming,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -210,6 +211,12 @@ pub enum NquadsChunkingMode {
     None,
     Lines,
     Bytes,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NquadsGraphNaming {
+    Producers,
+    Filename,
 }
 
 #[derive(Debug, Clone)]

@@ -71,6 +71,10 @@ pub struct Mesh {
 pub struct SubMesh {
     /// The geometry item ID (e.g., IfcFacetedBrep ID) for style lookup
     pub geometry_id: u32,
+    /// Optional reusable-geometry identity for fragment shell dedup.
+    /// This is separate from `geometry_id` because style lookup and geometry
+    /// reuse do not always share the same key (e.g. material-layer slicing).
+    pub dedup_key: Option<u64>,
     /// Triangulated mesh in element representation space (no world transform baked in)
     pub mesh: Mesh,
     /// Per-sub-mesh local placement matrix from the MappedItem's mapping transform.
@@ -81,11 +85,21 @@ pub struct SubMesh {
 
 impl SubMesh {
     pub fn new(geometry_id: u32, mesh: Mesh) -> Self {
-        Self { geometry_id, mesh, local_matrix: None }
+        Self {
+            geometry_id,
+            dedup_key: None,
+            mesh,
+            local_matrix: None,
+        }
     }
 
     pub fn with_local_matrix(geometry_id: u32, mesh: Mesh, m: nalgebra::Matrix4<f64>) -> Self {
-        Self { geometry_id, mesh, local_matrix: Some(m) }
+        Self {
+            geometry_id,
+            dedup_key: None,
+            mesh,
+            local_matrix: Some(m),
+        }
     }
 }
 

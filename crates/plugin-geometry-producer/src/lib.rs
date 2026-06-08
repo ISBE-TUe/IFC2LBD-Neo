@@ -787,10 +787,10 @@ mod fragments {
         let mut next_id: u32 = 1;
         lt_ids.push(next_id); next_id += 1;
 
-        // Dedup: oracle item_id (STEP entity ID) → shell index.
-        // oracle content hash → shell index.
+        // Dedup: reusable geometry identity (if available) → shell index.
+        // Fallback content hash → shell index.
         // Local transform key → lt index.
-        let mut shell_dedup_by_id: HashMap<u64, u32> = HashMap::new();
+        let mut shell_dedup_by_key: HashMap<u64, u32> = HashMap::new();
         let mut shell_dedup_by_hash: HashMap<u64, u32> = HashMap::new();
         let mut lt_dedup: HashMap<[u32; 9], u32> = HashMap::new();
         let mut material_dedup: HashMap<[u8; 4], u32> = HashMap::new();
@@ -818,19 +818,47 @@ mod fragments {
                 // shell count/size WITHOUT the positional dedup of repeated shapes).
                 let offset = if normalize { super::mesh_min_corner(&geom.mesh) } else { [0.0; 3] };
 
-                // Shell dedup: fast path by geometry express ID, then by translation-invariant
-                // content hash so geometrically-identical shapes collapse to one shell.
-                let repr_idx = if let Some(&existing) = shell_dedup_by_id.get(&geom.geometry_id) {
-                    existing
+                // Shell dedup: fast path by reusable geometry identity (ifc-lite cache pointer
+                // when available), then by translation-invariant content hash so
+                // geometrically-identical shapes collapse to one shell.
+                let repr_idx = if let Some(dedup_key) = geom.dedup_key {
+                    if let Some(&existing) = shell_dedup_by_key.get(&dedup_key) {
+                        existing
+                    } else {
+                        let shell_hash = super::hash_ifc_mesh(&geom.mesh, offset);
+                        if let Some(&existing) = shell_dedup_by_hash.get(&shell_hash) {
+                            shell_dedup_by_key.insert(dedup_key, existing);
+                            existing
+                        } else {
+                            *dbg_shells_by_cat.entry(flat_mesh.category.clone()).or_insert(0u32) += 1;
+                            let idx = shells.len() as u32;
+                            shell_dedup_by_key.insert(dedup_key, idx);
+                            shell_dedup_by_hash.insert(shell_hash, idx);
+
+                            let shell_offset = build_shell(builder, &geom.mesh, offset);
+                            // bbox of the normalized shell (relative to offset → min at origin)
+                            let (bmin, bmax) = mesh_bbox(&geom.mesh);
+                            let (ox, oy, oz) = (offset[0] as f32, offset[1] as f32, offset[2] as f32);
+                            representations.push(Representation::new(
+                                idx,
+                                &BoundingBox::new(
+                                    &FloatVector::new(bmin[0] - ox, bmin[1] - oy, bmin[2] - oz),
+                                    &FloatVector::new(bmax[0] - ox, bmax[1] - oy, bmax[2] - oz),
+                                ),
+                                RepresentationClass::SHELL,
+                            ));
+                            representation_ids.push(next_id); next_id += 1;
+                            shells.push(shell_offset);
+                            idx
+                        }
+                    }
                 } else {
                     let shell_hash = super::hash_ifc_mesh(&geom.mesh, offset);
                     if let Some(&existing) = shell_dedup_by_hash.get(&shell_hash) {
-                        shell_dedup_by_id.insert(geom.geometry_id, existing);
                         existing
                     } else {
                         *dbg_shells_by_cat.entry(flat_mesh.category.clone()).or_insert(0u32) += 1;
                         let idx = shells.len() as u32;
-                        shell_dedup_by_id.insert(geom.geometry_id, idx);
                         shell_dedup_by_hash.insert(shell_hash, idx);
 
                         let shell_offset = build_shell(builder, &geom.mesh, offset);
@@ -1085,4 +1113,3 @@ mod fragments {
         enc.finish()
     }
 }
-

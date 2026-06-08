@@ -780,8 +780,8 @@ mod tests {
     #[test]
     fn built_in_registry_exposes_expected_stage_counts() {
         let registry = built_in_registry();
-        // Bot, Beo, Bsdd, PropsOpm, OmgFog, Ifcowl, Fragments, GeometryProducer
-        assert_eq!(registry.manifests_for_stage(PipelineStage::Produce).len(), 8);
+        // Bot, Beo, Bsdd, PropsOpm, OmgFog, Ifcowl, GeometryProducer
+        assert_eq!(registry.manifests_for_stage(PipelineStage::Produce).len(), 7);
         // Turtle, NQuads, NQuadsChunked
         assert_eq!(registry.manifests_for_stage(PipelineStage::Serialize).len(), 3);
         // File, Log, Stdout

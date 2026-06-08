@@ -53,12 +53,13 @@ pub(crate) fn to_view(manifest: PluginManifest) -> ModuleManifestView {
 
 pub(crate) fn module_option_keys(module_id: &str) -> Vec<String> {
     match module_id {
-        NQUADS_SERIALIZER_ID => vec![],
+        NQUADS_SERIALIZER_ID => vec!["graph_naming".to_string()],
         NQUADS_CHUNKED_SERIALIZER_ID => vec![
             "chunking".to_string(),
             "chunk_size_lines".to_string(),
             "chunk_size_bytes".to_string(),
             "chunk_prefix".to_string(),
+            "graph_naming".to_string(),
         ],
         TURTLE_SERIALIZER_ID => vec!["grouping".to_string(), "layout".to_string()],
         IFCOWL_PRODUCER_ID => vec!["mode".to_string()],

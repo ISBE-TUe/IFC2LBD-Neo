@@ -18,7 +18,6 @@ path = "src/bin/compare_turtle.rs"
 ifc-step = { workspace = true }
 ifc-model = { workspace = true }
 ifc-schema = { workspace = true }
-fragments-core = { workspace = true }
 lbd-ontology = { workspace = true }
 lbd-pipeline = { workspace = true }
 lbd-converter = { workspace = true }
@@ -45,6 +44,7 @@ rio_turtle = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 rstar = { workspace = true }
+percent-encoding = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }

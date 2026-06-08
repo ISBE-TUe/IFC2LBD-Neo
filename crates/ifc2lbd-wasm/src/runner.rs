@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::io::{self};
 
 use serde_json;
+use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 
 use ifc_model::build_model;
 use ifc_step::{parse_step_bytes, StepFile};
@@ -64,6 +65,21 @@ use lbd_pipeline::{
 /// Returns true if the named-graph IRI belongs to an IfcOWL (or alignment) graph.
 fn is_ifcowl_graph(iri: &str) -> bool {
     iri.ends_with("/ifcowl") || iri.ends_with("/alignment")
+}
+
+fn resolve_nquads_graph_iri(
+    normalized_base: &str,
+    output_stem: &str,
+    producer_slug: &str,
+    naming: NquadsGraphNaming,
+) -> String {
+    match naming {
+        NquadsGraphNaming::Producers => format!("{normalized_base}/{producer_slug}"),
+        NquadsGraphNaming::Filename => {
+            let encoded = utf8_percent_encode(output_stem, NON_ALPHANUMERIC).to_string();
+            format!("{normalized_base}/{encoded}")
+        }
+    }
 }
 
 /// Build a `PipelineContext` from the common pipeline inputs.
@@ -835,8 +851,18 @@ fn nquads_file_summaries(
     settings: &ExecutionSettings,
 ) -> Result<Vec<OutputFileSummary>, lbd_serializer::SerializerError> {
     let normalized_base = normalize_base_for_graph_iri(base_uri);
-    let lbd_graph = format!("{normalized_base}/lbd");
-    let ifcowl_graph = format!("{normalized_base}/ifcowl");
+    let lbd_graph = resolve_nquads_graph_iri(
+        &normalized_base,
+        &settings.output_stem,
+        "lbd",
+        settings.nquads.graph_naming,
+    );
+    let ifcowl_graph = resolve_nquads_graph_iri(
+        &normalized_base,
+        &settings.output_stem,
+        "ifcowl",
+        settings.nquads.graph_naming,
+    );
 
     let (lbd_sender, lbd_receiver) = crossbeam::channel::bounded(8);
     let (ifcowl_sender, ifcowl_receiver) = crossbeam::channel::bounded(8);
@@ -1574,7 +1600,12 @@ fn nquads_to_sink(
                         rx,
                         sink,
                         format!("{}-{}", chunk_prefix, $slug),
-                        &format!("{}/{}", normalized_base, $slug),
+                        &resolve_nquads_graph_iri(
+                            &normalized_base,
+                            &settings.output_stem,
+                            $slug,
+                            settings.nquads.graph_naming,
+                        ),
                         chunk_mode,
                         chunk_size_lines,
                         chunk_size_bytes,
@@ -1633,7 +1664,12 @@ fn nquads_to_sink(
                     let triples = serialize_nquads_receiver_to_writer(
                         rx,
                         &mut writer,
-                        &format!("{}/{}", normalized_base, $slug),
+                        &resolve_nquads_graph_iri(
+                            &normalized_base,
+                            &settings.output_stem,
+                            $slug,
+                            settings.nquads.graph_naming,
+                        ),
                     )?;
                     let ms = now_ms() - t0;
                     produce_triples.insert($producer_id, triples);
@@ -1881,7 +1917,12 @@ fn export_browser_files(
                     lbd_serializer::write_nquads_batch(
                         &mut nq_bytes,
                         &$triples,
-                        &format!("{}/{}", normalized_base, $slug),
+                        &resolve_nquads_graph_iri(
+                            &normalized_base,
+                            &settings.output_stem,
+                            $slug,
+                            settings.nquads.graph_naming,
+                        ),
                     )?;
                 }
             };

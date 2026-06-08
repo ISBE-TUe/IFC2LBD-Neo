@@ -811,8 +811,9 @@ impl GeometryRouter {
             // Item placement (e.g. IFCEXTRUDEDAREASOLID.Position) stays separate so that
             // identical shapes at different positions share the same shell (oracle dedup).
             match self.process_item_definition_space(item, decoder) {
-                Ok((mesh, item_placement)) if !mesh.is_empty() => {
+                Ok((mesh, item_placement, dedup_key)) if !mesh.is_empty() => {
                     let mut sm = SubMesh::new(item.id, mesh);
+                    sm.dedup_key = Some(dedup_key);
                     // local_matrix starts as just the item's own placement; callers above
                     // accumulate the parent T×O on top.
                     if !is_identity_matrix(&item_placement) {
@@ -832,7 +833,8 @@ impl GeometryRouter {
         Ok(())
     }
 
-    /// Process a leaf geometry item in definition space: returns (position-free mesh, item_placement).
+    /// Process a leaf geometry item in definition space: returns
+    /// `(position-free mesh, item_placement, dedup_key)`.
     ///
     /// For items with their own Position attribute (IFCEXTRUDEDAREASOLID, IFCADVANCEDSWEPTSOLID, etc.):
     /// - mesh vertices are in the item's OWN local space (Position NOT applied)
@@ -848,7 +850,7 @@ impl GeometryRouter {
         &self,
         item: &DecodedEntity,
         decoder: &mut EntityDecoder,
-    ) -> Result<(Mesh, nalgebra::Matrix4<f64>)> {
+    ) -> Result<(Mesh, nalgebra::Matrix4<f64>, u64)> {
         // For IFCEXTRUDEDAREASOLID: the Position (arg[1]) is baked into ifc-lite's mesh.
         // Un-bake it: get the mesh, then apply inverse(Position) to restore item-local geometry.
         if item.ifc_type == IfcType::IfcExtrudedAreaSolid
@@ -865,8 +867,8 @@ impl GeometryRouter {
                 } else { nalgebra::Matrix4::identity() }
             } else { nalgebra::Matrix4::identity() };
 
-            // Get normal (baked) mesh from the processor path
-            let baked_mesh = self.process_representation_item(item, decoder)?;
+            // Get normal (baked) mesh from the processor path.
+            let (baked_mesh, dedup_key) = self.process_representation_item_with_dedup(item, decoder)?;
 
             // Un-bake: strip the Position from vertices to get position-free geometry,
             // so identical profiles at different placements share one shell (dedup) and
@@ -879,33 +881,33 @@ impl GeometryRouter {
             // IFC→WebGL R^T here, which double-rotated every rotated-Position extrusion
             // (visible 90°/180° tilt) and broke dedup (rotated twins hashed differently).
             if baked_mesh.is_empty() || is_identity_matrix(&item_placement) {
-                return Ok((baked_mesh, nalgebra::Matrix4::identity()));
+                return Ok((baked_mesh, nalgebra::Matrix4::identity(), dedup_key));
             }
             let inv_p_ifc = match item_placement.try_inverse() {
                 Some(m) => m,
-                None => return Ok((baked_mesh, item_placement)), // degenerate, keep baked
+                None => return Ok((baked_mesh, item_placement, dedup_key)), // degenerate, keep baked
             };
             let raw_mesh = apply_matrix_to_mesh(baked_mesh, &inv_p_ifc);
-            return Ok((raw_mesh, item_placement));
+            return Ok((raw_mesh, item_placement, dedup_key));
         }
 
         // For all other types: Position is either absent or identity.
         // Return the mesh as-is with identity placement.
-        let mesh = self.process_representation_item(item, decoder)?;
-        Ok((mesh, nalgebra::Matrix4::identity()))
+        let (mesh, dedup_key) = self.process_representation_item_with_dedup(item, decoder)?;
+        Ok((mesh, nalgebra::Matrix4::identity(), dedup_key))
     }
 
-    /// Process a single representation item (IfcExtrudedAreaSolid, etc.)
-    /// Uses hash-based caching for geometry deduplication across repeated floors
     #[inline]
-    pub fn process_representation_item(
+    fn process_representation_item_with_dedup(
         &self,
         item: &DecodedEntity,
         decoder: &mut EntityDecoder,
-    ) -> Result<Mesh> {
+    ) -> Result<(Mesh, u64)> {
         // Special handling for MappedItem with caching
         if item.ifc_type == IfcType::IfcMappedItem {
-            return self.process_mapped_item_cached(item, decoder);
+            return self
+                .process_mapped_item_cached(item, decoder)
+                .map(|mesh| (mesh, item.id as u64));
         }
 
         // Check FacetedBrep cache first (from batch preprocessing)
@@ -913,7 +915,7 @@ impl GeometryRouter {
             if let Some(mut mesh) = self.take_cached_faceted_brep(item.id) {
                 self.scale_mesh(&mut mesh);
                 let cached = self.get_or_cache_by_hash(mesh);
-                return Ok((*cached).clone());
+                return Ok(((*cached).clone(), arc_identity(&cached)));
             }
         }
 
@@ -935,13 +937,11 @@ impl GeometryRouter {
                 processor.process_with_rtc(item, decoder, &self.schema, rtc_file_units)?;
             mesh.validate_indices();
             self.scale_mesh(&mut mesh);
-            // Mark positions as already RTC-shifted by setting a flag
-            // (positions are small values near origin, not world-space)
             if !mesh.positions.is_empty() {
                 let cached = self.get_or_cache_by_hash(mesh);
-                return Ok((*cached).clone());
+                return Ok(((*cached).clone(), arc_identity(&cached)));
             }
-            return Ok(mesh);
+            return Ok((mesh, item.id as u64));
         }
 
         // Check if we have a processor for this type
@@ -979,34 +979,46 @@ impl GeometryRouter {
             // Deduplicate by hash - buildings with repeated floors have identical geometry
             if !mesh.positions.is_empty() {
                 let cached = self.get_or_cache_by_hash(mesh);
-                return Ok((*cached).clone());
+                return Ok(((*cached).clone(), arc_identity(&cached)));
             }
-            return Ok(mesh);
+            return Ok((mesh, item.id as u64));
         }
 
         // Check category for fallback handling
         match self.schema.geometry_category(&item.ifc_type) {
             Some(GeometryCategory::SweptSolid) => {
                 // For now, return empty mesh - processors will handle this
-                Ok(Mesh::new())
+                Ok((Mesh::new(), item.id as u64))
             }
             Some(GeometryCategory::ExplicitMesh) => {
                 // For now, return empty mesh - processors will handle this
-                Ok(Mesh::new())
+                Ok((Mesh::new(), item.id as u64))
             }
             Some(GeometryCategory::Boolean) => {
                 // For now, return empty mesh - processors will handle this
-                Ok(Mesh::new())
+                Ok((Mesh::new(), item.id as u64))
             }
             Some(GeometryCategory::MappedItem) => {
                 // For now, return empty mesh - processors will handle this
-                Ok(Mesh::new())
+                Ok((Mesh::new(), item.id as u64))
             }
             _ => Err(Error::geometry(format!(
                 "Unsupported representation type: {}",
                 item.ifc_type
             ))),
         }
+    }
+
+    /// Process a single representation item (IfcExtrudedAreaSolid, etc.)
+    /// Uses hash-based caching for geometry deduplication across repeated floors.
+    #[inline]
+    pub fn process_representation_item(
+        &self,
+        item: &DecodedEntity,
+        decoder: &mut EntityDecoder,
+    ) -> Result<Mesh> {
+        self.process_representation_item_with_dedup(item, decoder)
+            .map(|(mesh, _)| mesh)
     }
 
     /// Process MappedItem with caching for repeated geometry
@@ -1141,6 +1153,10 @@ impl GeometryRouter {
 }
 
 /// Returns true when `m` is the identity transform within floating-point tolerance.
+fn arc_identity(mesh: &Arc<Mesh>) -> u64 {
+    Arc::as_ptr(mesh) as usize as u64
+}
+
 fn is_identity_matrix(m: &nalgebra::Matrix4<f64>) -> bool {
     (m[(0,0)] - 1.0).abs() < 1e-9 && m[(0,1)].abs() < 1e-9 && m[(0,2)].abs() < 1e-9 && m[(0,3)].abs() < 1e-9
     && m[(1,0)].abs() < 1e-9 && (m[(1,1)] - 1.0).abs() < 1e-9 && m[(1,2)].abs() < 1e-9 && m[(1,3)].abs() < 1e-9

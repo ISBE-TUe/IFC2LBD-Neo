@@ -154,6 +154,17 @@ function optionControl(pluginId, key) {
         </select>
       </div>`;
   }
+  if (key === "graph_naming") {
+    const namingVal = current || "producers";
+    return `
+      <div class="detail-row">
+        <span class="detail-label">graph naming</span>
+        <select data-option-key="graph_naming" class="detail-select">
+          <option value="producers" ${namingVal === "producers" ? "selected" : ""}>Per producer graphs</option>
+          <option value="filename" ${namingVal === "filename" ? "selected" : ""}>Single graph from filename</option>
+        </select>
+      </div>`;
+  }
   if (key === "mode") {
     const modeVal = current || "full";
     return `
@@ -250,6 +261,7 @@ function optionControl(pluginId, key) {
     chunk_size_lines: "2000000 (2M lines)",
     chunk_size_bytes: "268435456 (256MB)",
     chunk_prefix: "out",
+    graph_naming: "producers | filename",
     inflation_threshold: "0.1",
     output_stem: "converted-model",
   };

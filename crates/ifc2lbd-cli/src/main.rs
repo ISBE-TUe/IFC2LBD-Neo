@@ -18,6 +18,7 @@ use lbd_serializer::{
     serialize_nquads_batches_to_writer, serialize_nquads_merged_batches_to_writer,
     serialize_turtle_batches_to_writer,
 };
+use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 
 use crate::pipeline_plugins::OutputDir;
 use plugin_geometry_preprocess::{IFCContent, MetadataModeOption, GEOMETRY_PREPROCESS_ID};
@@ -49,6 +50,12 @@ enum TurtleGrouping {
 enum TurtleLayout {
     Joined,
     Separate,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NquadsGraphNaming {
+    Producers,
+    Filename,
 }
 
 #[derive(Debug, Parser)]
@@ -132,6 +139,7 @@ struct NquadsModuleOptions {
     chunk_prefix: String,
     chunk_min_count: usize,
     chunk_core_count: Option<usize>,
+    graph_naming: NquadsGraphNaming,
 }
 
 #[derive(Clone, Debug)]
@@ -217,10 +225,6 @@ fn main() -> anyhow::Result<()> {
     } else {
         TurtleGrouping::Streaming
     };
-    let normalized_base = normalize_base_for_graph_iri(&args.base_uri);
-    let lbd_graph_iri = format!("{normalized_base}/lbd");
-    let ifcowl_graph_iri = format!("{normalized_base}/ifcowl");
-
     let parse_start = Instant::now();
     let step = std::sync::Arc::new(
         parse_step_file(input_path)
@@ -238,7 +242,7 @@ fn main() -> anyhow::Result<()> {
     );
 
     let base_options = ConvertOptions {
-        base_uri: args.base_uri,
+        base_uri: args.base_uri.clone(),
         emit_ifcowl_links: emit_ifcowl,
         enable_topology: false,
         enable_topology_extension: false,
@@ -311,6 +315,19 @@ fn main() -> anyhow::Result<()> {
 
     let (output_dir, lbd_filename) =
         resolve_output_dir_and_filename(args.output_file.as_deref(), input_path, output_format);
+    let normalized_base = normalize_base_for_graph_iri(&args.base_uri);
+    let lbd_graph_iri = resolve_nquads_graph_iri(
+        &normalized_base,
+        &lbd_filename,
+        "lbd",
+        settings.nquads.graph_naming,
+    );
+    let ifcowl_graph_iri = resolve_nquads_graph_iri(
+        &normalized_base,
+        &lbd_filename,
+        "ifcowl",
+        settings.nquads.graph_naming,
+    );
     ctx.insert(std::sync::Arc::new(OutputDir(output_dir.clone())));
     if settings.compress_output {
         ctx.insert(std::sync::Arc::new(pipeline_plugins::CompressOutput(true)));
@@ -657,6 +674,25 @@ fn resolve_ifcowl_filename(lbd_filename: &str) -> String {
     format!("{stem}_ifcowl.ttl")
 }
 
+fn resolve_nquads_graph_iri(
+    normalized_base: &str,
+    output_filename: &str,
+    producer_slug: &str,
+    naming: NquadsGraphNaming,
+) -> String {
+    match naming {
+        NquadsGraphNaming::Producers => format!("{normalized_base}/{producer_slug}"),
+        NquadsGraphNaming::Filename => {
+            let stem = Path::new(output_filename)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("output");
+            let encoded = utf8_percent_encode(stem, NON_ALPHANUMERIC).to_string();
+            format!("{normalized_base}/{encoded}")
+        }
+    }
+}
+
 fn print_pipeline_modules(registry: &lbd_pipeline::PluginRegistry) {
     for manifest in registry.manifests() {
         println!(
@@ -959,6 +995,18 @@ fn resolve_execution_settings(
     let chunk_prefix = string_with_default(effective_entries, "chunk_prefix", "out");
     let chunk_min_count = parse_usize_with_default(effective_entries, "chunk_min_count", 1usize)?;
     let chunk_core_count = parse_optional_usize(effective_entries, "chunk_core_count")?;
+    let graph_naming = match effective_entries
+        .and_then(|e| e.get("graph_naming"))
+        .map(String::as_str)
+        .unwrap_or("producers")
+    {
+        "producers" => NquadsGraphNaming::Producers,
+        "filename" => NquadsGraphNaming::Filename,
+        other => anyhow::bail!(
+            "invalid `neo-nquads-serializer.graph_naming={}` (expected producers|filename)",
+            other
+        ),
+    };
 
     let turtle_entries = configs.get(lbd_pipeline::TURTLE_SERIALIZER_ID);
     let turtle_grouping = match turtle_entries
@@ -1030,6 +1078,7 @@ fn resolve_execution_settings(
             chunk_prefix,
             chunk_min_count,
             chunk_core_count,
+            graph_naming,
         },
         turtle_grouping,
         turtle_layout,
@@ -1106,6 +1155,14 @@ fn validate_nquads_serializer_module_config(
                     ));
                 }
             }
+            "graph_naming" => {
+                if !matches!(value.as_str(), "producers" | "filename") {
+                    return Err(format!(
+                        "`neo-nquads-serializer.graph_naming` must be one of producers|filename, got `{}`",
+                        value
+                    ));
+                }
+            }
             "chunk_size_lines" | "chunk_size_bytes" | "chunk_min_count" | "chunk_core_count" => {
                 let parsed = value.parse::<usize>().map_err(|_| {
                     format!(
@@ -1120,7 +1177,7 @@ fn validate_nquads_serializer_module_config(
             "chunk_prefix" => {}
             other => {
                 return Err(format!(
-                    "unknown option `neo-nquads-serializer.{}` (supported: chunking, chunk_size_lines, chunk_size_bytes, chunk_prefix, chunk_min_count, chunk_core_count)",
+                    "unknown option `neo-nquads-serializer.{}` (supported: chunking, chunk_size_lines, chunk_size_bytes, chunk_prefix, chunk_min_count, chunk_core_count, graph_naming)",
                     other
                 ));
             }
@@ -1142,6 +1199,14 @@ fn validate_nquads_chunked_serializer_module_config(
                     ));
                 }
             }
+            "graph_naming" => {
+                if !matches!(value.as_str(), "producers" | "filename") {
+                    return Err(format!(
+                        "`neo-nquads-chunked-serializer.graph_naming` must be one of producers|filename, got `{}`",
+                        value
+                    ));
+                }
+            }
             "chunk_size_lines" | "chunk_size_bytes" | "chunk_min_count" | "chunk_core_count" => {
                 let parsed = value.parse::<usize>().map_err(|_| {
                     format!(
@@ -1159,7 +1224,7 @@ fn validate_nquads_chunked_serializer_module_config(
             "chunk_prefix" => {}
             other => {
                 return Err(format!(
-                    "unknown option `neo-nquads-chunked-serializer.{}` (supported: chunking, chunk_size_lines, chunk_size_bytes, chunk_prefix, chunk_min_count, chunk_core_count)",
+                    "unknown option `neo-nquads-chunked-serializer.{}` (supported: chunking, chunk_size_lines, chunk_size_bytes, chunk_prefix, chunk_min_count, chunk_core_count, graph_naming)",
                     other
                 ));
             }
@@ -1372,8 +1437,8 @@ mod tests {
     use super::{
         build_requested_module_list,
         chunk_writer::{self},
-        parse_module_configs, session, validate_args, Args, ExecutionSettings, NquadsModuleOptions,
-        OutputFormat, TurtleGrouping, TurtleLayout,
+        parse_module_configs, session, validate_args, Args, ExecutionSettings,
+        NquadsGraphNaming, NquadsModuleOptions, OutputFormat, TurtleGrouping, TurtleLayout,
     };
     use lbd_converter::IfcowlMode;
     use lbd_pipeline::{DerivedFile, ExportError, ExportFileSummary, ExportSession};
@@ -1581,6 +1646,7 @@ mod tests {
                 chunk_prefix: "out".to_string(),
                 chunk_min_count: 1,
                 chunk_core_count: None,
+                graph_naming: NquadsGraphNaming::Producers,
             },
             turtle_grouping: TurtleGrouping::Streaming,
             turtle_layout: TurtleLayout::Joined,
