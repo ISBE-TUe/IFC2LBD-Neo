@@ -406,7 +406,7 @@ impl PipelineRunner {
             let step_arc = std::sync::Arc::new(
                 parse_step_bytes(&input_bytes).expect("re-parse of already-validated IFC failed")
             );
-            run_geometry_pipeline(&input_bytes, model_arc, step_arc, &settings, sink)
+            run_geometry_pipeline(&input_bytes, model_arc, step_arc, &base_uri, &settings, sink)
         } else {
             Vec::new()
         };
@@ -1681,6 +1681,7 @@ fn run_geometry_pipeline(
     input: &[u8],
     model: std::sync::Arc<ifc_model::IfcModel>,
     step: std::sync::Arc<ifc_step::StepFile>,
+    base_uri: &str,
     settings: &ExecutionSettings,
     sink: &js_sys::Function,
 ) -> Vec<lbd_pipeline::DerivedFile> {
@@ -1722,7 +1723,11 @@ fn run_geometry_pipeline(
         .module_option("neo-geometry-producer", "format")
         .and_then(|v| GeometryFormat::from_str(&v))
         .unwrap_or_default();
-    ctx.insert(std::sync::Arc::new(GeometryProducerConfig { format }));
+    ctx.insert(std::sync::Arc::new(GeometryProducerConfig {
+        format,
+        // Normalize identically to the LBD converter so 3D-object IRIs match the RDF subjects.
+        base_uri: lbd_converter::normalize_base_uri(base_uri),
+    }));
 
     // Sidecar channel to collect geometry output bytes
     let (sidecar_tx, sidecar_rx) = crossbeam::channel::bounded(chan_cap);

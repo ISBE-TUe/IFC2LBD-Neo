@@ -28,10 +28,10 @@ use std::sync::OnceLock;
 
 use crossbeam::channel::Sender;
 use ifc_model::{
-    compress_uuid_string, expand_ifc_guid, IfcModel, PropertyEnumeratedValue, PropertySingleValue,
+    expand_ifc_guid, IfcModel, PropertyEnumeratedValue, PropertySingleValue,
     Unit,
 };
-use ifc_schema::{product_type_name, SpatialType};
+use ifc_schema::SpatialType;
 use ifc_step::{decode_ifc_unicode, EntityId, StepFile, StepSchema, StepValue};
 use lbd_geometry::{
     derive_relations_from_bounding_boxes, BoundingBox, GeometryRelation, GeometryRelationKind,
@@ -2272,43 +2272,6 @@ fn lowercase_initial_ascii(value: &str) -> String {
     }
 }
 
-fn pascal_ifc_name(entity_name: &str) -> String {
-    let upper = entity_name.to_ascii_uppercase();
-    if !upper.starts_with("IFC") {
-        return entity_name.to_string();
-    }
-    let mut out = String::from("Ifc");
-    let mut capitalize = true;
-    for ch in upper[3..].chars() {
-        if ch == '_' {
-            capitalize = true;
-        } else if ch.is_ascii_digit() {
-            out.push(ch);
-            capitalize = true;
-        } else if capitalize {
-            out.push(ch.to_ascii_uppercase());
-            capitalize = false;
-        } else {
-            out.push(ch.to_ascii_lowercase());
-        }
-    }
-    out
-}
-
-fn spatial_segment(spatial_type: SpatialType) -> &'static str {
-    match spatial_type {
-        SpatialType::Project => "project",
-        SpatialType::Site => "site",
-        SpatialType::Building => "building",
-        SpatialType::Storey => "storey",
-        SpatialType::Space => "space",
-        SpatialType::Zone
-        | SpatialType::Facility
-        | SpatialType::FacilityPart
-        | SpatialType::ExternalSpatialElement => "zone",
-    }
-}
-
 pub(crate) fn spatial_class(spatial_type: SpatialType) -> String {
     match spatial_type {
         SpatialType::Project => lbd_project(),
@@ -2323,33 +2286,12 @@ pub(crate) fn spatial_class(spatial_type: SpatialType) -> String {
     }
 }
 
-fn lbd_local_name(prefix: &str, guid: &str) -> String {
-    let suffix = prefix_safe_guid_token(guid);
-    format!("{prefix}_{suffix}")
-}
-
-pub(crate) fn spatial_resource_iri(base: &str, spatial_type: SpatialType, guid: &str) -> String {
-    format!(
-        "{base}/{}",
-        lbd_local_name(spatial_segment(spatial_type), guid)
-    )
-}
-
-pub(crate) fn element_resource_iri(base: &str, element: &ifc_model::ElementNode) -> String {
-    let prefix = match element.entity_name.as_str() {
-        // Java uses the generic `buildingelement_<guid>` local name here.
-        "IFCBUILDINGELEMENTPROXY" => "buildingelement".to_string(),
-        _ => product_type_name(element.entity_name.as_str())
-            .map(|name| name.to_ascii_lowercase())
-            .unwrap_or_else(|| {
-                format!(
-                    "ifcowl_{}",
-                    pascal_ifc_name(element.entity_name.as_str()).to_ascii_lowercase()
-                )
-            }),
-    };
-    format!("{base}/{}", lbd_local_name(&prefix, &element.guid))
-}
+// Canonical resource-IRI construction lives in `ifc-model` so the geometry
+// producer can stamp the exact same IRIs onto 3D objects. Re-exported here so
+// existing `crate::`/`super::` call sites keep resolving.
+pub(crate) use ifc_model::iri::{
+    element_resource_iri, pascal_ifc_name, prefix_safe_guid_token, spatial_resource_iri,
+};
 
 /// Property node IRI — deterministic hash of (predicate_local, set_scope, element_guid).
 /// Shared between the props and bSDD modules so the same logical property produces the
@@ -2374,23 +2316,8 @@ pub(crate) fn geometry_resource_iri(base: &str, guid: &str) -> String {
     format!("{base}/geometry_{suffix}")
 }
 
-fn canonical_guid_token(raw: &str) -> String {
-    if raw.len() == 22 {
-        return raw.to_string();
-    }
-    compress_uuid_string(raw).unwrap_or_else(|| raw.to_string())
-}
-
-fn prefix_safe_guid_token(raw: &str) -> String {
-    canonical_guid_token(raw)
-        .chars()
-        .map(|ch| match ch {
-            '$' => '_',
-            _ if ch.is_ascii_alphanumeric() || ch == '_' => ch,
-            _ => '_',
-        })
-        .collect()
-}
+// canonical_guid_token / prefix_safe_guid_token now live in ifc_model::iri
+// (re-exported above) so the geometry producer builds byte-identical IRIs.
 
 fn bbox_wkt_polyhedral_surface(bbox: &BoundingBox) -> String {
     let x0 = canonicalize_decimal(bbox.x_min);
@@ -2963,11 +2890,7 @@ mod tests {
         assert!(!subject.contains('-'));
     }
 
-    #[test]
-    fn test_canonical_guid_token_compresses_expanded_uuid() {
-        let expanded = "7b7032cc-b822-417b-9aea-642906a29bd5";
-        assert_eq!(canonical_guid_token(expanded), "1xS3BCk291UvhgP2a6eflL");
-    }
+    // canonical_guid_token now lives in ifc_model::iri and is tested there.
 
     #[test]
     fn test_prefix_safe_guid_token_rewrites_ifc_special_chars() {

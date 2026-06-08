@@ -39,3 +39,5 @@ vendor/chijin/target/
 # Debug viewers (local only, not pushed)
 web/fragments-debugviewer/
 web/ifclite-debugviewer/
+ifc2lbd-neo-linux-x86_64
+web/wasm-prototype/src/wasm/ifc2lbd_wasm_bg.wasm

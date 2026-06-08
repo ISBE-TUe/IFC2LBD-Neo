@@ -8,6 +8,7 @@
 //! FacilityPart), ~100 element types, IfcRelNests, property templates, IfcProjectLibrary.
 
 mod guid;
+pub mod iri;
 
 use std::collections::HashMap;
 
@@ -18,6 +19,10 @@ use rayon::prelude::*;
 use smol_str::SmolStr;
 
 pub use guid::{compress_uuid_string, expand_ifc_guid};
+pub use iri::{
+    element_resource_iri, lbd_local_name, pascal_ifc_name, prefix_safe_guid_token,
+    spatial_node_resource_iri, spatial_resource_iri,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ModelError {

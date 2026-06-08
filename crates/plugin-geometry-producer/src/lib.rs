@@ -107,9 +107,13 @@ pub(crate) const IFC_TO_GLTF: [f64; 16] = [
 ];
 
 /// Runtime config stored in PipelineContext by the CLI/WASM runner.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct GeometryProducerConfig {
     pub format: GeometryFormat,
+    /// LBD base namespace (already normalized, no trailing slash). Used to stamp
+    /// the element/spatial resource IRI onto each 3D object so the viewer links a
+    /// clicked object straight to its LBD node — same IRI the LBD converter emits.
+    pub base_uri: String,
 }
 
 /// Output format for the geometry producer.
@@ -230,6 +234,15 @@ impl ProducerPlugin for GeometryProducerPlugin {
     }
 }
 
+/// LBD base namespace for stamping resource IRIs onto 3D objects. Already
+/// normalized (no trailing slash) by the CLI/WASM runner. Falls back to the
+/// LBD default if the config is absent so IRIs still match the converter default.
+fn geometry_base_uri(ctx: &PipelineContext) -> String {
+    ctx.get::<GeometryProducerConfig>()
+        .map(|c| c.base_uri.clone())
+        .unwrap_or_else(|| "https://lbd.example.com".to_string())
+}
+
 // ─── Fragments serialization ──────────────────────────────────────────────────
 
 #[cfg(feature = "fmt-fragments")]
@@ -246,8 +259,9 @@ fn serialize_fragments(
     let step = ctx.get::<StepFile>().ok_or_else(|| {
         ProducerError::Conversion("GeometryProducerPlugin: missing StepFile".to_string())
     })?;
+    let base = geometry_base_uri(ctx);
 
-    fragments::build_fragments(model, &ifc_model, &step)
+    fragments::build_fragments(model, &ifc_model, &step, &base)
         .map_err(|e| ProducerError::Conversion(format!("fragments build failed: {e}")))
 }
 
@@ -270,9 +284,10 @@ fn serialize_gltf(
     ctx: &PipelineContext,
     tessellated: &TessellatedModel,
 ) -> Result<Vec<u8>, ProducerError> {
-    use ifc_step::StepFile;
-    let step = ctx.get::<StepFile>();
-    gltf_writer::write(tessellated, step.as_deref())
+    use ifc_model::IfcModel;
+    let ifc_model = ctx.get::<IfcModel>();
+    let base = geometry_base_uri(ctx);
+    gltf_writer::write(tessellated, ifc_model.as_deref(), &base)
         .map_err(|e| ProducerError::Conversion(format!("glTF: {e}")))
 }
 
@@ -293,7 +308,29 @@ mod gltf_writer {
     use super::*;
     use serde_json::json;
 
-    pub fn write(tessellated: &TessellatedModel, _step: Option<&ifc_step::StepFile>) -> Result<Vec<u8>, String> {
+    /// LBD resource IRI for a tessellated object, looked up by express id. Spatial
+    /// nodes and elements get their canonical IRI; anything else returns None so
+    /// the caller can fall back to the raw GUID.
+    fn object_resource_iri(
+        model: Option<&ifc_model::IfcModel>,
+        base: &str,
+        express_id: u64,
+    ) -> Option<String> {
+        let model = model?;
+        if let Some(node) = model.spatial_nodes.get(&express_id) {
+            return Some(ifc_model::iri::spatial_node_resource_iri(base, node));
+        }
+        if let Some(node) = model.elements.get(&express_id) {
+            return Some(ifc_model::iri::element_resource_iri(base, node));
+        }
+        None
+    }
+
+    pub fn write(
+        tessellated: &TessellatedModel,
+        model: Option<&ifc_model::IfcModel>,
+        base: &str,
+    ) -> Result<Vec<u8>, String> {
         let mut bin: Vec<u8> = Vec::new();
 
         // Accessor indices and metadata for building the mesh JSON section
@@ -435,7 +472,11 @@ mod gltf_writer {
                 pos_bv: pos_acc_idx,
                 nrm_bv: nrm_acc_idx,
                 idx_bv: idx_acc_idx,
-                name: flat.guid.clone(),
+                // Name each 3D object by its LBD resource IRI (same as the RDF
+                // subject) so consumers link straight to the LBD node. Falls back
+                // to the raw GUID if the element isn't in the model.
+                name: object_resource_iri(model, base, flat.express_id)
+                    .unwrap_or_else(|| flat.guid.clone()),
                 material_idx: mat_idx,
             });
         }
@@ -570,6 +611,7 @@ mod fragments {
         tessellated: &TessellatedModel,
         model: &IfcModel,
         step: &StepFile,
+        base: &str,
     ) -> Result<Vec<u8>, String> {
         let mut builder = FlatBufferBuilder::new();
 
@@ -578,7 +620,7 @@ mod fragments {
         let meshes_raw = build_meshes(&mut builder, tessellated, step)?.value();
 
         // ── Entity/attribute/relation data — respects metadata mode ───────────
-        let entity_data = build_entity_data(&mut builder, model, step, tessellated.metadata_mode)?;
+        let entity_data = build_entity_data(&mut builder, model, step, tessellated.metadata_mode, base)?;
 
         // ── Model FlatBuffer ──────────────────────────────────────────────────
         // Reconstruct typed WIPOffset values from raw u32 (no lifetime constraint)
@@ -618,19 +660,20 @@ mod fragments {
         model: &IfcModel,
         step: &StepFile,
         metadata_mode: tessellated_model::MetadataMode,
+        base: &str,
     ) -> Result<EntityData, String> {
         use fragments_core::build_entity_section;
         use tessellated_model::MetadataMode;
 
         match metadata_mode {
             MetadataMode::Full => {
-                build_entity_section(builder, model, step)
+                build_entity_section(builder, model, step, base)
                     .map_err(|e| format!("entity section: {e}"))
             }
             MetadataMode::Stripped => {
                 // Stripped: only GUIDs + empty attributes/relations/categories.
                 // Elements still have GUIDs for identity; no property/relation data.
-                build_stripped_entity_section(builder, model, step)
+                build_stripped_entity_section(builder, model, step, base)
             }
         }
     }
@@ -639,6 +682,7 @@ mod fragments {
         builder: &mut FlatBufferBuilder,
         model: &IfcModel,
         step: &StepFile,
+        base: &str,
     ) -> Result<EntityData, String> {
         // Only serialize elements + spatial nodes (not the full entity list)
         let mut element_ids: Vec<u64> = model.elements.keys().copied()
@@ -652,15 +696,18 @@ mod fragments {
         let local_ids_u32: Vec<u32> = element_ids.iter().map(|&id| id as u32).collect();
         let local_ids = builder.create_vector(&local_ids_u32);
 
-        // GUIDs
+        // Per-object resource IRIs (identical to the LBD RDF subjects) so the
+        // viewer links a picked object straight to its LBD node.
         let mut guid_strs: Vec<WIPOffset<&str>> = Vec::new();
         let mut guid_items: Vec<u32> = Vec::new();
         for &id in &element_ids {
             if let Some(node) = model.spatial_nodes.get(&id) {
-                guid_strs.push(builder.create_string(&node.guid));
+                let iri = ifc_model::iri::spatial_node_resource_iri(base, node);
+                guid_strs.push(builder.create_string(&iri));
                 guid_items.push(id as u32);
             } else if let Some(node) = model.elements.get(&id) {
-                guid_strs.push(builder.create_string(&node.guid));
+                let iri = ifc_model::iri::element_resource_iri(base, node);
+                guid_strs.push(builder.create_string(&iri));
                 guid_items.push(id as u32);
             }
         }

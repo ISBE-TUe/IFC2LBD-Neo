@@ -297,7 +297,11 @@ fn main() -> anyhow::Result<()> {
         let format = geom_entries.get("format")
             .and_then(|s| GeometryFormat::from_str(s))
             .unwrap_or_default();
-        ctx.insert(std::sync::Arc::new(GeometryProducerConfig { format }));
+        ctx.insert(std::sync::Arc::new(GeometryProducerConfig {
+            format,
+            // Normalize identically to the LBD converter so 3D-object IRIs match the RDF subjects.
+            base_uri: lbd_converter::normalize_base_uri(&base_options.base_uri),
+        }));
     }
     let (sidecar_tx, sidecar_rx) = crossbeam::channel::bounded(SERIALIZER_CHANNEL_CAPACITY);
     ctx.sidecar_tx = Some(sidecar_tx);

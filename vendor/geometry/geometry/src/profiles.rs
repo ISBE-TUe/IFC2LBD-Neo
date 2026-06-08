@@ -1508,7 +1508,14 @@ impl ProfileProcessor {
                 if let Some(pts) = self.process_trimmed_line_3d(curve, decoder)? {
                     return Ok(pts);
                 }
-                // Other basis curves (conics, etc.): get 2D points and lift to z=0.
+                // Circular/elliptical arcs anchored to an IfcAxis2Placement3D must be
+                // evaluated in 3D — the bend arcs of a composite-curve rebar directrix
+                // generally lie out of the global XY plane, and flattening them to z=0
+                // distorts the swept tube into a twisted ribbon.
+                if let Some(pts) = self.process_trimmed_arc_3d(curve, decoder)? {
+                    return Ok(pts);
+                }
+                // Other basis curves (2D-anchored conics, etc.): get 2D points and lift to z=0.
                 let points_2d = self.process_trimmed_curve_with_depth(curve, decoder, depth)?;
                 Ok(points_2d
                     .into_iter()
@@ -1584,6 +1591,123 @@ impl ProfileProcessor {
             return Ok(None); // degenerate
         }
         Ok(Some(vec![start, end]))
+    }
+
+    /// Evaluate a trimmed circular arc (`IfcTrimmedCurve` whose BasisCurve is an
+    /// `IfcCircle`/`IfcEllipse` anchored to an `IfcAxis2Placement3D`) as 3D points.
+    /// Returns `Ok(None)` when the basis is not a conic or its placement is only 2D,
+    /// so the caller falls back to the generic 2D-lifted path.
+    ///
+    /// This is required for bent reinforcing bars: their directrix is an
+    /// `IfcCompositeCurve` of straight `IfcLine` segments joined by 90° bend arcs.
+    /// The arcs' placement plane is generally NOT the global XY plane (e.g. a stirrup
+    /// bend lives in XZ), so the 2D conic path — which projects the centre to (x,y) and
+    /// flattens the arc to z=0 — places every bend at the wrong location. Mixing the
+    /// correct-3D straight segments with flattened arcs makes the swept directrix
+    /// zigzag, which the tube sweep renders as a twisted ribbon with torn ends.
+    fn process_trimmed_arc_3d(
+        &self,
+        curve: &DecodedEntity,
+        decoder: &mut EntityDecoder,
+    ) -> Result<Option<Vec<Point3<f64>>>> {
+        let basis = match curve.get(0).and_then(|a| decoder.resolve_ref(a).ok().flatten()) {
+            Some(b) => b,
+            None => return Ok(None),
+        };
+        if basis.ifc_type != IfcType::IfcCircle && basis.ifc_type != IfcType::IfcEllipse {
+            return Ok(None);
+        }
+
+        let position = match basis.get(0).and_then(|a| decoder.resolve_ref(a).ok().flatten()) {
+            Some(p) => p,
+            None => return Ok(None),
+        };
+        // Only the 3D placement carries the out-of-plane orientation that the 2D path
+        // loses. For a genuine 2D-anchored conic the existing lift-to-z=0 path is correct.
+        if position.ifc_type != IfcType::IfcAxis2Placement3D {
+            return Ok(None);
+        }
+
+        // Location
+        let coords = position
+            .get(0)
+            .and_then(|a| decoder.resolve_ref(a).ok().flatten())
+            .and_then(|loc| loc.get(0).and_then(|v| v.as_list().map(|s| s.to_vec())));
+        let coords = match coords {
+            Some(c) => c,
+            None => return Ok(None),
+        };
+        let center = Point3::new(
+            coords.first().and_then(|v| v.as_float()).unwrap_or(0.0),
+            coords.get(1).and_then(|v| v.as_float()).unwrap_or(0.0),
+            coords.get(2).and_then(|v| v.as_float()).unwrap_or(0.0),
+        );
+
+        // Z axis (Axis, attr 1) and X axis (RefDirection, attr 2)
+        let z_axis = position
+            .get(1)
+            .and_then(|a| decoder.resolve_ref(a).ok().flatten())
+            .and_then(|d| read_direction_3d(&d))
+            .map(|d| Vector3::new(d[0], d[1], d[2]).normalize())
+            .unwrap_or_else(|| Vector3::new(0.0, 0.0, 1.0));
+        let x_axis = position
+            .get(2)
+            .and_then(|a| decoder.resolve_ref(a).ok().flatten())
+            .and_then(|d| read_direction_3d(&d))
+            .map(|d| Vector3::new(d[0], d[1], d[2]).normalize())
+            .unwrap_or_else(|| Vector3::new(1.0, 0.0, 0.0));
+        let y_axis = z_axis.cross(&x_axis).normalize();
+
+        let radius = basis.get_float(1).unwrap_or(1.0);
+        let radius2 = if basis.ifc_type == IfcType::IfcEllipse {
+            basis.get_float(2).unwrap_or(radius)
+        } else {
+            radius
+        };
+
+        // Trim parameters → angles (same convention as `process_trimmed_conic`).
+        let sense = curve
+            .get(3)
+            .and_then(|v| match v {
+                ifc_lite_core::AttributeValue::Enum(s) => Some(s == "T"),
+                _ => None,
+            })
+            .unwrap_or(true);
+        let angle_scale = decoder.plane_angle_to_radians();
+        let trim1 = curve.get(1).and_then(|v| self.extract_trim_param(v));
+        let trim2 = curve.get(2).and_then(|v| self.extract_trim_param(v));
+        let start_angle = trim1.unwrap_or(0.0) * angle_scale;
+        let mut end_angle = trim2
+            .map(|v| v * angle_scale)
+            .unwrap_or(2.0 * std::f64::consts::PI);
+        if sense && end_angle < start_angle {
+            end_angle += 2.0 * std::f64::consts::PI;
+        } else if !sense && end_angle > start_angle {
+            end_angle -= 2.0 * std::f64::consts::PI;
+        }
+
+        let arc_angle = (end_angle - start_angle).abs();
+        let num_segments = ((arc_angle / std::f64::consts::FRAC_PI_2 * 8.0).ceil() as usize).max(2);
+        let angle_range = if sense {
+            end_angle - start_angle
+        } else {
+            start_angle - end_angle
+        };
+
+        let mut points = Vec::with_capacity(num_segments + 1);
+        for i in 0..=num_segments {
+            let t = i as f64 / num_segments as f64;
+            let angle = if sense {
+                start_angle + t * angle_range
+            } else {
+                start_angle - t * angle_range.abs()
+            };
+            let p = center
+                + x_axis * (radius * angle.cos())
+                + y_axis * (radius2 * angle.sin());
+            points.push(p);
+        }
+        Ok(Some(points))
     }
 
     /// Process circle curve in 3D space (for swept disk solid, etc.)

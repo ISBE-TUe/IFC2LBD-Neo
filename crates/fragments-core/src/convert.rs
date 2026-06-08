@@ -15,11 +15,14 @@ use crate::step::{entity_name, geometry_instances_for_product, product_world_tra
 #[derive(Debug, Clone)]
 pub struct FragmentsConfig {
     pub compress: bool,
+    /// LBD base namespace (normalized, no trailing slash) used to build the
+    /// per-object resource IRI written into the `guids` table.
+    pub base: String,
 }
 
 impl Default for FragmentsConfig {
     fn default() -> Self {
-        Self { compress: true }
+        Self { compress: true, base: "https://lbd.example.com".to_string() }
     }
 }
 
@@ -60,8 +63,8 @@ pub fn convert_step_to_fragments(
     let mut guid_offsets = Vec::new();
     let mut guid_items = Vec::new();
     for id in &entity_ids {
-        if let Some(guid) = entity_guid(model, step, *id) {
-            guid_offsets.push(builder.create_string(guid));
+        if let Some(iri) = entity_resource_iri(model, step, *id, &config.base) {
+            guid_offsets.push(builder.create_string(&iri));
             guid_items.push(to_u32(*id)?);
         }
     }
@@ -171,6 +174,7 @@ pub fn build_entity_section(
     builder: &mut FlatBufferBuilder,
     model: &IfcModel,
     step: &StepFile,
+    base: &str,
 ) -> Result<EntitySection, FragmentsError> {
     let entity_ids = collect_serialized_entity_ids(model, step);
 
@@ -185,8 +189,8 @@ pub fn build_entity_section(
     let mut guid_offsets = Vec::new();
     let mut guid_items = Vec::new();
     for id in &entity_ids {
-        if let Some(guid) = entity_guid(model, step, *id) {
-            guid_offsets.push(builder.create_string(guid));
+        if let Some(iri) = entity_resource_iri(model, step, *id, base) {
+            guid_offsets.push(builder.create_string(&iri));
             guid_items.push(to_u32(*id)?);
         }
     }
@@ -1095,6 +1099,23 @@ fn entity_guid<'a>(model: &'a IfcModel, step: &'a StepFile, id: u64) -> Option<&
                 }
             })
         })
+}
+
+/// The per-object identifier written into the fragments `guids` table.
+///
+/// For elements and spatial nodes — the clickable 3D objects — this is the LBD
+/// resource IRI, identical to the RDF subject the LBD converter emits, so the
+/// viewer can link a picked object straight to its LBD node without a reverse
+/// GUID lookup. Non-geometry IfcRoot entities (property sets, types) have no 3D
+/// representation and keep their raw GUID.
+fn entity_resource_iri(model: &IfcModel, step: &StepFile, id: u64, base: &str) -> Option<String> {
+    if let Some(node) = model.spatial_nodes.get(&id) {
+        return Some(ifc_model::iri::spatial_node_resource_iri(base, node));
+    }
+    if let Some(node) = model.elements.get(&id) {
+        return Some(ifc_model::iri::element_resource_iri(base, node));
+    }
+    entity_guid(model, step, id).map(|guid| guid.to_string())
 }
 
 /// Returns true for entity types that are IfcRoot subtypes in our serialization set,
