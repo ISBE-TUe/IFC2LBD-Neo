@@ -1,0 +1,11 @@
+services:
+  fragments-debugviewer:
+    build: .
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./src:/app/src
+      - ./public:/app/public
+      - ./scripts:/app/scripts
+      - ./index.html:/app/index.html
+      - ./vite.config.js:/app/vite.config.js

@@ -1,0 +1,20 @@
+{
+  "name": "fragments-debugviewer",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "prepare:worker": "node scripts/prepare-worker.mjs",
+    "dev": "npm run prepare:worker && vite --host 0.0.0.0 --port 3001",
+    "build": "npm run prepare:worker && vite build",
+    "preview": "npm run prepare:worker && vite preview --host 0.0.0.0 --port 3001",
+    "postinstall": "npm run prepare:worker"
+  },
+  "dependencies": {
+    "@thatopen/fragments": "^3.4.5",
+    "three": "^0.184.0"
+  },
+  "devDependencies": {
+    "vite": "^5.4.0"
+  }
+}

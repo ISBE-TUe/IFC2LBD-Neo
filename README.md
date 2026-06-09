@@ -183,11 +183,22 @@ ifc2lbd-neo model.ifc --module neo-bot-producer --module neo-turtle-serializer \
 
 ## Build
 
-CLI binary:
+CLI binary (native, for the host platform):
 
 ```bash
 cargo build --release -p ifc2lbd-cli --bin ifc2lbd-neo
 ```
+
+CLI binary for Linux x86_64 (e.g. cross-building from macOS) — uses Docker:
+
+```bash
+bash scripts/build_linux_cli.sh   # -> ./ifc2lbd-neo-linux-x86_64
+```
+
+`cross` does not work in this repo because of the nightly rustup override used
+for WASM; the script builds inside a Linux `rust` container instead. The cargo
+registry and target dir are cached, so only the first run is slow. See the
+header of [scripts/build_linux_cli.sh](scripts/build_linux_cli.sh) for details.
 
 WebAssembly library (requires Rust nightly and wasm-bindgen-cli):
 

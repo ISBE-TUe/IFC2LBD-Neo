@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Fragments Debug Viewer</title>
+  </head>
+  <body>
+    <div id="app">
+      <aside class="panel">
+        <h1>Fragments Debug Viewer</h1>
+        <p class="hint">
+          Minimal local viewer for testing <code>.frag</code> files.
+        </p>
+
+        <label class="field">
+          <span>Load from local file</span>
+          <input id="frag-file" type="file" accept=".frag,application/octet-stream" />
+        </label>
+        <button id="load-file" type="button">Load Selected File</button>
+
+        <label class="field">
+          <span>Load from URL or public path</span>
+          <input
+            id="frag-url"
+            type="text"
+            value="/models/model.frag"
+            spellcheck="false"
+            placeholder="/models/model.frag"
+          />
+        </label>
+        <button id="load-url" type="button">Load URL</button>
+
+        <button id="reset-viewer" type="button" class="secondary">Reset Viewer</button>
+
+        <div class="notes">
+          <p>For static files, put them under <code>public/models/</code>.</p>
+          <p>Use reset before loading a different file.</p>
+          <p>Click geometry or a tree node to inspect one item.</p>
+        </div>
+
+        <pre id="status" class="status">Booting viewer…</pre>
+
+        <section class="inspector-block">
+          <h2>Model Tree</h2>
+          <div id="tree" class="tree">No model loaded.</div>
+        </section>
+
+        <section class="inspector-block">
+          <h2>Selection</h2>
+          <pre id="metadata" class="metadata">No item selected.</pre>
+        </section>
+      </aside>
+
+      <main class="viewport-wrap">
+        <div id="viewport"></div>
+      </main>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
