@@ -400,6 +400,19 @@ fn resolve_style_color(
             }
             None
         }
+        // Some IFC2x3 files decode IfcPresentationStyleAssignment as Unknown in
+        // ifc-lite, but the payload shape is still the same: attr[0] is the
+        // list of referenced presentation styles.
+        "Unknown" if entity.get_list(0).is_some() => {
+            let styles = entity.get_list(0)?;
+            for s in styles {
+                let id = s.as_entity_ref()?;
+                if let Some(c) = resolve_style_color(decoder, id) {
+                    return Some(c);
+                }
+            }
+            None
+        }
         "IfcSurfaceStyle" => {
             // arg[2] = Styles list
             let styles = entity.get_list(2)?;
