@@ -285,12 +285,15 @@ fn coverage_chunk(
     results
 }
 
-/// Build a map from geometry item express ID → RGBA color via IFCSTYLEDITEM chain.
+/// Build a map from style target express ID → RGBA color.
 ///
-/// IFCSTYLEDITEM(Item, Styles, Name)
-///   → Styles → IFCSURFACESTYLE → IFCSURFACESTYLERENDERING
-///     → SurfaceColour → IFCCOLOURRGB(Name, Red, Green, Blue)
-///     + Transparency
+/// The key is either:
+/// - a geometry item ID from `IfcStyledItem.Item`, or
+/// - a material ID from `IfcMaterialDefinitionRepresentation.RepresentedMaterial`.
+///
+/// The latter is required for geometry sliced by material layers, where the
+/// tessellator intentionally sets `geometry_id` to the `IfcMaterial` ID so the
+/// exporter can color each layer independently.
 fn build_color_map(
     content: &str,
     decoder: &mut ifc_lite_core::EntityDecoder,
@@ -319,7 +322,65 @@ fn build_color_map(
         }
     }
 
+    let mut scanner = EntityScanner::new(content);
+    while let Some((id, type_name, _start, _end)) = scanner.next_entity() {
+        if type_name != "IFCMATERIALDEFINITIONREPRESENTATION" { continue; }
+        let Ok(entity) = decoder.decode_by_id(id) else { continue; };
+
+        // IfcProductRepresentation(Name, Description, Representations)
+        // + IfcMaterialDefinitionRepresentation(RepresentedMaterial)
+        let Some(material_id) = entity.get_ref(3) else { continue; };
+        let Some(representations) = entity.get_list(2) else { continue; };
+
+        for repr_attr in representations {
+            let Some(repr_id) = repr_attr.as_entity_ref() else { continue; };
+            if let Some(rgba) = resolve_material_representation_color(decoder, repr_id) {
+                map.entry(material_id).or_insert(rgba);
+                break;
+            }
+        }
+    }
+
     map
+}
+
+fn resolve_material_representation_color(
+    decoder: &mut ifc_lite_core::EntityDecoder,
+    repr_id: u32,
+) -> Option<[f32; 4]> {
+    let repr = decoder.decode_by_id(repr_id).ok()?;
+    if repr.ifc_type.to_string().as_str() != "IfcStyledRepresentation" {
+        return None;
+    }
+
+    // IfcRepresentation(..., Items)
+    let items = repr.get_list(3)?;
+    for item_attr in items {
+        let Some(item_id) = item_attr.as_entity_ref() else { continue; };
+        if let Some(color) = resolve_styled_item_color(decoder, item_id) {
+            return Some(color);
+        }
+    }
+    None
+}
+
+fn resolve_styled_item_color(
+    decoder: &mut ifc_lite_core::EntityDecoder,
+    styled_item_id: u32,
+) -> Option<[f32; 4]> {
+    let entity = decoder.decode_by_id(styled_item_id).ok()?;
+    if entity.ifc_type.to_string().as_str() != "IfcStyledItem" {
+        return None;
+    }
+
+    let styles = entity.get_list(1)?;
+    for style_attr in styles {
+        let id = style_attr.as_entity_ref()?;
+        if let Some(color) = resolve_style_color(decoder, id) {
+            return Some(color);
+        }
+    }
+    None
 }
 
 fn resolve_style_color(
@@ -349,6 +410,16 @@ fn resolve_style_color(
                 }
             }
             None
+        }
+        "IfcSurfaceStyleShading" => {
+            // arg[0] = SurfaceColour ref, no transparency attribute on shading
+            let colour_id = entity.get_ref(0)?;
+            let colour = decoder.decode_by_id(colour_id).ok()?;
+            if colour.ifc_type.to_string() != "IfcColourRgb" { return None; }
+            let r = colour.get(1).and_then(|a| a.as_float()).unwrap_or(0.8) as f32;
+            let g = colour.get(2).and_then(|a| a.as_float()).unwrap_or(0.8) as f32;
+            let b = colour.get(3).and_then(|a| a.as_float()).unwrap_or(0.8) as f32;
+            Some([r.clamp(0.0, 1.0), g.clamp(0.0, 1.0), b.clamp(0.0, 1.0), 1.0])
         }
         "IfcSurfaceStyleRendering" => {
             // arg[0] = SurfaceColour ref
