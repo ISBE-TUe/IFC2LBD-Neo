@@ -38,6 +38,8 @@ pub enum FragmentsError {
     IntegerOverflow,
     #[error("compression failed: {0}")]
     Compression(String),
+    #[error("geometry element {0} is missing from the local_ids entity list")]
+    MissingLocalId(u64),
 }
 
 pub fn convert_step_to_fragments(
@@ -104,8 +106,16 @@ pub fn convert_step_to_fragments(
     }
     let geometry_entity_ids: Vec<u64> = geometry_entity_ids_set.into_iter().collect();
     let geometry_seed = step.entities.keys().max().copied().unwrap_or(0).saturating_add(1);
+    // ThatOpen resolves element identity as local_ids[meshes_items[Sample.item]], so
+    // meshes_items must carry each element's index *within local_ids* (entity_ids order),
+    // not a fresh per-geometry counter. Build that lookup from the same entity_ids vector.
+    let local_id_to_index: HashMap<u64, u32> = entity_ids
+        .iter()
+        .enumerate()
+        .map(|(i, id)| (*id, i as u32))
+        .collect();
     let (meshes, next_local_id_after_meshes) =
-        build_meshes(&mut builder, step, &geometry_entity_ids, geometry_seed)?;
+        build_meshes(&mut builder, step, &geometry_entity_ids, geometry_seed, &local_id_to_index)?;
     let spatial_structure = build_spatial_structure(&mut builder, model, step)?;
 
     let metadata = builder.create_string(&build_metadata(step));
@@ -243,6 +253,7 @@ fn build_meshes<'a>(
     step: &StepFile,
     sorted_elements: &[u64],
     mut next_local_id: u64,
+    local_id_to_index: &HashMap<u64, u32>,
 ) -> Result<(WIPOffset<Meshes<'a>>, u64), FragmentsError> {
     // Pre-build a map from geometry item ID → RGBA color via IFCSTYLEDITEM chain.
     let item_colors = build_item_color_map(step);
@@ -305,7 +316,12 @@ fn build_meshes<'a>(
             &FloatVector::new(y_axis[0], y_axis[1], y_axis[2]),
         ));
         global_transform_ids.push(to_u32(*element_id)?);
-        meshes_items.push(item_counter);
+        // meshes_items[Sample.item] must index into Model.local_ids (ThatOpen contract),
+        // so emit this element's position within local_ids — not the geometry counter.
+        let local_id_index = *local_id_to_index
+            .get(element_id)
+            .ok_or(FragmentsError::MissingLocalId(*element_id))?;
+        meshes_items.push(local_id_index);
 
         let first_item_inv = first_item_transform.inverse();
 
@@ -964,7 +980,7 @@ fn relations_to_flatbuffer<'a>(
     (builder.create_vector(&rel_offsets), builder.create_vector(&ids))
 }
 
-fn collect_serialized_entity_ids(model: &IfcModel, step: &StepFile) -> Vec<u64> {
+pub fn collect_serialized_entity_ids(model: &IfcModel, step: &StepFile) -> Vec<u64> {
     let mut ids = Vec::new();
     let mut seen = HashSet::new();
 

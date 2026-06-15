@@ -615,9 +615,25 @@ mod fragments {
     ) -> Result<Vec<u8>, String> {
         let mut builder = FlatBufferBuilder::new();
 
+        // ThatOpen resolves element identity as local_ids[meshes_items[Sample.item]], so
+        // meshes_items must carry each element's index *within local_ids*. Build that lookup
+        // from the exact same entity-id ordering the entity section will use for local_ids
+        // (mode-dependent), so the two stay in lockstep.
+        let entity_ids: Vec<u64> = match tessellated.metadata_mode {
+            tessellated_model::MetadataMode::Full => {
+                fragments_core::collect_serialized_entity_ids(model, step)
+            }
+            tessellated_model::MetadataMode::Stripped => stripped_entity_ids(model, step),
+        };
+        let local_id_to_index: HashMap<u64, u32> = entity_ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| (*id, i as u32))
+            .collect();
+
         // Build meshes first and store as raw u32 to break the FlatBuffers
         // lifetime chain — this lets us re-borrow builder for entity section.
-        let meshes_raw = build_meshes(&mut builder, tessellated, step)?.value();
+        let meshes_raw = build_meshes(&mut builder, tessellated, step, &local_id_to_index)?.value();
 
         // ── Entity/attribute/relation data — respects metadata mode ───────────
         let entity_data = build_entity_data(&mut builder, model, step, tessellated.metadata_mode, base)?;
@@ -678,13 +694,10 @@ mod fragments {
         }
     }
 
-    fn build_stripped_entity_section(
-        builder: &mut FlatBufferBuilder,
-        model: &IfcModel,
-        step: &StepFile,
-        base: &str,
-    ) -> Result<EntityData, String> {
-        // Only serialize elements + spatial nodes (not the full entity list)
+    /// Ordered entity-id list backing `local_ids` in stripped mode: elements
+    /// (minus IFCOPENINGELEMENT) plus spatial nodes, sorted ascending. Shared with
+    /// the meshes_items index map so both stay in lockstep.
+    pub fn stripped_entity_ids(model: &IfcModel, step: &StepFile) -> Vec<u64> {
         let mut element_ids: Vec<u64> = model.elements.keys().copied()
             .filter(|id| !step.entities.get(id).map(|e| e.entity_name == "IFCOPENINGELEMENT").unwrap_or(false))
             .collect();
@@ -692,6 +705,17 @@ mod fragments {
             element_ids.push(id);
         }
         element_ids.sort_unstable();
+        element_ids
+    }
+
+    fn build_stripped_entity_section(
+        builder: &mut FlatBufferBuilder,
+        model: &IfcModel,
+        step: &StepFile,
+        base: &str,
+    ) -> Result<EntityData, String> {
+        // Only serialize elements + spatial nodes (not the full entity list)
+        let element_ids = stripped_entity_ids(model, step);
 
         let local_ids_u32: Vec<u32> = element_ids.iter().map(|&id| id as u32).collect();
         let local_ids = builder.create_vector(&local_ids_u32);
@@ -758,6 +782,7 @@ mod fragments {
         builder: &mut FlatBufferBuilder<'a>,
         tessellated: &TessellatedModel,
         _step: &StepFile,
+        local_id_to_index: &HashMap<u64, u32>,
     ) -> Result<flatbuffers::WIPOffset<Meshes<'a>>, String> {
         // ifc-lite-native enumeration: shells, placements and per-instance transforms come
         // straight from the TessellatedModel. Every element ifc-lite tessellated is emitted
@@ -806,7 +831,12 @@ mod fragments {
             // world_transform on every geometry of an element (element_placement × firstGeom).
             global_transforms.push(colmajor_to_transform(&flat_mesh.geometries[0].world_transform));
             gt_ids.push(element_id as u32);
-            meshes_items.push(item_counter);
+            // meshes_items[Sample.item] must index into Model.local_ids (ThatOpen contract);
+            // emit this element's position within local_ids, not the geometry counter.
+            let local_id_index = *local_id_to_index
+                .get(&element_id)
+                .ok_or_else(|| format!("geometry element {element_id} missing from local_ids entity list"))?;
+            meshes_items.push(local_id_index);
 
             for geom in &flat_mesh.geometries {
                 // Per-instance translation normalization: store the shell relative to its
