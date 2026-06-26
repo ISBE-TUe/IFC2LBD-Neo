@@ -116,6 +116,16 @@
                 <option value="">Custom</option>
               </select>
             </div>
+            <div class="rail-field">
+              <label class="rail-toggle-item">
+                <input
+                  type="checkbox"
+                  class="rail-toggle"
+                  id="toggle-compressed"
+                />
+                <span class="rail-toggle-label">Compressed</span>
+              </label>
+            </div>
           </div>
           <div class="rail-section">
             <div class="rail-field">
@@ -185,6 +195,48 @@
         </div>
       </div>
 
+      <!-- Floating Citation Widget -->
+      <div class="cite-widget" id="cite-widget">
+        <button class="cite-btn" id="cite-paper-btn" title="Read the paper">
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" />
+            <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" />
+          </svg>
+          Paper
+        </button>
+        <button
+          class="cite-btn"
+          id="cite-bibtex-btn"
+          title="Copy BibTeX citation"
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+          </svg>
+          BibTeX
+        </button>
+      </div>
+
       <!-- Detail Panel -->
       <div class="panel-backdrop" id="detail-backdrop"></div>
       <div class="detail-panel" id="detail-panel">
@@ -201,7 +253,12 @@
     <div id="mobile-view" style="display: none">
       <div class="app">
         <div class="topbar">
-          <img class="logo-horizontal" src="/ldac-logo.svg" alt="LDAC" style="height:32px;" />
+          <img
+            class="logo-horizontal"
+            src="/ldac-logo.svg"
+            alt="LDAC"
+            style="height: 32px"
+          />
           <div class="topbar-text">
             <h1>IFC2LBD-Neo</h1>
           </div>
@@ -211,11 +268,20 @@
             <form id="convert-form">
               <div class="field">
                 <span>IFC File</span>
-                <input type="file" id="ifc-file" accept=".ifc,.ifczip,.step,.stp" required />
+                <input
+                  type="file"
+                  id="ifc-file"
+                  accept=".ifc,.ifczip,.step,.stp"
+                  required
+                />
               </div>
               <div class="field">
                 <span>Base URI</span>
-                <input type="url" id="base-uri" value="https://lbd.example.com/" />
+                <input
+                  type="url"
+                  id="base-uri"
+                  value="https://lbd.example.com/"
+                />
               </div>
               <div class="field">
                 <span>Output Stem</span>
@@ -224,15 +290,31 @@
               <div class="field">
                 <span>Serializer</span>
                 <div class="row">
-                  <label class="checkbox"><input type="radio" name="serializer" value="ttl" checked /> Turtle</label>
-                  <label class="checkbox"><input type="radio" name="serializer" value="nq" /> N-Quads</label>
+                  <label class="checkbox"
+                    ><input
+                      type="radio"
+                      name="serializer"
+                      value="ttl"
+                      checked
+                    />
+                    Turtle</label
+                  >
+                  <label class="checkbox"
+                    ><input type="radio" name="serializer" value="nq" />
+                    N-Quads</label
+                  >
                 </div>
               </div>
               <div class="field">
                 <span>Options</span>
-                <label class="checkbox"><input type="checkbox" id="emit-ifcowl" /> Emit IfcOWL sidecar</label>
+                <label class="checkbox"
+                  ><input type="checkbox" id="emit-ifcowl" /> Emit IfcOWL
+                  sidecar</label
+                >
               </div>
-              <button type="submit" class="btn-primary" id="convert-btn">Convert</button>
+              <button type="submit" class="btn-primary" id="convert-btn">
+                Convert
+              </button>
             </form>
           </div>
           <div class="card">
@@ -265,6 +347,30 @@
         </div>
         <pre class="cli-modal-pre" id="cli-modal-pre"></pre>
         <div class="cli-modal-footer">
+          <div class="cli-modal-bin-section">
+            <span class="cli-modal-bin-label">Download CLI</span>
+            <a
+              class="cli-modal-bin-link"
+              data-platform="linux"
+              href="/bin/ifc2lbd-neo-linux"
+              download
+              >Linux</a
+            >
+            <a
+              class="cli-modal-bin-link"
+              data-platform="macos"
+              href="/bin/ifc2lbd-neo-macos"
+              download
+              >macOS</a
+            >
+            <a
+              class="cli-modal-bin-link"
+              data-platform="windows"
+              href="/bin/ifc2lbd-neo-windows.exe"
+              download
+              >Windows</a
+            >
+          </div>
           <button class="cli-modal-copy" id="cli-modal-copy">Copy</button>
         </div>
       </div>
