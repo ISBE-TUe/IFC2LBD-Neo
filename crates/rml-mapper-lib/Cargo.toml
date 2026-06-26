@@ -23,11 +23,11 @@ oxigraph = "0.4"
 
 # Database access (optional — not available on WASM)
 sqlx = { version = "0.8", features = [
-    "runtime-tokio",
-    "tls-rustls",
-    "mysql",
-    "postgres",
-    "sqlite",
+  "runtime-tokio",
+  "tls-rustls",
+  "mysql",
+  "postgres",
+  "sqlite",
 ], optional = true }
 
 # HTTP client (optional — not available on WASM)

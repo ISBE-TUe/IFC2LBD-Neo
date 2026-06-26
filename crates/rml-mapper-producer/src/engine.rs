@@ -33,8 +33,7 @@ pub fn execute_rml(
 
     // Write source file to temp directory
     let source_path = work_dir.join(source_filename);
-    std::fs::write(&source_path, source_bytes)
-        .map_err(|e| format!("write source: {e}"))?;
+    std::fs::write(&source_path, source_bytes).map_err(|e| format!("write source: {e}"))?;
 
     // Replace placeholder source filenames in mapping with actual filename
     let mapping = prepare_mapping_for_source(mapping_turtle, source_filename);
@@ -48,9 +47,7 @@ pub fn execute_rml(
 
     // Conform mapping (old RML namespace → W3C RML)
     let mut conformer = MappingConformer::new(mapping_store, None);
-    conformer
-        .conform()
-        .map_err(|e| format!("conform: {e}"))?;
+    conformer.conform().map_err(|e| format!("conform: {e}"))?;
     let mapping_store = conformer.into_store();
 
     // Create mapping document
@@ -61,9 +58,7 @@ pub fn execute_rml(
 
     // Execute mapping
     let mut executor = Executor::new(mapping, work_dir, StrictMode::BestEffort);
-    executor
-        .execute()
-        .map_err(|e| format!("execute: {e}"))?;
+    executor.execute().map_err(|e| format!("execute: {e}"))?;
 
     let output_store = executor.output_store();
 

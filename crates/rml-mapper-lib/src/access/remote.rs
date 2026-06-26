@@ -1,11 +1,10 @@
+use super::Access;
 use crate::error::{Result, RmlError};
 use std::io::{Cursor, Read};
-use super::Access;
 
+use super::LocalFileAccess;
 /// Access to remote HTTP/HTTPS resources
 use std::path::Path;
-use super::LocalFileAccess;
-
 
 ///
 /// Provides access to remote files via HTTP/HTTPS using reqwest.
@@ -45,15 +44,16 @@ impl RemoteFileAccess {
             .next()
             .and_then(|path| Path::new(path).extension())
             .and_then(|ext| ext.to_str())
-            .and_then(|ext| LocalFileAccess::detect_content_type(Path::new(&format!("file.{}", ext))))
+            .and_then(|ext| {
+                LocalFileAccess::detect_content_type(Path::new(&format!("file.{}", ext)))
+            })
     }
 }
 
 impl Access for RemoteFileAccess {
     fn get_reader(&self) -> Result<Box<dyn Read + Send>> {
-        let response = reqwest::blocking::get(&self.url).map_err(|e| {
-            RmlError::Http(format!("Failed to fetch URL '{}': {}", self.url, e))
-        })?;
+        let response = reqwest::blocking::get(&self.url)
+            .map_err(|e| RmlError::Http(format!("Failed to fetch URL '{}': {}", self.url, e)))?;
 
         if !response.status().is_success() {
             return Err(RmlError::Http(format!(
@@ -64,7 +64,10 @@ impl Access for RemoteFileAccess {
         }
 
         let bytes = response.bytes().map_err(|e| {
-            RmlError::Http(format!("Failed to read response body from '{}': {}", self.url, e))
+            RmlError::Http(format!(
+                "Failed to read response body from '{}': {}",
+                self.url, e
+            ))
         })?;
 
         Ok(Box::new(Cursor::new(bytes.to_vec())))
