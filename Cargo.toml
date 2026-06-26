@@ -19,6 +19,10 @@ members = [
     "crates/plugin-template-export",
     "crates/plugin-property-preprocess",
     "crates/plugin-qto-preprocess",
+    # Structured data + RML mapper
+    "crates/structured-data",
+    "crates/rml-mapper-lib",
+    "crates/rml-mapper-producer",
     # Vendored geometry engine (MPL-2.0)
     "vendor/geometry/core",
     "vendor/geometry/geometry",
@@ -93,6 +97,9 @@ fragments-core = { path = "crates/fragments-core" }
 lbd-ontology = { path = "crates/lbd-ontology" }
 lbd-pipeline = { path = "crates/lbd-pipeline" }
 lbd-converter = { path = "crates/lbd-converter" }
+structured-data = { path = "crates/structured-data" }
+rml-mapper-lib = { path = "crates/rml-mapper-lib" }
+rml-mapper-producer = { path = "crates/rml-mapper-producer" }
 lbd-topology = { path = "crates/lbd-topology" }
 lbd-geometry = { path = "crates/lbd-geometry" }
 lbd-serializer = { path = "crates/lbd-serializer" }

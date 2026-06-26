@@ -1,0 +1,18 @@
+[package]
+name = "rml-mapper-producer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+lbd-pipeline = { workspace = true }
+lbd-ontology = { workspace = true }
+lbd-converter = { workspace = true }
+structured-data = { path = "../structured-data" }
+crossbeam = { workspace = true }
+rayon = { workspace = true }
+tempfile = "3"
+
+# rml-mapper-lib = { path = "../rml-mapper-lib" }
+# TODO: Uncomment the above dependency once the real rml_mapper library source
+# is in place at crates/rml-mapper-lib/. The engine module calls into it.

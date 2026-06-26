@@ -1,0 +1,10 @@
+[package]
+name = "rml-mapper-lib"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# TODO: When the real rml_mapper library source is dropped into this crate,
+# add its dependencies here (oxigraph, etc.).
+# For now, this crate is a stub with a clear insertion point.
