@@ -19,7 +19,6 @@ use lbd_pipeline::{
     BSDD_PRODUCER_ID, PROPS_OPM_PRODUCER_ID, RML_MAPPER_ID, TURTLE_SERIALIZER_ID,
 };
 use rml_mapper_producer::RmlMapperProducerPlugin;
-use serde_json;
 use plugin_property_preprocess::{BsddMatchPreprocessPlugin, CleanupPreprocessPlugin};
 use plugin_qto_preprocess::QtoPreprocessPlugin;
 use plugin_geometry_preprocess::GeometryPreprocessPlugin;

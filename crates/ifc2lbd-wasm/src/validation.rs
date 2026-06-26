@@ -335,7 +335,7 @@ pub(crate) fn validate_typed_module_configs(
                 }
             }
             RML_MAPPER_ID => {
-                for (k, _v) in entries {
+                for k in entries.keys() {
                     match k.as_str() {
                         "rml_mapping" => {} // value is UTF-8 Turtle text, accepted as-is
                         other => {

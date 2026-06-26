@@ -1,14 +1,10 @@
 use std::io::{self, Write};
-use flate2::write::GzEncoder;
-use flate2::Compression;
 
 #[cfg(target_arch = "wasm32")]
 use js_sys::{Function, Object, Reflect, Uint8Array};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsValue;
 
-use crate::types::OutputFileSummary;
-use lbd_serializer::SerializerError;
 
 /// Emit a `stageEvent` through the JS sink callback.
 /// This allows the UI DAG to update in real-time as stages start/complete.

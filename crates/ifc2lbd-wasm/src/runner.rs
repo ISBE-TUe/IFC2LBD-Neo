@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::io::{self};
 
-use serde_json;
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 
 use ifc_model::build_model;
@@ -13,19 +12,18 @@ use lbd_pipeline::BatchKind;
 use lbd_serializer::{
     serialize_lbd_batches_incremental_to_writer, serialize_nquads_batches_to_writer,
     serialize_nquads_merged_batches_to_writer, serialize_turtle_batch_raw_to_writer,
-    serialize_turtle_batch_to_writer, serialize_turtle_grouped_to_writer, serialize_turtle_to_writer,
+    serialize_turtle_batch_to_writer, serialize_turtle_to_writer,
     write_turtle_prefixes_for_stream,
 };
 
-use plugin_geometry_preprocess::{IFCContent, MetadataModeOption, GEOMETRY_PREPROCESS_ID};
-use plugin_geometry_producer::{GeometryFormat, GeometryProducerConfig, GEOMETRY_PRODUCER_ID};
-use crate::plugins::CompressOutput;
-use tessellated_model::MetadataMode;
+use plugin_geometry_producer::GEOMETRY_PRODUCER_ID;
+use lbd_pipeline::RML_MAPPER_ID;
+use structured_data::{RmlMappingConfig, StructuredDataInput};
 
 fn base64_encode(data: &[u8]) -> String {
-    use std::fmt::Write;
+    
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
         let b0 = chunk[0] as u32;
         let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
@@ -55,12 +53,23 @@ use crate::validation::{
 use crate::DEFAULT_BASE_URI;
 use lbd_pipeline::{
     BEO_PRODUCER_ID, BOT_PRODUCER_ID, BSDD_PRODUCER_ID,
-    FILE_EXPORT_ID, IFCOWL_PRODUCER_ID, LOG_EXPORT_ID,
+    FILE_EXPORT_ID, IFCOWL_PRODUCER_ID,
     NQUADS_CHUNKED_SERIALIZER_ID, NQUADS_SERIALIZER_ID, OMG_FOG_PRODUCER_ID,
-    PipelineContext, PipelineLogBundle, PipelineStage, PluginRegistry, ResourceLimits,
-    PROPS_OPM_PRODUCER_ID, QTO_PREPROCESS_ID, STDOUT_EXPORT_ID, TURTLE_SERIALIZER_ID,
-    spawn_preprocessors_with, spawn_producers,
+    PipelineContext, ResourceLimits,
+    PROPS_OPM_PRODUCER_ID, TURTLE_SERIALIZER_ID,
 };
+
+// Thread-local storage for structured data + RML config.
+// Set in run_to_sink() when input_format == "structured-data",
+// read in make_pipeline_context() to insert into PipelineContext.
+// This follows the geometry-producer pattern: runner reads the option,
+// creates a typed config, and inserts it into context.
+thread_local! {
+    static CURRENT_STRUCTURED_DATA: std::cell::RefCell<Option<std::sync::Arc<StructuredDataInput>>> =
+        const { std::cell::RefCell::new(None) };
+    static CURRENT_RML_CONFIG: std::cell::RefCell<Option<std::sync::Arc<RmlMappingConfig>>> =
+        const { std::cell::RefCell::new(None) };
+}
 
 /// Returns true if the named-graph IRI belongs to an IfcOWL (or alignment) graph.
 fn is_ifcowl_graph(iri: &str) -> bool {
@@ -102,6 +111,20 @@ fn make_pipeline_context(
     ctx.insert(model);
     ctx.insert(options);
     ctx.insert(step);
+
+    // Insert structured data + RML config if available (structured data mode).
+    // These are set by run_to_sink() via thread-locals before producers are spawned.
+    CURRENT_STRUCTURED_DATA.with(|cell| {
+        if let Some(sd) = cell.borrow().clone() {
+            ctx.insert(sd);
+        }
+    });
+    CURRENT_RML_CONFIG.with(|cell| {
+        if let Some(cfg) = cell.borrow().clone() {
+            ctx.insert(cfg);
+        }
+    });
+
     ctx
 }
 
@@ -118,6 +141,7 @@ fn active_producer_ids_from_settings(settings: &ExecutionSettings) -> Vec<String
         PROPS_OPM_PRODUCER_ID,
         OMG_FOG_PRODUCER_ID,
         IFCOWL_PRODUCER_ID,
+        RML_MAPPER_ID,
         GEOMETRY_PRODUCER_ID,
     ] {
         if settings.has(id) {
@@ -376,8 +400,39 @@ impl PipelineRunner {
         emit_stage_event(sink, "parse", "Preprocess", "running", 0, 0, 0, None)
             .map_err(|e| WasmApiError::Serialization(e.to_string()))?;
         let parse_t0 = now_ms();
-        let step = parse_step_bytes(input)?;
-        let model = build_model(&step)?;
+
+        // Branch: structured data mode vs IFC mode
+        let is_structured = request.input_format.as_deref() == Some("structured-data");
+
+        let (step, model) = if is_structured {
+            // Structured data mode: skip IFC parsing.
+            // The real input is stored as StructuredDataInput, inserted into context later.
+            let sd_input = StructuredDataInput::from_raw(vec![(
+                request
+                    .structured_data_files
+                    .first()
+                    .map(|f| f.name.clone())
+                    .unwrap_or_else(|| "input.json".to_string()),
+                input.to_vec(),
+            )]);
+            CURRENT_STRUCTURED_DATA.with(|cell| {
+                *cell.borrow_mut() = Some(std::sync::Arc::new(sd_input));
+            });
+            if let Some(mapping_text) = settings.module_option(RML_MAPPER_ID, "rml_mapping") {
+                CURRENT_RML_CONFIG.with(|cell| {
+                    *cell.borrow_mut() = Some(std::sync::Arc::new(RmlMappingConfig {
+                        mapping_turtle: mapping_text,
+                    }));
+                });
+            }
+            // Empty stubs — downstream functions require step/model but won't use them
+            // because only RML mapper is active in structured data mode.
+            (StepFile::default(), ifc_model::IfcModel::default())
+        } else {
+            let step = parse_step_bytes(input)?;
+            let model = build_model(&step)?;
+            (step, model)
+        };
         let parse_ms = now_ms() - parse_t0;
         emit_stage_event(sink, "parse", "Preprocess", "success", parse_ms, 0, 0, None)
             .map_err(|e| WasmApiError::Serialization(e.to_string()))?;
@@ -397,6 +452,7 @@ impl PipelineRunner {
             PROPS_OPM_PRODUCER_ID,
             OMG_FOG_PRODUCER_ID,
             IFCOWL_PRODUCER_ID,
+            RML_MAPPER_ID,
         ] {
             if settings.has(id) {
                 emit_stage_event(sink, id, "Produce", "running", 0, 0, 0, None)
@@ -1224,6 +1280,7 @@ fn turtle_to_sink_joined(
     let props_receiver = raw_receivers.remove(PROPS_OPM_PRODUCER_ID);
     let omg_receiver = raw_receivers.remove(OMG_FOG_PRODUCER_ID);
     let ifcowl_receiver = raw_receivers.remove(IFCOWL_PRODUCER_ID);
+    let rml_receiver = raw_receivers.remove(RML_MAPPER_ID);
 
     let compress = settings.module_option(FILE_EXPORT_ID, "compress").as_deref() == Some("gzip");
     let gz = if compress { ".gz" } else { "" };
@@ -1262,6 +1319,7 @@ fn turtle_to_sink_joined(
         collect_and_emit!(bsdd_receiver, BSDD_PRODUCER_ID);
         collect_and_emit!(props_receiver, PROPS_OPM_PRODUCER_ID);
         collect_and_emit!(omg_receiver, OMG_FOG_PRODUCER_ID);
+        collect_and_emit!(rml_receiver, RML_MAPPER_ID);
         // Write sorted LBD triples first (BOT/BEO/PROPS/OMG — bounded in size).
         serialize_turtle_grouped_to_writer(&all_triples, &mut writer, Some(&instance_base))?;
         drop(all_triples);
@@ -1297,6 +1355,7 @@ fn turtle_to_sink_joined(
         drain_and_emit!(props_receiver, PROPS_OPM_PRODUCER_ID);
         drain_and_emit!(omg_receiver, OMG_FOG_PRODUCER_ID);
         drain_and_emit!(ifcowl_receiver, IFCOWL_PRODUCER_ID);
+        drain_and_emit!(rml_receiver, RML_MAPPER_ID);
     }
     let serialize_ms = now_ms() - serialize_t0;
 
@@ -1383,6 +1442,7 @@ fn turtle_to_sink_separate(
     let props_receiver = raw_receivers.remove(PROPS_OPM_PRODUCER_ID);
     let omg_receiver = raw_receivers.remove(OMG_FOG_PRODUCER_ID);
     let ifcowl_receiver = raw_receivers.remove(IFCOWL_PRODUCER_ID);
+    let rml_receiver = raw_receivers.remove(RML_MAPPER_ID);
 
     emit_stage_event(
         sink,
@@ -1429,6 +1489,7 @@ fn turtle_to_sink_separate(
     drain_sep_and_emit!(omg_receiver, "omg", OMG_FOG_PRODUCER_ID, effective_grouping);
     // IfcOWL: always stream — sorted/grouped buffering 2.3M+ triples OOMs WASM.
     drain_sep_and_emit!(ifcowl_receiver, "ifcowl", IFCOWL_PRODUCER_ID, TurtleGrouping::Streaming);
+    drain_sep_and_emit!(rml_receiver, "rml", RML_MAPPER_ID, effective_grouping);
     let serialize_ms = now_ms() - serialize_t0;
 
     emit_export_events(sink, settings, "running", 0)?;
@@ -1580,6 +1641,7 @@ fn nquads_to_sink(
     let props_receiver = raw_receivers.remove(PROPS_OPM_PRODUCER_ID);
     let omg_receiver = raw_receivers.remove(OMG_FOG_PRODUCER_ID);
     let ifcowl_receiver = raw_receivers.remove(IFCOWL_PRODUCER_ID);
+    let rml_receiver = raw_receivers.remove(RML_MAPPER_ID);
 
     let serializer_id = if settings.output_formats.nquads_chunked {
         NQUADS_CHUNKED_SERIALIZER_ID
@@ -1626,6 +1688,7 @@ fn nquads_to_sink(
         drain_chunked!(props_receiver, "props", PROPS_OPM_PRODUCER_ID);
         drain_chunked!(omg_receiver, "omg", OMG_FOG_PRODUCER_ID);
         drain_chunked!(ifcowl_receiver, "ifcowl", IFCOWL_PRODUCER_ID);
+        drain_chunked!(rml_receiver, "rml", RML_MAPPER_ID);
         let serialize_ms = now_ms() - serialize_t0;
 
         emit_export_events(sink, settings, "running", 0)?;
@@ -1684,6 +1747,7 @@ fn nquads_to_sink(
         drain_merged!(props_receiver, "props", PROPS_OPM_PRODUCER_ID);
         drain_merged!(omg_receiver, "omg", OMG_FOG_PRODUCER_ID);
         drain_merged!(ifcowl_receiver, "ifcowl", IFCOWL_PRODUCER_ID);
+        drain_merged!(rml_receiver, "rml", RML_MAPPER_ID);
         let serialize_ms = now_ms() - serialize_t0;
 
         emit_export_events(sink, settings, "running", 0)?;
@@ -1911,6 +1975,41 @@ fn export_browser_files(
             options.ifcowl_mode,
         ));
 
+        // RML mapper: runs via the plugin registry (needs StructuredDataInput from context)
+        let rml_triples: Vec<lbd_ontology::Triple> = if settings.has(RML_MAPPER_ID) {
+            let registry = crate::plugins::browser_registry();
+            let producer_ids = vec![RML_MAPPER_ID.to_string()];
+            let limits = lbd_pipeline::ResourceLimits {
+                memory_budget_bytes: 0,
+                thread_count: rayon::current_num_threads().max(1),
+                channel_capacity: 16,
+                batch_size: options.stream_batch_size,
+            };
+            let mut rml_ctx = lbd_pipeline::PipelineContext::new(limits);
+            rml_ctx.insert(std::sync::Arc::new(options.clone()));
+            CURRENT_STRUCTURED_DATA.with(|cell| {
+                if let Some(sd) = cell.borrow().clone() {
+                    rml_ctx.insert(sd);
+                }
+            });
+            CURRENT_RML_CONFIG.with(|cell| {
+                if let Some(cfg) = cell.borrow().clone() {
+                    rml_ctx.insert(cfg);
+                }
+            });
+            let rml_ctx = std::sync::Arc::new(rml_ctx);
+            let receivers = lbd_pipeline::spawn_producers(&producer_ids, &registry, &rml_ctx, 16);
+            let mut all = Vec::new();
+            for (_, rx) in receivers {
+                for batch in rx {
+                    all.extend(batch.triples);
+                }
+            }
+            all
+        } else {
+            Vec::new()
+        };
+
         macro_rules! write_producer_nq {
             ($triples:expr, $slug:literal) => {
                 if !$triples.is_empty() {
@@ -1933,6 +2032,7 @@ fn export_browser_files(
         write_producer_nq!(props_triples, "props");
         write_producer_nq!(omg_triples, "omg");
         write_producer_nq!(ifcowl_triples, "ifcowl");
+        write_producer_nq!(rml_triples, "rml");
 
         files.push(ExportedFile {
             filename: format!("{}.nq", settings.output_stem),

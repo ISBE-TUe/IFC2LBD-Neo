@@ -38,6 +38,23 @@ pub struct ConversionRequest {
     pub sink_chunk_size_bytes: Option<usize>,
     #[serde(default)]
     pub sink_max_pending_bytes: Option<usize>,
+    /// Input format: "ifc" (default) or "structured-data".
+    /// When "structured-data", the runner skips IFC parsing and creates
+    /// StructuredDataInput from the raw bytes instead.
+    #[serde(default)]
+    pub input_format: Option<String>,
+    /// Structured data file metadata (name + size) when input_format is
+    /// "structured-data". The actual bytes arrive via the input buffer —
+    /// multiple files are concatenated with their sizes as a manifest.
+    #[serde(default)]
+    pub structured_data_files: Vec<StructuredDataFileMeta>,
+}
+
+/// Metadata for a structured data input file.
+#[derive(Debug, Clone, Deserialize)]
+pub struct StructuredDataFileMeta {
+    pub name: String,
+    pub size: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
