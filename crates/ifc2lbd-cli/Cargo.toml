@@ -24,6 +24,8 @@ lbd-converter = { workspace = true }
 lbd-topology = { workspace = true }
 lbd-geometry = { workspace = true }
 lbd-serializer = { workspace = true }
+structured-data = { workspace = true }
+rml-mapper-producer = { workspace = true }
 plugin-topology-full = { workspace = true }
 plugin-property-preprocess = { workspace = true }
 plugin-qto-preprocess = { workspace = true }

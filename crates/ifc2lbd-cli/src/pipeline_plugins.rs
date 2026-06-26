@@ -17,10 +17,11 @@ use lbd_pipeline::{
     PluginRegistry, ProducerError, ProducerPlugin, SerializerPlugin, TaggedBatch, BEO_PRODUCER_ID,
     BOT_PRODUCER_ID, BSDD_PRODUCER_ID, FILE_EXPORT_ID, IFCOWL_PRODUCER_ID,
     LOG_EXPORT_ID, NQUADS_CHUNKED_SERIALIZER_ID, NQUADS_SERIALIZER_ID, OMG_FOG_PRODUCER_ID,
-    PROPS_OPM_PRODUCER_ID, STDOUT_EXPORT_ID, TURTLE_SERIALIZER_ID,
+    PROPS_OPM_PRODUCER_ID, RML_MAPPER_ID, STDOUT_EXPORT_ID, TURTLE_SERIALIZER_ID,
 };
 use plugin_property_preprocess::{BsddMatchPreprocessPlugin, CleanupPreprocessPlugin};
 use plugin_qto_preprocess::QtoPreprocessPlugin;
+use rml_mapper_producer::RmlMapperProducerPlugin;
 use plugin_geometry_preprocess::GeometryPreprocessPlugin;
 use plugin_geometry_producer::GeometryProducerPlugin;
 
@@ -67,6 +68,26 @@ fn forward_as_tagged(
     });
 }
 
+/// Module option keys for each plugin (mirrors the WASM side).
+pub fn module_option_keys(module_id: &str) -> Vec<String> {
+    match module_id {
+        lbd_pipeline::NQUADS_SERIALIZER_ID => vec!["graph_naming".to_string()],
+        lbd_pipeline::NQUADS_CHUNKED_SERIALIZER_ID => vec![
+            "chunking".to_string(), "chunk_size_lines".to_string(), "chunk_size_bytes".to_string(),
+            "chunk_prefix".to_string(), "graph_naming".to_string(),
+        ],
+        lbd_pipeline::TURTLE_SERIALIZER_ID => vec!["grouping".to_string(), "layout".to_string()],
+        lbd_pipeline::IFCOWL_PRODUCER_ID => vec!["mode".to_string()],
+        lbd_pipeline::BSDD_PRODUCER_ID => vec!["profile".to_string(), "compact".to_string(), "include_standard_attrs".to_string(), "dedup_properties".to_string()],
+        lbd_pipeline::FILE_EXPORT_ID => vec!["output_stem".to_string(), "compress".to_string()],
+        lbd_pipeline::LOG_EXPORT_ID => vec![],
+        "neo-geometry-preprocess" => vec!["metadata".to_string()],
+        "neo-geometry-producer" => vec!["format".to_string()],
+        RML_MAPPER_ID => vec!["rml_mapping".to_string()],
+        _ => Vec::new(),
+    }
+}
+
 pub fn built_in_registry() -> PluginRegistry {
     let mut registry = PluginRegistry::new();
     registry.register_preprocess(CleanupPreprocessPlugin).unwrap();
@@ -78,6 +99,7 @@ pub fn built_in_registry() -> PluginRegistry {
     registry.register_producer(PropsOpmProducerPlugin).unwrap();
     registry.register_producer(OmgFogProducerPlugin).unwrap();
     registry.register_producer(IfcowlProducerPlugin).unwrap();
+    registry.register_producer(RmlMapperProducerPlugin).unwrap();
     registry.register_preprocess(GeometryPreprocessPlugin).unwrap();
     registry.register_producer(GeometryProducerPlugin::default()).unwrap();
     registry.register_serializer(TurtleSerializerPlugin).unwrap();

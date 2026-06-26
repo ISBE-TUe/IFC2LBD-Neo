@@ -1424,9 +1424,11 @@ dependencies = [
  "rayon",
  "rio_api",
  "rio_turtle",
+ "rml-mapper-producer",
  "rstar",
  "serde",
  "serde_json",
+ "structured-data",
  "tessellated-model",
  "thiserror 2.0.18",
  "tracing",
@@ -1452,9 +1454,11 @@ dependencies = [
  "plugin-property-preprocess",
  "plugin-qto-preprocess",
  "rayon",
+ "rml-mapper-producer",
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
+ "structured-data",
  "tessellated-model",
  "thiserror 2.0.18",
  "wasm-bindgen",
@@ -2509,6 +2513,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "rml-mapper-lib"
+version = "0.1.0"
+
+[[package]]
+name = "rml-mapper-producer"
+version = "0.1.0"
+dependencies = [
+ "crossbeam",
+ "lbd-converter",
+ "lbd-ontology",
+ "lbd-pipeline",
+ "rayon",
+ "structured-data",
+ "tempfile",
+]
+
+[[package]]
 name = "robust"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2848,6 +2869,13 @@ name = "strsim"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
+
+[[package]]
+name = "structured-data"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "subtle"

@@ -199,6 +199,7 @@ pub const STDOUT_EXPORT_ID: &str = "neo-stdout-export";
 pub const CLEANUP_PREPROCESS_ID: &str = "neo-cleanup-preprocess";
 pub const BSDD_MATCH_PREPROCESS_ID: &str = "neo-bsdd-match-preprocess";
 pub const QTO_PREPROCESS_ID: &str = "neo-qto-preprocess";
+pub const RML_MAPPER_ID: &str = "neo-rml-mapper";
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct PipelineLogBundle {

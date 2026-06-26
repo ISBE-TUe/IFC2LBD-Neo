@@ -16,8 +16,9 @@ use lbd_pipeline::{
     NQUADS_SERIALIZER_ID, OMG_FOG_PRODUCER_ID, ParallelismMode, PipelineContext, PipelinePlugin,
     PipelineStage, PluginManifest, PluginRegistry, ProducerError,
     ProducerPlugin, SerializerPlugin, TaggedBatch, BEO_PRODUCER_ID, BOT_PRODUCER_ID,
-    BSDD_PRODUCER_ID, PROPS_OPM_PRODUCER_ID, TURTLE_SERIALIZER_ID,
+    BSDD_PRODUCER_ID, PROPS_OPM_PRODUCER_ID, RML_MAPPER_ID, TURTLE_SERIALIZER_ID,
 };
+use rml_mapper_producer::RmlMapperProducerPlugin;
 use serde_json;
 use plugin_property_preprocess::{BsddMatchPreprocessPlugin, CleanupPreprocessPlugin};
 use plugin_qto_preprocess::QtoPreprocessPlugin;
@@ -68,6 +69,7 @@ pub(crate) fn module_option_keys(module_id: &str) -> Vec<String> {
         LOG_EXPORT_ID => vec![],
         "neo-geometry-preprocess" => vec!["metadata".to_string()],
         "neo-geometry-producer" => vec!["format".to_string()],
+        RML_MAPPER_ID => vec!["rml_mapping".to_string()],
         _ => Vec::new(),
     }
 }
@@ -88,6 +90,7 @@ pub(crate) fn browser_registry() -> PluginRegistry {
     registry.register_producer(GeometryProducerPlugin::default()).unwrap();
     // Other producers
     registry.register_producer(IfcowlProducerPlugin).unwrap();
+    registry.register_producer(RmlMapperProducerPlugin).unwrap();
     // Serializers (registration only; serialization happens in runner.rs)
     registry.register_serializer(TurtleSerializerPlugin).unwrap();
     registry.register_serializer(NquadsSerializerPlugin).unwrap();
