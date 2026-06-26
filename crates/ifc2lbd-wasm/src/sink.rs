@@ -6,6 +6,7 @@ use js_sys::{Function, Object, Reflect, Uint8Array};
 use wasm_bindgen::JsValue;
 
 
+
 /// Emit a `stageEvent` through the JS sink callback.
 /// This allows the UI DAG to update in real-time as stages start/complete.
 #[cfg(target_arch = "wasm32")]
