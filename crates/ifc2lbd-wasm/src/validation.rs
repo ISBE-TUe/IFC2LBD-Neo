@@ -1,17 +1,15 @@
 use std::collections::{HashMap, HashSet};
 
-use lbd_converter::IfcowlMode;
 use crate::types::{
     ConversionRequest, ExecutionSettings, NquadsChunkingMode, NquadsGraphNaming,
     NquadsModuleOptions, OutputFormats, TurtleGrouping, TurtleLayout, WasmApiError,
 };
+use lbd_converter::IfcowlMode;
 use lbd_pipeline::ActivationPlan;
 use lbd_pipeline::{
     BEO_PRODUCER_ID, BOT_PRODUCER_ID, BSDD_PRODUCER_ID, FILE_EXPORT_ID, IFCOWL_PRODUCER_ID,
-    LOG_EXPORT_ID,
-    NQUADS_CHUNKED_SERIALIZER_ID,
-    NQUADS_SERIALIZER_ID, OMG_FOG_PRODUCER_ID, PROPS_OPM_PRODUCER_ID, RML_MAPPER_ID,
-    TURTLE_SERIALIZER_ID,
+    LOG_EXPORT_ID, NQUADS_CHUNKED_SERIALIZER_ID, NQUADS_SERIALIZER_ID, OMG_FOG_PRODUCER_ID,
+    PROPS_OPM_PRODUCER_ID, RML_MAPPER_ID, TURTLE_SERIALIZER_ID,
 };
 
 pub(crate) fn normalize_base_for_graph_iri(base_uri: &str) -> String {
@@ -303,28 +301,36 @@ pub(crate) fn validate_typed_module_configs(
             "neo-geometry-preprocess" => {
                 for (k, v) in entries {
                     match k.as_str() {
-                        "metadata" => if !matches!(v.as_str(), "full" | "stripped") {
-                            return Err(WasmApiError::Message(format!(
+                        "metadata" => {
+                            if !matches!(v.as_str(), "full" | "stripped") {
+                                return Err(WasmApiError::Message(format!(
                                 "`neo-geometry-preprocess.metadata` must be full|stripped, got `{v}`"
                             )));
-                        },
-                        other => return Err(WasmApiError::Message(format!(
-                            "unknown option `neo-geometry-preprocess.{other}`"
-                        ))),
+                            }
+                        }
+                        other => {
+                            return Err(WasmApiError::Message(format!(
+                                "unknown option `neo-geometry-preprocess.{other}`"
+                            )))
+                        }
                     }
                 }
             }
             "neo-geometry-producer" => {
                 for (k, v) in entries {
                     match k.as_str() {
-                        "format" => if !matches!(v.as_str(), "fragments" | "gltf" | "parquet" | "ifc5") {
-                            return Err(WasmApiError::Message(format!(
+                        "format" => {
+                            if !matches!(v.as_str(), "fragments" | "gltf" | "parquet" | "ifc5") {
+                                return Err(WasmApiError::Message(format!(
                                 "`neo-geometry-producer.format` must be fragments|gltf|parquet|ifc5, got `{v}`"
                             )));
-                        },
-                        other => return Err(WasmApiError::Message(format!(
-                            "unknown option `neo-geometry-producer.{other}`"
-                        ))),
+                            }
+                        }
+                        other => {
+                            return Err(WasmApiError::Message(format!(
+                                "unknown option `neo-geometry-producer.{other}`"
+                            )))
+                        }
                     }
                 }
             }
@@ -332,9 +338,11 @@ pub(crate) fn validate_typed_module_configs(
                 for (k, _v) in entries {
                     match k.as_str() {
                         "rml_mapping" => {} // value is UTF-8 Turtle text, accepted as-is
-                        other => return Err(WasmApiError::Message(format!(
-                            "unknown option `{RML_MAPPER_ID}.{other}`"
-                        ))),
+                        other => {
+                            return Err(WasmApiError::Message(format!(
+                                "unknown option `{RML_MAPPER_ID}.{other}`"
+                            )))
+                        }
                     }
                 }
             }
@@ -381,9 +389,7 @@ pub(crate) fn validate_turtle_serializer_options(
     Ok(())
 }
 
-fn validate_ifcowl_producer_options(
-    entries: &HashMap<String, String>,
-) -> Result<(), WasmApiError> {
+fn validate_ifcowl_producer_options(entries: &HashMap<String, String>) -> Result<(), WasmApiError> {
     for (key, value) in entries {
         match key.as_str() {
             "mode" => {
@@ -509,9 +515,7 @@ pub(crate) fn validate_nquads_chunked_serializer_options(
                 value
             )));
         }
-        if key == "graph_naming"
-            && !matches!(value.as_str(), "producers" | "filename")
-        {
+        if key == "graph_naming" && !matches!(value.as_str(), "producers" | "filename") {
             return Err(WasmApiError::Message(format!(
                 "invalid `neo-nquads-chunked-serializer.graph_naming={}` (expected producers|filename)",
                 value

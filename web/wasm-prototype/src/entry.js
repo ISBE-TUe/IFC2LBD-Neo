@@ -1,8 +1,17 @@
-if (window.innerWidth < 900) {
-  document.getElementById("pipeline-view").style.display = "none";
-  document.getElementById("mobile-view").style.display = "block";
-  import("./main.js");
-} else {
-  document.getElementById("mobile-view").remove();
-  import("./pipeline/app.js");
+import "./pipeline/app.js";
+
+// Orientation overlay for phones
+function isPortrait() {
+	return window.innerHeight > window.innerWidth;
 }
+function isTouchDevice() {
+	return "ontouchstart" in window || navigator.maxTouchPoints > 0;
+}
+function checkOrientation() {
+	const overlay = document.getElementById("rotate-overlay");
+	if (!overlay) return;
+	overlay.style.display = isTouchDevice() && isPortrait() ? "flex" : "none";
+}
+window.addEventListener("resize", checkOrientation);
+window.addEventListener("orientationchange", checkOrientation);
+checkOrientation();

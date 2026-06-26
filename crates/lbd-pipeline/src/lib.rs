@@ -125,8 +125,7 @@ impl PipelineContext {
     /// before the produce stage runs. If no existing `T` is found, this behaves
     /// identically to `insert`.
     pub fn replace<T: 'static + Send + Sync>(&mut self, value: Arc<T>) {
-        self.data
-            .retain(|item| item.downcast_ref::<T>().is_none());
+        self.data.retain(|item| item.downcast_ref::<T>().is_none());
         self.data
             .push(value as Arc<dyn std::any::Any + Send + Sync>);
     }
@@ -154,7 +153,10 @@ impl PipelineContext {
     /// Snapshot of the accumulated log bundle. Called by log exporters after
     /// all stages complete.
     pub fn read_log_bundle(&self) -> PipelineLogBundle {
-        self.log_bundle.lock().map(|g| g.clone()).unwrap_or_default()
+        self.log_bundle
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default()
     }
 }
 
@@ -428,10 +430,7 @@ pub trait ExportPlugin: PipelinePlugin {
     ///
     /// Called by the orchestrator before serialization begins. The session
     /// owns all mutable state for the current conversion.
-    fn start_session(
-        &self,
-        ctx: &PipelineContext,
-    ) -> Result<Box<dyn ExportSession>, ExportError>;
+    fn start_session(&self, ctx: &PipelineContext) -> Result<Box<dyn ExportSession>, ExportError>;
 }
 
 /// A file produced by the pipeline, ready for export (WASM in-memory path).
@@ -682,7 +681,9 @@ impl PluginRegistry {
         match candidates.len() {
             0 => Err("no active export plugin in activation plan".to_string()),
             1 => Ok(candidates.remove(0)),
-            n => Err(format!("expected exactly one active export plugin, found {n}")),
+            n => Err(format!(
+                "expected exactly one active export plugin, found {n}"
+            )),
         }
     }
 
@@ -743,8 +744,14 @@ where
 // spawn_producers — generic helper for running producer plugins in parallel
 // ---------------------------------------------------------------------------
 
-type ProducerQueue =
-    Arc<Mutex<VecDeque<(Arc<dyn ProducerPlugin>, crossbeam::channel::Sender<TaggedBatch>)>>>;
+type ProducerQueue = Arc<
+    Mutex<
+        VecDeque<(
+            Arc<dyn ProducerPlugin>,
+            crossbeam::channel::Sender<TaggedBatch>,
+        )>,
+    >,
+>;
 
 /// Pops the next producer from the shared queue and spawns it as a rayon task.
 /// When that producer finishes it calls itself recursively, forming a chain that
@@ -791,8 +798,10 @@ pub fn spawn_producers(
     let thread_count = rayon::current_num_threads().max(2);
     let max_concurrent = ((thread_count - 1) / 2).max(1);
 
-    let mut queue: VecDeque<(Arc<dyn ProducerPlugin>, crossbeam::channel::Sender<TaggedBatch>)> =
-        VecDeque::new();
+    let mut queue: VecDeque<(
+        Arc<dyn ProducerPlugin>,
+        crossbeam::channel::Sender<TaggedBatch>,
+    )> = VecDeque::new();
     let mut receivers = Vec::new();
 
     for id in active_ids {

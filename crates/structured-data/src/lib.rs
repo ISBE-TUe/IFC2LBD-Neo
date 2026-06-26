@@ -89,7 +89,11 @@ impl StructuredDataInput {
                 let format = StructuredDataFormat::from_filename(&filename)
                     .or_else(|| StructuredDataFormat::from_content(&bytes))
                     .unwrap_or(StructuredDataFormat::Csv); // fallback: treat as CSV
-                StructuredDataFile { filename, format, bytes }
+                StructuredDataFile {
+                    filename,
+                    format,
+                    bytes,
+                }
             })
             .collect();
         Self { files }

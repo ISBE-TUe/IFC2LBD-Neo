@@ -1,39 +1,39 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/ifc-step",
-    "crates/ifc-model",
-    "crates/ifc-schema",
-    "crates/fragments-schema",
-    "crates/fragments-core",
-    "crates/lbd-pipeline",
-    "crates/lbd-ontology",
-    "crates/lbd-converter",
-    "crates/lbd-topology",
-    "crates/lbd-geometry",
-    "crates/lbd-serializer",
-    "crates/plugin-topology-full",
-    "crates/plugin-template-preprocess",
-    "crates/plugin-template-producer",
-    "crates/plugin-template-postprocess",
-    "crates/plugin-template-export",
-    "crates/plugin-property-preprocess",
-    "crates/plugin-qto-preprocess",
-    # Structured data + RML mapper
-    "crates/structured-data",
-    "crates/rml-mapper-lib",
-    "crates/rml-mapper-producer",
-    # Vendored geometry engine (MPL-2.0)
-    "vendor/geometry/core",
-    "vendor/geometry/geometry",
-    # Geometry pipeline
-    "crates/ifc-geometry",
-    "crates/tessellated-model",
-    "crates/plugin-geometry-preprocess",
-    "crates/plugin-geometry-producer",
-    "crates/ifc2lbd-cli",
-    "crates/ifc2lbd-wasm",
-    # "crates/ifc2lbd-python",  # enable when PyO3 bindings are needed
+  "crates/ifc-step",
+  "crates/ifc-model",
+  "crates/ifc-schema",
+  "crates/fragments-schema",
+  "crates/fragments-core",
+  "crates/lbd-pipeline",
+  "crates/lbd-ontology",
+  "crates/lbd-converter",
+  "crates/lbd-topology",
+  "crates/lbd-geometry",
+  "crates/lbd-serializer",
+  "crates/plugin-topology-full",
+  "crates/plugin-template-preprocess",
+  "crates/plugin-template-producer",
+  "crates/plugin-template-postprocess",
+  "crates/plugin-template-export",
+  "crates/plugin-property-preprocess",
+  "crates/plugin-qto-preprocess",
+  # Structured data + RML mapper
+  "crates/structured-data",
+  "crates/rml-mapper-lib",
+  "crates/rml-mapper-producer",
+  # Vendored geometry engine (MPL-2.0)
+  "vendor/geometry/core",
+  "vendor/geometry/geometry",
+  # Geometry pipeline
+  "crates/ifc-geometry",
+  "crates/tessellated-model",
+  "crates/plugin-geometry-preprocess",
+  "crates/plugin-geometry-producer",
+  "crates/ifc2lbd-cli",
+  "crates/ifc2lbd-wasm",
+  # "crates/ifc2lbd-python",  # enable when PyO3 bindings are needed
 ]
 
 [workspace.package]

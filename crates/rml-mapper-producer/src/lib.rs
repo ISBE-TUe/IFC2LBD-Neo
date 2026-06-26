@@ -24,8 +24,8 @@ use crossbeam::channel::Sender;
 use lbd_converter::ConvertOptions;
 use lbd_ontology::{Object, Triple};
 use lbd_pipeline::{
-    FailurePolicy, ParallelismMode, PipelineContext, PipelinePlugin, PipelineStage,
-    PluginManifest, ProducerError, ProducerPlugin, TaggedBatch, BatchKind,
+    BatchKind, FailurePolicy, ParallelismMode, PipelineContext, PipelinePlugin, PipelineStage,
+    PluginManifest, ProducerError, ProducerPlugin, TaggedBatch,
 };
 use structured_data::{RmlMappingConfig, StructuredDataInput};
 
@@ -49,7 +49,8 @@ impl PipelinePlugin for RmlMapperProducerPlugin {
             id: RML_MAPPER_ID,
             display_name: "RML Mapper",
             stage: PipelineStage::Produce,
-            description: "Transforms structured data (JSON/CSV/XML) into RDF triples using RML mappings.",
+            description:
+                "Transforms structured data (JSON/CSV/XML) into RDF triples using RML mappings.",
             inputs: vec!["structured-data", "rml-mapping"],
             outputs: vec!["rml-triples"],
             requires: vec!["structured-data"],
@@ -95,12 +96,9 @@ impl ProducerPlugin for RmlMapperProducerPlugin {
 
         // Execute RML mapping for each input file.
         for file in &data.files {
-            let ntriples_bytes = engine::execute_rml(
-                &mapping_config.mapping_turtle,
-                &file.filename,
-                &file.bytes,
-            )
-            .map_err(ProducerError::Conversion)?;
+            let ntriples_bytes =
+                engine::execute_rml(&mapping_config.mapping_turtle, &file.filename, &file.bytes)
+                    .map_err(ProducerError::Conversion)?;
 
             // Parse N-Triples output into Triple structs and send through channel.
             let triples = parse_ntriples(&ntriples_bytes);

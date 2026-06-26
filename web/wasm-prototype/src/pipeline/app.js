@@ -148,6 +148,21 @@ const TEMPLATES = [
 		],
 		options: {},
 	},
+	// --- RML (structured data) ---
+	{
+		id: "rml-turtle",
+		label: "RML → Turtle",
+		desc: "RML mapper with Turtle output",
+		modules: ["neo-rml-mapper", "neo-turtle-serializer", "neo-file-export"],
+		options: { ...TURTLE_OPTS },
+	},
+	{
+		id: "rml-nquads",
+		label: "RML → N-Quads",
+		desc: "RML mapper with N-Quads output",
+		modules: ["neo-rml-mapper", "neo-nquads-serializer", "neo-file-export"],
+		options: {},
+	},
 ];
 
 function applyTemplate(templateId) {
@@ -473,7 +488,12 @@ async function init() {
 	document.querySelector("#file-input")?.addEventListener("change", (e) => {
 		const file = e.target.files?.[0];
 		if (!file) return;
-		update({ ifcFile: file, ifcFileBytes: null });
+		update({
+			ifcFile: file,
+			ifcFileBytes: null,
+			inputFormat: "ifc",
+			structuredDataFiles: null,
+		});
 		// Update rail UI
 		const btn = document.querySelector("#rail-file-btn");
 		if (btn) btn.classList.add("has-file");
@@ -483,6 +503,74 @@ async function init() {
 		if (meta) meta.textContent = bytesToHuman(file.size);
 		log(`File: ${file.name} (${bytesToHuman(file.size)})`);
 	});
+
+	// Structured data file input
+	document
+		.querySelector("#structured-file-input")
+		?.addEventListener("change", (e) => {
+			const files = Array.from(e.target.files || []);
+			if (!files.length) return;
+			update({
+				structuredDataFiles: files,
+				inputFormat: "structured-data",
+				ifcFile: null,
+			});
+			const meta = document.querySelector("#structured-file-meta");
+			if (meta)
+				meta.textContent =
+					files.length === 1 ? files[0].name : `${files.length} files selected`;
+			document.querySelector("#rail-file-text").textContent =
+				"Choose IFC file…";
+		});
+
+	// Structured data directory picker
+	const structDirBtn = document.querySelector("#btn-structured-dir");
+	const structDirText = document.querySelector("#structured-dir-text");
+	const structDirUnsupported = document.querySelector(
+		"#structured-dir-unsupported",
+	);
+	if (structDirBtn) {
+		if (typeof window.showDirectoryPicker === "function") {
+			structDirBtn.addEventListener("click", async () => {
+				try {
+					const dirHandle = await window.showDirectoryPicker();
+					const files = [];
+					for await (const entry of dirHandle.values()) {
+						if (entry.kind === "file") {
+							const file = await entry.getFile();
+							if (/\.(json|xml|csv|tsv)$/i.test(file.name)) {
+								files.push(file);
+							}
+						}
+					}
+					if (files.length) {
+						update({
+							structuredDataFiles: files,
+							inputFormat: "structured-data",
+							ifcFile: null,
+						});
+						const meta = document.querySelector("#structured-file-meta");
+						if (meta)
+							meta.textContent = `${files.length} files from ${dirHandle.name}`;
+						document.querySelector("#rail-file-text").textContent =
+							"Choose IFC file…";
+					} else {
+						const meta = document.querySelector("#structured-file-meta");
+						if (meta)
+							meta.textContent = "No JSON/CSV/XML files found in directory.";
+					}
+				} catch (err) {
+					if (err.name !== "AbortError") {
+						const meta = document.querySelector("#structured-file-meta");
+						if (meta) meta.textContent = `Error: ${err.message}`;
+					}
+				}
+			});
+		} else {
+			if (structDirUnsupported) structDirUnsupported.style.display = "block";
+			if (structDirBtn) structDirBtn.style.display = "none";
+		}
+	}
 	document
 		.querySelector("#btn-output-dir")
 		?.addEventListener("click", async () => {
@@ -594,7 +682,7 @@ async function init() {
 	setupOutputDirectoryUiSupport();
 	initCiteWidget();
 
-  log(`WASM ready. Pipeline dashboard.`);
+	log(`WASM ready. Pipeline dashboard.`);
 	log(`Build: ${RUNTIME_BUILD}`);
 }
 
@@ -605,9 +693,18 @@ async function init() {
 async function runConversion() {
 	const state = getState();
 	if (state.running) return;
-	if (!state.ifcFile) {
-		log("No file selected.");
-		return;
+
+	// Check for input
+	if (state.inputFormat === "structured-data") {
+		if (!state.structuredDataFiles || !state.structuredDataFiles.length) {
+			log("No structured data files selected.");
+			return;
+		}
+	} else {
+		if (!state.ifcFile) {
+			log("No file selected.");
+			return;
+		}
 	}
 
 	update({ running: true });
@@ -621,10 +718,7 @@ async function runConversion() {
 	if (infoElReset) infoElReset.innerHTML = "";
 
 	try {
-		const { activeModules, moduleOptions, baseUri, outputStem, ifcFile } =
-			getState();
-		// Read file bytes now (at run time) so large files don't block the UI on select.
-		const ifcFileBytes = new Uint8Array(await ifcFile.arrayBuffer());
+		const { activeModules, moduleOptions, baseUri, outputStem } = getState();
 		const moduleIds = [...activeModules];
 		const moduleOptionsArr = [];
 		for (const [pluginId, opts] of Object.entries(moduleOptions)) {
@@ -634,17 +728,52 @@ async function runConversion() {
 			}
 		}
 
-		const input = ifcFileBytes;
+		let input;
+		let requestPayload;
+
+		if (state.inputFormat === "structured-data") {
+			// Read all structured data files
+			const files = getState().structuredDataFiles;
+			const fileBuffers = [];
+			for (const file of files) {
+				const bytes = new Uint8Array(await file.arrayBuffer());
+				fileBuffers.push({ name: file.name, data: bytes });
+			}
+			// For planExecution: use total size
+			const totalBytes = fileBuffers.reduce(
+				(sum, f) => sum + f.data.byteLength,
+				0,
+			);
+			input = fileBuffers[0].data; // first buffer for compatibility
+			requestPayload = {
+				moduleIds: [...activeModules],
+				moduleOptions: moduleOptionsArr,
+				baseUri,
+				outputStem,
+				executionMode: "auto",
+				inputFormat: "structured-data",
+				structuredDataFiles: fileBuffers.map((f) => ({
+					name: f.name,
+					size: f.data.byteLength,
+				})),
+			};
+			// Note: actual file bytes will be sent separately via transferables
+		} else {
+			// Existing IFC path
+			const ifcFile = getState().ifcFile;
+			const ifcFileBytes = new Uint8Array(await ifcFile.arrayBuffer());
+			input = ifcFileBytes;
+			requestPayload = {
+				moduleIds: [...activeModules],
+				moduleOptions: moduleOptionsArr,
+				baseUri,
+				outputStem,
+				executionMode: "auto",
+			};
+		}
 		const plan = resolvePlan(moduleIds, moduleOptionsArr);
 		log(`Plan: ${plan.enabledIds.join(", ")}`);
 
-		const requestPayload = {
-			moduleIds,
-			moduleOptions: moduleOptionsArr,
-			baseUri,
-			outputStem,
-			executionMode: "auto",
-		};
 		const feasibilityMb = detectFeasibilityBudgetMb();
 		if (feasibilityMb) requestPayload.memoryFeasibilityMb = feasibilityMb;
 		const executionPlan = planExecution(input.byteLength, requestPayload);
