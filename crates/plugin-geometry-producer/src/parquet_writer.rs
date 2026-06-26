@@ -486,4 +486,3 @@ fn write_relationships_table(model: &IfcModel, props: &WriterProperties) -> Resu
     })
 }
 
-use serde_json;

@@ -43,12 +43,10 @@ use lbd_ontology::{
     bot_intersecting_element, bot_site, bot_space, bot_storey, bot_zone, express_has_boolean,
     express_has_double, express_has_integer, express_has_logical, express_has_string,
     express_logical_value, furn_class, geo_as_wkt, geo_geometry, geo_wkt_literal,
-    lbd_has_bounding_box, lbd_has_property_set, lbd_has_quantity_set, lbd_project,
-    lbd_property_set, lbd_quantity_set, list_has_contents, list_has_next,
+    lbd_has_bounding_box, lbd_project, list_has_contents, list_has_next,
     opm_current_property_state, opm_has_property_state,
     opm_property, owl_imports, owl_object_property, owl_ontology, props_property,
-    prov_generated_at_time, rdf_li, rdf_member, rdf_seq, rdf_type, rdfs_comment, rdfs_label,
-    schema_applicable_type, schema_value,
+    prov_generated_at_time, rdf_li, rdf_seq, rdf_type, rdfs_comment, rdfs_label, schema_value,
     smls_unit, unit_iri, Object, Triple, EXPRESS, XSD,
 };
 #[cfg(test)]
@@ -184,7 +182,7 @@ pub fn stream_step_and_model(
         let ifcowl_sender = sender.clone();
         #[cfg(not(target_arch = "wasm32"))]
         {
-            return std::thread::scope(|scope| {
+            std::thread::scope(|scope| {
                 let ifcowl_task = scope.spawn(|| {
                     modules::ifcowl::stream_ifcowl(
                         step,
@@ -200,7 +198,7 @@ pub fn stream_step_and_model(
                 let ifcowl_result = ifcowl_task.join().map_err(|_| StreamError::ChannelClosed)?;
                 lbd_result?;
                 ifcowl_result
-            });
+            })
         }
         #[cfg(target_arch = "wasm32")]
         {

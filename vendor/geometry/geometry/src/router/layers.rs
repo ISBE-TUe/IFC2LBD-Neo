@@ -109,7 +109,7 @@ impl GeometryRouter {
         // geometry work so cutting planes never sit on degenerate
         // interfaces. When everything collapses to one visual layer there
         // is nothing to slice.
-        let visual_layers = merge_thin_layers(&layers, self.unit_scale);
+        let visual_layers = merge_thin_layers(layers, self.unit_scale);
         if visual_layers.len() < 2 {
             return Ok(None);
         }

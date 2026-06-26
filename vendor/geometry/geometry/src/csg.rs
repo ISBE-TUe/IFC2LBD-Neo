@@ -264,7 +264,7 @@ fn merge_coplanar_bucket(
     }
     rings
         .into_iter()
-        .map(|r| simplify_collinear(r))
+        .map(simplify_collinear)
         .filter(|r| r.len() >= 3)
         .map(Polygon::new)
         .collect()
@@ -945,11 +945,11 @@ impl ClippingProcessor {
                             },
                         );
                     }
-                    return Ok(result);
+                    Ok(result)
                 }
                 Err(reason) => {
                     self.record_failure(BoolOp::Difference, reason);
-                    return Ok(host_mesh.clone());
+                    Ok(host_mesh.clone())
                 }
             }
         }
@@ -1271,18 +1271,18 @@ impl ClippingProcessor {
         #[cfg(feature = "manifold-csg")]
         {
             match crate::manifold_kernel::union(mesh_a, mesh_b) {
-                Ok(result) if !result.is_empty() => return Ok(result),
+                Ok(result) if !result.is_empty() => Ok(result),
                 Ok(_) => {
                     self.record_failure(BoolOp::Union, BoolFailureReason::KernelOutputInvalid);
                     let mut merged = mesh_a.clone();
                     merged.merge(mesh_b);
-                    return Ok(merged);
+                    Ok(merged)
                 }
                 Err(reason) => {
                     self.record_failure(BoolOp::Union, reason);
                     let mut merged = mesh_a.clone();
                     merged.merge(mesh_b);
-                    return Ok(merged);
+                    Ok(merged)
                 }
             }
         }
@@ -1331,10 +1331,10 @@ impl ClippingProcessor {
         #[cfg(feature = "manifold-csg")]
         {
             match crate::manifold_kernel::intersection(mesh_a, mesh_b) {
-                Ok(result) => return Ok(result),
+                Ok(result) => Ok(result),
                 Err(reason) => {
                     self.record_failure(BoolOp::Intersection, reason);
-                    return Ok(Mesh::new());
+                    Ok(Mesh::new())
                 }
             }
         }

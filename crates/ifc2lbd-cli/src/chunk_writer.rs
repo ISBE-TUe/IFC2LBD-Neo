@@ -266,15 +266,11 @@ impl QuadChunkWriter {
             let mut writers: Vec<BufWriter<Box<dyn Write + Send>>> =
                 Vec::with_capacity(file_names.len());
             for file_name in &file_names {
-                let sink = session::open_sink(
-                    &session,
-                    file_name,
-                    "application/n-quads",
-                    "chunk-data",
-                )
-                .map_err(|e| {
-                    anyhow::anyhow!("failed to open quad chunk sink {file_name}: {}", e)
-                })?;
+                let sink =
+                    session::open_sink(&session, file_name, "application/n-quads", "chunk-data")
+                        .map_err(|e| {
+                            anyhow::anyhow!("failed to open quad chunk sink {file_name}: {}", e)
+                        })?;
                 writers.push(BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, sink));
             }
             for msg in receiver {
@@ -429,8 +425,7 @@ pub(crate) fn resolve_effective_core_chunk_count_for_estimated_bytes(
     let requested = requested_core_count
         .unwrap_or(available_cores)
         .max(min_chunk_count);
-    let min_chunks_by_max_size =
-        estimated_nq_bytes.div_ceil(MAX_CORE_CHUNK_BYTES).max(1) as usize;
+    let min_chunks_by_max_size = estimated_nq_bytes.div_ceil(MAX_CORE_CHUNK_BYTES).max(1) as usize;
     let max_chunks_by_min_size = (estimated_nq_bytes / MIN_CORE_CHUNK_BYTES).max(1) as usize;
     let floor = min_chunk_count.max(min_chunks_by_max_size);
     let ceiling = max_chunks_by_min_size.max(floor);

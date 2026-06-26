@@ -1,6 +1,6 @@
+use lbd_converter::IfcowlMode;
 use lbd_pipeline::ActivationError;
 use serde::{Deserialize, Serialize};
-use lbd_converter::IfcowlMode;
 
 #[derive(Debug, thiserror::Error)]
 pub enum WasmApiError {
@@ -246,7 +246,8 @@ pub struct ExecutionSettings {
     pub active_plugin_ids: std::collections::HashSet<String>,
     /// Per-module options keyed as "module-id" → key → value.
     /// Used by geometry pipeline and any future module needing typed options.
-    pub module_configs: std::collections::HashMap<String, std::collections::HashMap<String, String>>,
+    pub module_configs:
+        std::collections::HashMap<String, std::collections::HashMap<String, String>>,
     pub nquads: NquadsModuleOptions,
     pub output_stem: String,
     pub turtle_grouping: TurtleGrouping,

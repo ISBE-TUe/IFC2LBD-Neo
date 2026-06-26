@@ -8,22 +8,25 @@ use flate2::Compression;
 use crossbeam::channel::Sender;
 use ifc_model::IfcModel;
 use ifc_step::StepFile;
-use lbd_converter::{stream_beo, stream_bot, stream_bsdd_with_cache, stream_omg_fog, stream_props_opm, BsddMatchCache, ConvertOptions};
-use serde_json::json;
+use lbd_converter::{
+    stream_beo, stream_bot, stream_bsdd_with_cache, stream_omg_fog, stream_props_opm,
+    BsddMatchCache, ConvertOptions,
+};
 use lbd_ontology::Triple;
 use lbd_pipeline::{
     BatchKind, DerivedFile, ExportError, ExportFileSummary, ExportPlugin, ExportSession,
     FailurePolicy, ParallelismMode, PipelineContext, PipelinePlugin, PipelineStage, PluginManifest,
     PluginRegistry, ProducerError, ProducerPlugin, SerializerPlugin, TaggedBatch, BEO_PRODUCER_ID,
-    BOT_PRODUCER_ID, BSDD_PRODUCER_ID, FILE_EXPORT_ID, IFCOWL_PRODUCER_ID,
-    LOG_EXPORT_ID, NQUADS_CHUNKED_SERIALIZER_ID, NQUADS_SERIALIZER_ID, OMG_FOG_PRODUCER_ID,
-    PROPS_OPM_PRODUCER_ID, RML_MAPPER_ID, STDOUT_EXPORT_ID, TURTLE_SERIALIZER_ID,
+    BOT_PRODUCER_ID, BSDD_PRODUCER_ID, FILE_EXPORT_ID, IFCOWL_PRODUCER_ID, LOG_EXPORT_ID,
+    NQUADS_CHUNKED_SERIALIZER_ID, NQUADS_SERIALIZER_ID, OMG_FOG_PRODUCER_ID, PROPS_OPM_PRODUCER_ID,
+    RML_MAPPER_ID, STDOUT_EXPORT_ID, TURTLE_SERIALIZER_ID,
 };
+use plugin_geometry_preprocess::GeometryPreprocessPlugin;
+use plugin_geometry_producer::GeometryProducerPlugin;
 use plugin_property_preprocess::{BsddMatchPreprocessPlugin, CleanupPreprocessPlugin};
 use plugin_qto_preprocess::QtoPreprocessPlugin;
 use rml_mapper_producer::RmlMapperProducerPlugin;
-use plugin_geometry_preprocess::GeometryPreprocessPlugin;
-use plugin_geometry_producer::GeometryProducerPlugin;
+use serde_json::json;
 
 // ---------------------------------------------------------------------------
 // OutputDir — context key for the export destination directory
@@ -59,7 +62,10 @@ fn forward_as_tagged(
     rayon::spawn(move || {
         for batch in raw_receiver {
             if tagged_sender
-                .send(TaggedBatch { kind: kind.clone(), triples: batch })
+                .send(TaggedBatch {
+                    kind: kind.clone(),
+                    triples: batch,
+                })
                 .is_err()
             {
                 break;
@@ -73,12 +79,20 @@ pub fn module_option_keys(module_id: &str) -> Vec<String> {
     match module_id {
         lbd_pipeline::NQUADS_SERIALIZER_ID => vec!["graph_naming".to_string()],
         lbd_pipeline::NQUADS_CHUNKED_SERIALIZER_ID => vec![
-            "chunking".to_string(), "chunk_size_lines".to_string(), "chunk_size_bytes".to_string(),
-            "chunk_prefix".to_string(), "graph_naming".to_string(),
+            "chunking".to_string(),
+            "chunk_size_lines".to_string(),
+            "chunk_size_bytes".to_string(),
+            "chunk_prefix".to_string(),
+            "graph_naming".to_string(),
         ],
         lbd_pipeline::TURTLE_SERIALIZER_ID => vec!["grouping".to_string(), "layout".to_string()],
         lbd_pipeline::IFCOWL_PRODUCER_ID => vec!["mode".to_string()],
-        lbd_pipeline::BSDD_PRODUCER_ID => vec!["profile".to_string(), "compact".to_string(), "include_standard_attrs".to_string(), "dedup_properties".to_string()],
+        lbd_pipeline::BSDD_PRODUCER_ID => vec![
+            "profile".to_string(),
+            "compact".to_string(),
+            "include_standard_attrs".to_string(),
+            "dedup_properties".to_string(),
+        ],
         lbd_pipeline::FILE_EXPORT_ID => vec!["output_stem".to_string(), "compress".to_string()],
         lbd_pipeline::LOG_EXPORT_ID => vec![],
         "neo-geometry-preprocess" => vec!["metadata".to_string()],
@@ -90,8 +104,12 @@ pub fn module_option_keys(module_id: &str) -> Vec<String> {
 
 pub fn built_in_registry() -> PluginRegistry {
     let mut registry = PluginRegistry::new();
-    registry.register_preprocess(CleanupPreprocessPlugin).unwrap();
-    registry.register_preprocess(BsddMatchPreprocessPlugin).unwrap();
+    registry
+        .register_preprocess(CleanupPreprocessPlugin)
+        .unwrap();
+    registry
+        .register_preprocess(BsddMatchPreprocessPlugin)
+        .unwrap();
     registry.register_preprocess(QtoPreprocessPlugin).unwrap();
     registry.register_producer(BotProducerPlugin).unwrap();
     registry.register_producer(BeoProducerPlugin).unwrap();
@@ -100,11 +118,21 @@ pub fn built_in_registry() -> PluginRegistry {
     registry.register_producer(OmgFogProducerPlugin).unwrap();
     registry.register_producer(IfcowlProducerPlugin).unwrap();
     registry.register_producer(RmlMapperProducerPlugin).unwrap();
-    registry.register_preprocess(GeometryPreprocessPlugin).unwrap();
-    registry.register_producer(GeometryProducerPlugin::default()).unwrap();
-    registry.register_serializer(TurtleSerializerPlugin).unwrap();
-    registry.register_serializer(NquadsSerializerPlugin).unwrap();
-    registry.register_serializer(NquadsChunkedSerializerPlugin).unwrap();
+    registry
+        .register_preprocess(GeometryPreprocessPlugin)
+        .unwrap();
+    registry
+        .register_producer(GeometryProducerPlugin::default())
+        .unwrap();
+    registry
+        .register_serializer(TurtleSerializerPlugin)
+        .unwrap();
+    registry
+        .register_serializer(NquadsSerializerPlugin)
+        .unwrap();
+    registry
+        .register_serializer(NquadsChunkedSerializerPlugin)
+        .unwrap();
     registry.register_export(FileExportPlugin).unwrap();
     registry.register_export(LogExportPlugin).unwrap();
     registry.register_export(StdoutExportPlugin).unwrap();
@@ -242,7 +270,8 @@ impl PipelinePlugin for BsddProducerPlugin {
             id: BSDD_PRODUCER_ID,
             display_name: "bSDD producer",
             stage: PipelineStage::Produce,
-            description: "Generates standalone bSDD semantic class/property triples with OPM states.",
+            description:
+                "Generates standalone bSDD semantic class/property triples with OPM states.",
             inputs: vec!["ifc-model"],
             outputs: vec!["bsdd-triples"],
             requires: vec![],
@@ -275,18 +304,22 @@ impl ProducerPlugin for BsddProducerPlugin {
         let graph_iri = BatchKind::new(format!("{}bsdd", options.base_uri.trim_end_matches('/')));
         forward_as_tagged(raw_receiver, graph_iri, sender.clone());
         let cache = ctx.get::<BsddMatchCache>();
-        let (_, dedup_stats) = stream_bsdd_with_cache(&model, &options, &raw_sender, cache.as_deref())
-            .map_err(|e| ProducerError::Conversion(format!("bSDD streaming failed: {e}")))?;
+        let (_, dedup_stats) =
+            stream_bsdd_with_cache(&model, &options, &raw_sender, cache.as_deref())
+                .map_err(|e| ProducerError::Conversion(format!("bSDD streaming failed: {e}")))?;
         if options.bsdd_dedup_properties {
-            ctx.write_log(BSDD_PRODUCER_ID, json!({
-                "dedup_properties": true,
-                "prop_instances_deduped": dedup_stats.prop_instances_deduped,
-                "set_defs_deduped": dedup_stats.set_defs_deduped,
-                "set_contains_deduped": dedup_stats.set_contains_deduped,
-                "total_triples_saved": dedup_stats.prop_instances_deduped
-                    + dedup_stats.set_defs_deduped
-                    + dedup_stats.set_contains_deduped,
-            }));
+            ctx.write_log(
+                BSDD_PRODUCER_ID,
+                json!({
+                    "dedup_properties": true,
+                    "prop_instances_deduped": dedup_stats.prop_instances_deduped,
+                    "set_defs_deduped": dedup_stats.set_defs_deduped,
+                    "set_contains_deduped": dedup_stats.set_contains_deduped,
+                    "total_triples_saved": dedup_stats.prop_instances_deduped
+                        + dedup_stats.set_defs_deduped
+                        + dedup_stats.set_contains_deduped,
+                }),
+            );
         }
         Ok(())
     }
@@ -402,8 +435,7 @@ impl ProducerPlugin for IfcowlProducerPlugin {
         })?;
         let (ifcowl_sender, ifcowl_receiver) =
             crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
-        let graph_iri =
-            BatchKind::new(format!("{}ifcowl", options.base_uri.trim_end_matches('/')));
+        let graph_iri = BatchKind::new(format!("{}ifcowl", options.base_uri.trim_end_matches('/')));
         forward_as_tagged(ifcowl_receiver, graph_iri, sender.clone());
         lbd_converter::modules::ifcowl::stream_ifcowl(
             &step,
@@ -472,7 +504,8 @@ impl PipelinePlugin for NquadsChunkedSerializerPlugin {
             id: NQUADS_CHUNKED_SERIALIZER_ID,
             display_name: "Built-in N-Quads chunked serializer",
             stage: PipelineStage::Serialize,
-            description: "Serializes graph streams into chunked N-Quads files with a chunk manifest.",
+            description:
+                "Serializes graph streams into chunked N-Quads files with a chunk manifest.",
             inputs: vec!["quads"],
             outputs: vec!["nquads-chunks"],
             requires: vec![],
@@ -500,7 +533,8 @@ impl PipelinePlugin for FileExportPlugin {
             id: FILE_EXPORT_ID,
             display_name: "Built-in file exporter",
             stage: PipelineStage::Export,
-            description: "Writes serialized output streams and sidecar artefacts to the local file system.",
+            description:
+                "Writes serialized output streams and sidecar artefacts to the local file system.",
             inputs: vec!["turtle-bytes", "nquads-bytes", "nquads-chunks"],
             outputs: vec!["filesystem"],
             requires: vec![],
@@ -515,10 +549,7 @@ impl PipelinePlugin for FileExportPlugin {
 }
 
 impl ExportPlugin for FileExportPlugin {
-    fn start_session(
-        &self,
-        ctx: &PipelineContext,
-    ) -> Result<Box<dyn ExportSession>, ExportError> {
+    fn start_session(&self, ctx: &PipelineContext) -> Result<Box<dyn ExportSession>, ExportError> {
         let output_dir = ctx
             .get::<OutputDir>()
             .map(|d| d.0.clone())
@@ -558,7 +589,10 @@ impl ExportSession for CliFileExportSession {
         self.opened
             .push((actual_filename, mime_type.to_string(), role.to_string()));
         if self.compress {
-            Ok(Box::new(GzEncoder::new(BufWriter::new(file), Compression::fast())))
+            Ok(Box::new(GzEncoder::new(
+                BufWriter::new(file),
+                Compression::fast(),
+            )))
         } else {
             Ok(Box::new(BufWriter::new(file)))
         }
@@ -566,9 +600,8 @@ impl ExportSession for CliFileExportSession {
 
     fn accept_derived_file(&mut self, file: DerivedFile) -> Result<(), ExportError> {
         let path = self.output_dir.join(&file.filename);
-        std::fs::write(&path, &file.bytes).map_err(|e| {
-            ExportError::Export(format!("cannot write {}: {e}", path.display()))
-        })?;
+        std::fs::write(&path, &file.bytes)
+            .map_err(|e| ExportError::Export(format!("cannot write {}: {e}", path.display())))?;
         self.derived.push(ExportFileSummary {
             filename: file.filename,
             mime_type: file.mime_type.to_string(),
@@ -615,10 +648,7 @@ impl PipelinePlugin for LogExportPlugin {
 }
 
 impl ExportPlugin for LogExportPlugin {
-    fn start_session(
-        &self,
-        ctx: &PipelineContext,
-    ) -> Result<Box<dyn ExportSession>, ExportError> {
+    fn start_session(&self, ctx: &PipelineContext) -> Result<Box<dyn ExportSession>, ExportError> {
         let output_dir = ctx
             .get::<OutputDir>()
             .map(|d| d.0.clone())
@@ -650,16 +680,18 @@ impl ExportSession for CliLogExportSession {
         let path = self.output_dir.join(filename);
         let file = File::create(&path)
             .map_err(|e| ExportError::Export(format!("cannot create {}: {e}", path.display())))?;
-        self.opened
-            .push((filename.to_string(), mime_type.to_string(), role.to_string()));
+        self.opened.push((
+            filename.to_string(),
+            mime_type.to_string(),
+            role.to_string(),
+        ));
         Ok(Box::new(BufWriter::new(file)))
     }
 
     fn accept_derived_file(&mut self, file: DerivedFile) -> Result<(), ExportError> {
         let path = self.output_dir.join(&file.filename);
-        std::fs::write(&path, &file.bytes).map_err(|e| {
-            ExportError::Export(format!("cannot write {}: {e}", path.display()))
-        })?;
+        std::fs::write(&path, &file.bytes)
+            .map_err(|e| ExportError::Export(format!("cannot write {}: {e}", path.display())))?;
         self.derived.push(ExportFileSummary {
             filename: file.filename,
             mime_type: file.mime_type.to_string(),
@@ -689,8 +721,9 @@ impl ExportSession for CliLogExportSession {
             let json = serde_json::to_vec_pretty(stats)
                 .map_err(|e| ExportError::Export(format!("cannot serialize {filename}: {e}")))?;
             let path = self.output_dir.join(&filename);
-            std::fs::write(&path, &json)
-                .map_err(|e| ExportError::Export(format!("cannot write {}: {e}", path.display())))?;
+            std::fs::write(&path, &json).map_err(|e| {
+                ExportError::Export(format!("cannot write {}: {e}", path.display()))
+            })?;
             summaries.push(ExportFileSummary {
                 filename,
                 mime_type: "application/json".to_string(),
@@ -725,11 +758,10 @@ impl PipelinePlugin for StdoutExportPlugin {
 }
 
 impl ExportPlugin for StdoutExportPlugin {
-    fn start_session(
-        &self,
-        _ctx: &PipelineContext,
-    ) -> Result<Box<dyn ExportSession>, ExportError> {
-        Ok(Box::new(StdoutExportSession { summaries: Vec::new() }))
+    fn start_session(&self, _ctx: &PipelineContext) -> Result<Box<dyn ExportSession>, ExportError> {
+        Ok(Box::new(StdoutExportSession {
+            summaries: Vec::new(),
+        }))
     }
 }
 
@@ -803,9 +835,15 @@ mod tests {
     fn built_in_registry_exposes_expected_stage_counts() {
         let registry = built_in_registry();
         // Bot, Beo, Bsdd, PropsOpm, OmgFog, Ifcowl, GeometryProducer
-        assert_eq!(registry.manifests_for_stage(PipelineStage::Produce).len(), 7);
+        assert_eq!(
+            registry.manifests_for_stage(PipelineStage::Produce).len(),
+            7
+        );
         // Turtle, NQuads, NQuadsChunked
-        assert_eq!(registry.manifests_for_stage(PipelineStage::Serialize).len(), 3);
+        assert_eq!(
+            registry.manifests_for_stage(PipelineStage::Serialize).len(),
+            3
+        );
         // File, Log, Stdout
         assert_eq!(registry.manifests_for_stage(PipelineStage::Export).len(), 3);
     }

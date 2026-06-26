@@ -12,7 +12,4 @@ structured-data = { path = "../structured-data" }
 crossbeam = { workspace = true }
 rayon = { workspace = true }
 tempfile = "3"
-
-# rml-mapper-lib = { path = "../rml-mapper-lib" }
-# TODO: Uncomment the above dependency once the real rml_mapper library source
-# is in place at crates/rml-mapper-lib/. The engine module calls into it.
+rml-mapper-lib = { path = "../rml-mapper-lib", default-features = false }

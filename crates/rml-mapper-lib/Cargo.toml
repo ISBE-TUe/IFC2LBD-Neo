@@ -1,10 +1,79 @@
 [package]
 name = "rml-mapper-lib"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
+version = "0.1.0"
+edition = "2021"
+authors = ["RML Mapper Contributors"]
+description = "A Rust implementation of an RML (RDF Mapping Language) mapper for transforming heterogeneous data sources to RDF"
+license = "MIT OR Apache-2.0"
+keywords = ["rml", "rdf", "mapping", "data-transformation", "semantic-web"]
+categories = ["database", "parser-implementations", "web-programming"]
+
+[features]
+default = ["remote", "database"]
+# Remote file access via HTTP (reqwest) — not available on WASM
+remote = ["dep:reqwest"]
+# Database access via sqlx (MySQL/Postgres/SQLite) — not available on WASM
+database = ["dep:sqlx", "dep:tokio"]
+# CLI binary (not needed when used as a library)
+cli = ["dep:clap"]
 
 [dependencies]
-# TODO: When the real rml_mapper library source is dropped into this crate,
-# add its dependencies here (oxigraph, etc.).
-# For now, this crate is a stub with a clear insertion point.
+# RDF handling and serialization
+oxigraph = "0.4"
+
+# Database access (optional — not available on WASM)
+sqlx = { version = "0.8", features = [
+    "runtime-tokio",
+    "tls-rustls",
+    "mysql",
+    "postgres",
+    "sqlite",
+], optional = true }
+
+# HTTP client (optional — not available on WASM)
+reqwest = { version = "0.12", features = ["json", "blocking"], optional = true }
+
+# Async runtime (only needed for database feature)
+tokio = { version = "1.40", features = ["full"], optional = true }
+
+# Data format parsing
+csv = "1.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+quick-xml = { version = "0.36", features = ["serialize"] }
+
+# XPath support
+sxd-document = "0.3"
+sxd-xpath = "0.4"
+
+# JSONPath support
+jsonpath-rust = "0.7"
+
+# CLI argument parsing (optional)
+clap = { version = "4.5", features = ["derive", "env"], optional = true }
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Logging
+tracing = "0.1"
+
+# Utilities
+url = "2.5"
+regex = "1.10"
+indexmap = { version = "2.5", features = ["serde"] }
+once_cell = "1.19"
+urlencoding = "2.1"
+const_format = "0.2"
+
+# Parallel processing
+rayon = "1.10"
+
+# Compression
+flate2 = "1.0"
+bzip2 = "0.4"
+
+[dev-dependencies]
+tempfile = "3.12"
+pretty_assertions = "1.4"

@@ -34,10 +34,7 @@ pub fn open_sink(
 }
 
 /// Forward a producer-emitted sidecar file into the active export session.
-pub fn accept_derived_file(
-    shared: &SharedSession,
-    file: DerivedFile,
-) -> Result<(), ExportError> {
+pub fn accept_derived_file(shared: &SharedSession, file: DerivedFile) -> Result<(), ExportError> {
     let mut guard = shared
         .lock()
         .map_err(|_| ExportError::Export("export session mutex poisoned".to_string()))?;

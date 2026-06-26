@@ -133,7 +133,10 @@ struct Args {
     analyze_bsdd_sample: usize,
 
     /// Comma-separated profiles to score in --analyze-bsdd (default: base,revit-dach,allplan-de,tekla-en).
-    #[arg(long = "analyze-bsdd-profiles", default_value = "base,revit-dach,allplan-de,tekla-en")]
+    #[arg(
+        long = "analyze-bsdd-profiles",
+        default_value = "base,revit-dach,allplan-de,tekla-en"
+    )]
     analyze_bsdd_profiles: String,
 }
 
@@ -238,16 +241,24 @@ fn main() -> anyhow::Result<()> {
         tracing::info!("Input format: structured-data (skipping IFC parsing)");
         let input_bytes = std::fs::read(input_path)
             .with_context(|| format!("failed to read input file {}", input_path.display()))?;
-        let sd = std::sync::Arc::new(structured_data::StructuredDataInput::from_raw(vec![
-            (input_path.file_name().unwrap_or_default().to_string_lossy().to_string(), input_bytes),
-        ]));
+        let sd = std::sync::Arc::new(structured_data::StructuredDataInput::from_raw(vec![(
+            input_path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string(),
+            input_bytes,
+        )]));
         // Read RML mapping from module options
-        let rml_mapping = module_configs.get(lbd_pipeline::RML_MAPPER_ID)
+        let rml_mapping = module_configs
+            .get(lbd_pipeline::RML_MAPPER_ID)
             .and_then(|m| m.get("rml_mapping"))
             .cloned();
-        let rml_cfg = rml_mapping.map(|turtle| std::sync::Arc::new(structured_data::RmlMappingConfig {
-            mapping_turtle: turtle,
-        }));
+        let rml_cfg = rml_mapping.map(|turtle| {
+            std::sync::Arc::new(structured_data::RmlMappingConfig {
+                mapping_turtle: turtle,
+            })
+        });
         (
             std::sync::Arc::new(ifc_step::StepFile::default()),
             std::sync::Arc::new(ifc_model::IfcModel::default()),
@@ -329,7 +340,8 @@ fn main() -> anyhow::Result<()> {
 
     // Geometry producer format
     if let Some(geom_entries) = module_configs.get(GEOMETRY_PRODUCER_ID) {
-        let format = geom_entries.get("format")
+        let format = geom_entries
+            .get("format")
             .and_then(|s| GeometryFormat::from_str(s))
             .unwrap_or_default();
         ctx.insert(std::sync::Arc::new(GeometryProducerConfig {
@@ -340,8 +352,13 @@ fn main() -> anyhow::Result<()> {
     }
     let (sidecar_tx, sidecar_rx) = crossbeam::channel::bounded(SERIALIZER_CHANNEL_CAPACITY);
     ctx.sidecar_tx = Some(sidecar_tx);
-    if preprocess_ids.iter().any(|id| id == lbd_pipeline::QTO_PREPROCESS_ID) {
-        ctx.insert(std::sync::Arc::new(plugin_qto_preprocess::QtoOptions::default()));
+    if preprocess_ids
+        .iter()
+        .any(|id| id == lbd_pipeline::QTO_PREPROCESS_ID)
+    {
+        ctx.insert(std::sync::Arc::new(
+            plugin_qto_preprocess::QtoOptions::default(),
+        ));
     }
 
     let (output_dir, lbd_filename) =
@@ -449,7 +466,9 @@ fn main() -> anyhow::Result<()> {
                 let writer = BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, sink);
                 if turtle_grouping == TurtleGrouping::Sorted {
                     serialize_lbd_batches_to_writer(lbd_receiver, writer, &lbd_base_uri)
-                        .with_context(|| format!("failed to write Turtle to {lbd_filename_thread}"))?;
+                        .with_context(|| {
+                            format!("failed to write Turtle to {lbd_filename_thread}")
+                        })?;
                 } else {
                     serialize_lbd_batches_incremental_to_writer(
                         lbd_receiver,
@@ -574,10 +593,9 @@ fn main() -> anyhow::Result<()> {
             )
             .map_err(|e| anyhow::anyhow!("failed to open IfcOWL output sink: {}", e))?;
             let writer = BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, sink);
-            serialize_turtle_batches_to_writer(receiver, writer, Some(&ifcowl_base))
-                .with_context(|| {
-                    format!("failed to write IfcOWL Turtle to {ifcowl_filename_thread}")
-                })?;
+            serialize_turtle_batches_to_writer(receiver, writer, Some(&ifcowl_base)).with_context(
+                || format!("failed to write IfcOWL Turtle to {ifcowl_filename_thread}"),
+            )?;
             Ok(())
         }));
     }
@@ -616,7 +634,9 @@ fn main() -> anyhow::Result<()> {
         })
         .collect();
     for handle in routing_handles {
-        handle.join().map_err(|_| anyhow::anyhow!("producer routing thread panicked"))?;
+        handle
+            .join()
+            .map_err(|_| anyhow::anyhow!("producer routing thread panicked"))?;
     }
     tracing::info!(
         "phase triple_production completed in {:.3}s",
@@ -654,8 +674,8 @@ fn main() -> anyhow::Result<()> {
         serializer_join_start.elapsed().as_secs_f64()
     );
 
-    let summaries = session::finalize(session)
-        .map_err(|e| anyhow::anyhow!("export finalize failed: {}", e))?;
+    let summaries =
+        session::finalize(session).map_err(|e| anyhow::anyhow!("export finalize failed: {}", e))?;
     for summary in &summaries {
         tracing::info!(
             "exported {} ({}, {} bytes, role={})",
@@ -865,7 +885,9 @@ fn validate_file_export_module_config(entries: &HashMap<String, String>) -> Resu
             "output_stem" => {}
             "compress" => {
                 if !matches!(value.as_str(), "none" | "gzip") {
-                    return Err(format!("`neo-file-export.compress` must be none|gzip, got `{value}`"));
+                    return Err(format!(
+                        "`neo-file-export.compress` must be none|gzip, got `{value}`"
+                    ));
                 }
             }
             other => return Err(format!("unknown option `neo-file-export.{other}`")),
@@ -874,7 +896,9 @@ fn validate_file_export_module_config(entries: &HashMap<String, String>) -> Resu
     Ok(())
 }
 
-fn validate_geometry_producer_module_config(entries: &std::collections::HashMap<String, String>) -> Result<(), String> {
+fn validate_geometry_producer_module_config(
+    entries: &std::collections::HashMap<String, String>,
+) -> Result<(), String> {
     for (key, value) in entries {
         match key.as_str() {
             "format" => {
@@ -884,7 +908,9 @@ fn validate_geometry_producer_module_config(entries: &std::collections::HashMap<
             }
             "metadata" => {
                 if !matches!(value.as_str(), "full" | "stripped") {
-                    return Err(format!("`neo-geometry-producer.metadata` must be full|stripped, got `{value}`"));
+                    return Err(format!(
+                        "`neo-geometry-producer.metadata` must be full|stripped, got `{value}`"
+                    ));
                 }
             }
             other => return Err(format!("unknown option `neo-geometry-producer.{other}`")),
@@ -893,14 +919,15 @@ fn validate_geometry_producer_module_config(entries: &std::collections::HashMap<
     Ok(())
 }
 
-fn validate_bsdd_producer_module_config(
-    entries: &HashMap<String, String>,
-) -> Result<(), String> {
+fn validate_bsdd_producer_module_config(entries: &HashMap<String, String>) -> Result<(), String> {
     let known_profiles = ["base", "revit-dach", "allplan-de", "tekla-en"];
     for (key, value) in entries {
         match key.as_str() {
             "profile" => {
-                if !known_profiles.contains(&value.as_str()) && !value.contains('/') && !value.ends_with(".json") {
+                if !known_profiles.contains(&value.as_str())
+                    && !value.contains('/')
+                    && !value.ends_with(".json")
+                {
                     return Err(format!(
                         "`neo-bsdd-producer.profile` must be one of {:?} or a path, got `{}`",
                         known_profiles, value
@@ -966,7 +993,8 @@ fn validate_activation_plan_with_args(
     let has_file_export = active.contains(lbd_pipeline::FILE_EXPORT_ID);
     let has_log_export = active.contains(lbd_pipeline::LOG_EXPORT_ID);
     let has_stdout_export = active.contains(lbd_pipeline::STDOUT_EXPORT_ID);
-    let export_count = has_file_export as usize + has_log_export as usize + has_stdout_export as usize;
+    let export_count =
+        has_file_export as usize + has_log_export as usize + has_stdout_export as usize;
     if export_count != 1 {
         anyhow::bail!(
             "module plan must include exactly one export module (`{}`, `{}`, or `{}`)",
@@ -1305,9 +1333,7 @@ fn validate_turtle_serializer_module_config(
     Ok(())
 }
 
-fn validate_ifcowl_producer_module_config(
-    entries: &HashMap<String, String>,
-) -> Result<(), String> {
+fn validate_ifcowl_producer_module_config(entries: &HashMap<String, String>) -> Result<(), String> {
     for (key, value) in entries {
         match key.as_str() {
             "mode" => {
@@ -1348,16 +1374,16 @@ fn run_analyze_bsdd(args: &Args) -> anyhow::Result<()> {
     let model = ifc_model::build_model(&step).context("failed to build IFC model")?;
 
     let profiles: Vec<&str> = {
-        let requested: Vec<&str> = args.analyze_bsdd_profiles.split(',').map(str::trim).collect();
+        let requested: Vec<&str> = args
+            .analyze_bsdd_profiles
+            .split(',')
+            .map(str::trim)
+            .collect();
         let embedded = list_embedded_profiles();
         // Validate all requested profiles are known
         for p in &requested {
             if !embedded.contains(p) && !p.contains('/') && !p.ends_with(".json") {
-                anyhow::bail!(
-                    "unknown profile '{}'; embedded profiles: {:?}",
-                    p,
-                    embedded
-                );
+                anyhow::bail!("unknown profile '{}'; embedded profiles: {:?}", p, embedded);
             }
         }
         requested
@@ -1391,7 +1417,10 @@ fn run_analyze_bsdd(args: &Args) -> anyhow::Result<()> {
         "{:<col_profile$}  {:>col_matched$}  {:>col_conf$}  {:>col_ambig$}  {:>col_unmapped$}",
         "profile", "matched", "avg_conf", "ambig", "unmapped"
     );
-    println!("{}", "-".repeat(col_profile + col_matched + col_conf + col_ambig + col_unmapped + 10));
+    println!(
+        "{}",
+        "-".repeat(col_profile + col_matched + col_conf + col_ambig + col_unmapped + 10)
+    );
     for r in &results {
         let pct = |key: &str| -> String {
             let v = r[key].as_f64().unwrap_or(0.0) * 100.0;
@@ -1477,12 +1506,12 @@ mod tests {
     use super::{
         build_requested_module_list,
         chunk_writer::{self},
-        parse_module_configs, session, validate_args, Args, ExecutionSettings,
-        NquadsGraphNaming, NquadsModuleOptions, OutputFormat, TurtleGrouping, TurtleLayout,
+        parse_module_configs, session, validate_args, Args, ExecutionSettings, NquadsGraphNaming,
+        NquadsModuleOptions, OutputFormat, TurtleGrouping, TurtleLayout,
     };
+    use clap::Parser;
     use lbd_converter::IfcowlMode;
     use lbd_pipeline::{DerivedFile, ExportError, ExportFileSummary, ExportSession};
-    use clap::Parser;
     use std::io::Write;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1499,15 +1528,14 @@ mod tests {
             _role: &str,
         ) -> Result<Box<dyn Write + Send>, ExportError> {
             let path = self.dir.join(filename);
-            let file = std::fs::File::create(&path)
-                .map_err(|e| ExportError::Export(e.to_string()))?;
+            let file =
+                std::fs::File::create(&path).map_err(|e| ExportError::Export(e.to_string()))?;
             Ok(Box::new(std::io::BufWriter::new(file)))
         }
 
         fn accept_derived_file(&mut self, file: DerivedFile) -> Result<(), ExportError> {
             let path = self.dir.join(&file.filename);
-            std::fs::write(&path, &file.bytes)
-                .map_err(|e| ExportError::Export(e.to_string()))
+            std::fs::write(&path, &file.bytes).map_err(|e| ExportError::Export(e.to_string()))
         }
 
         fn finalize(self: Box<Self>) -> Result<Vec<ExportFileSummary>, ExportError> {
@@ -1590,7 +1618,6 @@ mod tests {
         assert!(requested.contains(&"neo-topology-full-producer".to_string()));
         assert!(requested.contains(&"neo-nquads-serializer".to_string()));
     }
-
 
     #[test]
     fn quad_chunk_writer_rotates_and_writes_manifest() {

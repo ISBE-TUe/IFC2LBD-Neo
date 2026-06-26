@@ -20,7 +20,7 @@ pub fn compute_approximate_bboxes(
     model: &IfcModel,
 ) -> HashMap<EntityId, BoundingBox> {
     let mut result = HashMap::new();
-    for (&entity_id, _node) in &model.elements {
+    for &entity_id in model.elements.keys() {
         if let Some([x_min, y_min, z_min, x_max, y_max, z_max]) = approximate_bbox(step, entity_id)
         {
             result.insert(
@@ -155,7 +155,7 @@ fn cartesian_point_3d(step: &StepFile, id: EntityId) -> [f64; 3] {
         Some(StepValue::List(list)) => list,
         _ => return [0.0, 0.0, 0.0],
     };
-    let x = coords.get(0).and_then(|v| v.as_real()).unwrap_or(0.0);
+    let x = coords.first().and_then(|v| v.as_real()).unwrap_or(0.0);
     let y = coords.get(1).and_then(|v| v.as_real()).unwrap_or(0.0);
     let z = coords.get(2).and_then(|v| v.as_real()).unwrap_or(0.0);
     [x, y, z]

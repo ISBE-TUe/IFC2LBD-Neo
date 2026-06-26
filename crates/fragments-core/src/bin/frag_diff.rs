@@ -85,7 +85,7 @@ fn print_model(label: &str, raw: &[u8]) {
 
     // Sample the first few attribute strings for entity 0
     if let Some(attr_vec) = model.attributes() {
-        if attr_vec.len() > 0 {
+        if !attr_vec.is_empty() {
             let first = attr_vec.get(0);
             let data = first.data();
             let preview: Vec<&str> = data.iter().take(3).collect();

@@ -37,6 +37,12 @@ pub struct TriangleMesh {
     pub indices: Vec<u32>,
 }
 
+impl Default for TriangleMesh {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TriangleMesh {
     pub fn new() -> Self {
         Self {
@@ -209,7 +215,7 @@ fn extract_representation_item(step: &StepFile, item_id: EntityId, depth: usize)
 }
 
 fn extract_triangulated_face_set(step: &StepFile, entity: &ifc_step::RawEntity) -> TriangleMesh {
-    let coords_id = match entity.args.get(0) {
+    let coords_id = match entity.args.first() {
         Some(StepValue::Ref(id)) => *id,
         _ => return TriangleMesh::new(),
     };
@@ -249,7 +255,7 @@ fn find_coord_index_list(entity: &ifc_step::RawEntity) -> Option<&[StepValue]> {
         if let Some(StepValue::List(list)) = entity.args.get(idx) {
             if list
                 .first()
-                .map_or(false, |v| matches!(v, StepValue::List(_)))
+                .is_some_and(|v| matches!(v, StepValue::List(_)))
             {
                 return Some(list);
             }
@@ -259,7 +265,7 @@ fn find_coord_index_list(entity: &ifc_step::RawEntity) -> Option<&[StepValue]> {
 }
 
 fn extract_polygonal_face_set(step: &StepFile, entity: &ifc_step::RawEntity) -> TriangleMesh {
-    let coords_id = match entity.args.get(0) {
+    let coords_id = match entity.args.first() {
         Some(StepValue::Ref(id)) => *id,
         _ => return TriangleMesh::new(),
     };
@@ -283,7 +289,7 @@ fn extract_polygonal_face_set(step: &StepFile, entity: &ifc_step::RawEntity) -> 
             Some(e) => e,
             None => continue,
         };
-        let coord_idx = match face_entity.args.get(0) {
+        let coord_idx = match face_entity.args.first() {
             Some(StepValue::List(list)) => list,
             _ => continue,
         };
@@ -304,7 +310,7 @@ fn extract_polygonal_face_set(step: &StepFile, entity: &ifc_step::RawEntity) -> 
 }
 
 fn extract_faceted_brep(step: &StepFile, entity: &ifc_step::RawEntity) -> TriangleMesh {
-    let shell_id = match entity.args.get(0) {
+    let shell_id = match entity.args.first() {
         Some(StepValue::Ref(id)) => *id,
         _ => return TriangleMesh::new(),
     };
@@ -316,7 +322,7 @@ fn extract_shell(step: &StepFile, shell_id: EntityId) -> TriangleMesh {
         Some(e) => e,
         None => return TriangleMesh::new(),
     };
-    let faces_list = match shell.args.get(0) {
+    let faces_list = match shell.args.first() {
         Some(StepValue::List(list)) => list,
         _ => return TriangleMesh::new(),
     };
@@ -338,7 +344,7 @@ fn extract_ifc_face(step: &StepFile, face_id: EntityId) -> TriangleMesh {
         Some(e) => e,
         None => return TriangleMesh::new(),
     };
-    let bounds = match face.args.get(0) {
+    let bounds = match face.args.first() {
         Some(StepValue::List(list)) => list,
         _ => return TriangleMesh::new(),
     };
@@ -352,7 +358,7 @@ fn extract_ifc_face(step: &StepFile, face_id: EntityId) -> TriangleMesh {
             Some(e) => e,
             None => continue,
         };
-        let loop_id = match bound.args.get(0) {
+        let loop_id = match bound.args.first() {
             Some(StepValue::Ref(id)) => *id,
             _ => continue,
         };
@@ -363,7 +369,7 @@ fn extract_ifc_face(step: &StepFile, face_id: EntityId) -> TriangleMesh {
         if loop_entity.entity_name != "IFCPOLYLOOP" {
             continue;
         }
-        let polygon_refs = match loop_entity.args.get(0) {
+        let polygon_refs = match loop_entity.args.first() {
             Some(StepValue::List(list)) => list,
             _ => continue,
         };
@@ -382,7 +388,7 @@ fn extract_ifc_face(step: &StepFile, face_id: EntityId) -> TriangleMesh {
 }
 
 fn extract_face_based_surface_model(step: &StepFile, entity: &ifc_step::RawEntity) -> TriangleMesh {
-    let face_sets = match entity.args.get(0) {
+    let face_sets = match entity.args.first() {
         Some(StepValue::List(list)) => list,
         _ => return TriangleMesh::new(),
     };
@@ -399,7 +405,7 @@ fn extract_face_based_surface_model(step: &StepFile, entity: &ifc_step::RawEntit
 }
 
 fn extract_extruded_area_solid(step: &StepFile, entity: &ifc_step::RawEntity) -> TriangleMesh {
-    let profile_id = match entity.args.get(0) {
+    let profile_id = match entity.args.first() {
         Some(StepValue::Ref(id)) => *id,
         _ => return TriangleMesh::new(),
     };
@@ -568,7 +574,7 @@ fn extract_curve_points(step: &StepFile, curve_id: EntityId) -> Vec<[f64; 3]> {
     };
 
     match entity.entity_name.as_str() {
-        "IFCPOLYLINE" => match entity.args.get(0) {
+        "IFCPOLYLINE" => match entity.args.first() {
             Some(StepValue::List(list)) => {
                 let mut pts = Vec::new();
                 for pt_ref in list {
@@ -591,7 +597,7 @@ fn extract_curve_points(step: &StepFile, curve_id: EntityId) -> Vec<[f64; 3]> {
             _ => Vec::new(),
         },
         "IFCINDEXEDPOLYCURVE" => {
-            let pts_id = match entity.args.get(0) {
+            let pts_id = match entity.args.first() {
                 Some(StepValue::Ref(id)) => *id,
                 _ => return Vec::new(),
             };
@@ -606,7 +612,7 @@ fn extract_curve_points(step: &StepFile, curve_id: EntityId) -> Vec<[f64; 3]> {
             }
         }
         "IFCCOMPOSITECURVE" => {
-            let segments = match entity.args.get(0) {
+            let segments = match entity.args.first() {
                 Some(StepValue::List(list)) => list,
                 _ => return Vec::new(),
             };
@@ -634,7 +640,7 @@ fn extract_curve_points(step: &StepFile, curve_id: EntityId) -> Vec<[f64; 3]> {
             });
             pts
         }
-        "IFCTRIMMEDCURVE" => match entity.args.get(0) {
+        "IFCTRIMMEDCURVE" => match entity.args.first() {
             Some(StepValue::Ref(id)) => extract_curve_points(step, *id),
             _ => Vec::new(),
         },
@@ -648,7 +654,7 @@ fn extract_curve_points(step: &StepFile, curve_id: EntityId) -> Vec<[f64; 3]> {
             }
             pts
         }
-        "IFCLINE" => match entity.args.get(0) {
+        "IFCLINE" => match entity.args.first() {
             Some(StepValue::Ref(id)) => vec![cartesian_point_3d(step, *id)],
             _ => Vec::new(),
         },
@@ -661,7 +667,7 @@ fn extract_mapped_item(
     entity: &ifc_step::RawEntity,
     depth: usize,
 ) -> TriangleMesh {
-    let map_source_id = match entity.args.get(0) {
+    let map_source_id = match entity.args.first() {
         Some(StepValue::Ref(id)) => *id,
         _ => return TriangleMesh::new(),
     };
@@ -676,7 +682,7 @@ fn extract_mapped_item(
         None => return TriangleMesh::new(),
     };
 
-    let origin_transform = match map_source.args.get(0) {
+    let origin_transform = match map_source.args.first() {
         Some(StepValue::Ref(id)) => {
             let origin_entity = step.entities.get(id);
             if let Some(oe) = origin_entity {
@@ -734,14 +740,14 @@ fn read_cartesian_point_list_3d(step: &StepFile, id: EntityId) -> Vec<f64> {
     if entity.entity_name != "IFCCARTESIANPOINTLIST3D" {
         return Vec::new();
     }
-    let list = match entity.args.get(0) {
+    let list = match entity.args.first() {
         Some(StepValue::List(list)) => list,
         _ => return Vec::new(),
     };
     let mut vertices = Vec::with_capacity(list.len() * 3);
     for item in list {
         if let StepValue::List(coords) = item {
-            let x = coords.get(0).and_then(|v| v.as_real()).unwrap_or(0.0);
+            let x = coords.first().and_then(|v| v.as_real()).unwrap_or(0.0);
             let y = coords.get(1).and_then(|v| v.as_real()).unwrap_or(0.0);
             let z = coords.get(2).and_then(|v| v.as_real()).unwrap_or(0.0);
             vertices.push(x);
@@ -753,14 +759,14 @@ fn read_cartesian_point_list_3d(step: &StepFile, id: EntityId) -> Vec<f64> {
 }
 
 fn read_point_list_3d(entity: &ifc_step::RawEntity) -> Vec<[f64; 3]> {
-    let list = match entity.args.get(0) {
+    let list = match entity.args.first() {
         Some(StepValue::List(list)) => list,
         _ => return Vec::new(),
     };
     let mut pts = Vec::with_capacity(list.len());
     for item in list {
         if let StepValue::List(coords) = item {
-            let x = coords.get(0).and_then(|v| v.as_real()).unwrap_or(0.0);
+            let x = coords.first().and_then(|v| v.as_real()).unwrap_or(0.0);
             let y = coords.get(1).and_then(|v| v.as_real()).unwrap_or(0.0);
             let z = coords.get(2).and_then(|v| v.as_real()).unwrap_or(0.0);
             pts.push([x, y, z]);
@@ -770,14 +776,14 @@ fn read_point_list_3d(entity: &ifc_step::RawEntity) -> Vec<[f64; 3]> {
 }
 
 fn read_point_list_2d(entity: &ifc_step::RawEntity) -> Vec<[f64; 3]> {
-    let list = match entity.args.get(0) {
+    let list = match entity.args.first() {
         Some(StepValue::List(list)) => list,
         _ => return Vec::new(),
     };
     let mut pts = Vec::with_capacity(list.len());
     for item in list {
         if let StepValue::List(coords) = item {
-            let x = coords.get(0).and_then(|v| v.as_real()).unwrap_or(0.0);
+            let x = coords.first().and_then(|v| v.as_real()).unwrap_or(0.0);
             let y = coords.get(1).and_then(|v| v.as_real()).unwrap_or(0.0);
             pts.push([x, y, 0.0]);
         }
@@ -797,7 +803,7 @@ fn cartesian_point_3d(step: &StepFile, id: EntityId) -> [f64; 3] {
         Some(StepValue::List(list)) => list,
         _ => return [0.0, 0.0, 0.0],
     };
-    let x = coords.get(0).and_then(|v| v.as_real()).unwrap_or(0.0);
+    let x = coords.first().and_then(|v| v.as_real()).unwrap_or(0.0);
     let y = coords.get(1).and_then(|v| v.as_real()).unwrap_or(0.0);
     let z = coords.get(2).and_then(|v| v.as_real()).unwrap_or(0.0);
     [x, y, z]
@@ -815,7 +821,7 @@ fn read_direction(step: &StepFile, id: EntityId) -> [f64; 3] {
         Some(StepValue::List(list)) => list,
         _ => return [0.0, 0.0, 1.0],
     };
-    let x = ratios.get(0).and_then(|v| v.as_real()).unwrap_or(0.0);
+    let x = ratios.first().and_then(|v| v.as_real()).unwrap_or(0.0);
     let y = ratios.get(1).and_then(|v| v.as_real()).unwrap_or(0.0);
     let z = ratios.get(2).and_then(|v| v.as_real()).unwrap_or(0.0);
     [x, y, z]
@@ -826,7 +832,7 @@ fn read_placement_origin(step: &StepFile, id: EntityId) -> [f64; 3] {
         Some(e) => e,
         None => return [0.0, 0.0, 0.0],
     };
-    match entity.args.get(0) {
+    match entity.args.first() {
         Some(StepValue::Ref(pt_id)) => cartesian_point_3d(step, *pt_id),
         _ => [0.0, 0.0, 0.0],
     }
@@ -862,10 +868,10 @@ fn profile_placement_transform(step: &StepFile, pos_id: EntityId) -> Affine3 {
     match entity.entity_name.as_str() {
         "IFCAXIS2PLACEMENT3D" => axis2placement3d_to_affine(step, pos_id),
         "IFCAXIS2PLACEMENT2D" => {
-            let origin = match entity.args.get(0) {
+            let origin = match entity.args.first() {
                 Some(StepValue::Ref(id)) => {
-                    let pt = cartesian_point_3d(step, *id);
-                    pt
+                    
+                    cartesian_point_3d(step, *id)
                 }
                 _ => [0.0, 0.0, 0.0],
             };
@@ -888,7 +894,7 @@ fn read_cartesian_transform_operator(step: &StepFile, id: EntityId) -> Affine3 {
         Some(StepValue::Ref(id)) => cartesian_point_3d(step, *id),
         _ => [0.0, 0.0, 0.0],
     };
-    let x_axis = match entity.args.get(0) {
+    let x_axis = match entity.args.first() {
         Some(StepValue::Ref(id)) => read_direction(step, *id),
         _ => [1.0, 0.0, 0.0],
     };
@@ -1331,7 +1337,7 @@ fn extract_placement_transform(step: &StepFile, placement_id: EntityId) -> Affin
             Some(e) => match e.entity_name.as_str() {
                 "IFCAXIS2PLACEMENT3D" => axis2placement3d_to_affine(step, rel_id),
                 "IFCAXIS2PLACEMENT2D" => {
-                    let origin = match e.args.get(0) {
+                    let origin = match e.args.first() {
                         Some(StepValue::Ref(id)) => cartesian_point_3d(step, *id),
                         _ => [0.0, 0.0, 0.0],
                     };
@@ -1466,7 +1472,7 @@ pub fn derive_relations_with_csg_batched(
                         fallback_bboxes.get(&right).map(|b| b.as_slice()),
                         options,
                     )
-                    .unwrap_or(ExactPairAnalysis::default());
+                    .unwrap_or_default();
                     append_pair_relations((left, right), analysis, &mut relations);
                     continue;
                 }
@@ -1482,7 +1488,7 @@ pub fn derive_relations_with_csg_batched(
                         fallback_bboxes.get(&right).map(|b| b.as_slice()),
                         options,
                     )
-                    .unwrap_or(ExactPairAnalysis::default());
+                    .unwrap_or_default();
                     append_pair_relations((left, right), analysis, &mut relations);
                     continue;
                 }

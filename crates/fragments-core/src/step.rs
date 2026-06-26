@@ -689,8 +689,7 @@ fn read_cartesian_transform_operator(step: &StepFile, id: EntityId) -> Affine3 {
         return Affine3::identity();
     };
     let origin = entity
-        .args
-        .get(0)
+        .args.first()
         .and_then(StepValue::as_ref)
         .and_then(|point_id| cartesian_point(step, point_id))
         .unwrap_or([0.0, 0.0, 0.0]);

@@ -98,7 +98,7 @@ fn solid_from_entity(step: &StepFile, entity_id: EntityId) -> Option<SolidKind> 
     let e = step.entities.get(&entity_id)?;
     match e.entity_name.as_str() {
         "IFCEXTRUDEDAREASOLID" => {
-            let profile_id = e.args.get(0)?.as_ref()?;
+            let profile_id = e.args.first()?.as_ref()?;
             let depth = real_from_step(e.args.get(3)?)?;
             Some(SolidKind::ExtrudedAreaSolid { profile_id, depth })
         }
@@ -109,7 +109,7 @@ fn solid_from_entity(step: &StepFile, entity_id: EntityId) -> Option<SolidKind> 
             Some(SolidKind::BoundingBox { x_dim, y_dim, z_dim })
         }
         "IFCFACETEDBREP" => {
-            let shell_id = e.args.get(0)?.as_ref()?;
+            let shell_id = e.args.first()?.as_ref()?;
             Some(SolidKind::FacetedBrep { shell_id })
         }
         "IFCTRIANGULATEDFACESET" | "IFCPOLYGONALFACES" => {
@@ -133,7 +133,7 @@ fn solid_from_entity(step: &StepFile, entity_id: EntityId) -> Option<SolidKind> 
         // args[0]=MappingSource (IfcRepresentationMap), args[1]=MappingTarget (transform).
         // IfcRepresentationMap: args[0]=MappingOrigin, args[1]=MappedRepresentation.
         "IFCMAPPEDITEM" => {
-            let map_source_id = e.args.get(0)?.as_ref()?;
+            let map_source_id = e.args.first()?.as_ref()?;
             let map_source = step.entities.get(&map_source_id)?;
             let mapped_rep_id = map_source.args.get(1)?.as_ref()?;
             let mapped_rep = step.entities.get(&mapped_rep_id)?;
@@ -219,7 +219,7 @@ pub fn parse_cartesian_point(e: &RawEntity) -> Option<[f64; 3]> {
     let coords = e.args.first()?.as_list()?;
     let x = real_from_step(coords.first()?).unwrap_or(0.0);
     let y = coords.get(1).and_then(real_from_step).unwrap_or(0.0);
-    let z = coords.get(2).and_then(|v| real_from_step(v)).unwrap_or(0.0);
+    let z = coords.get(2).and_then(real_from_step).unwrap_or(0.0);
     Some([x, y, z])
 }
 

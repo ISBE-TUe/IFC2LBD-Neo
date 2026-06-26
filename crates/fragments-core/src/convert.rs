@@ -429,7 +429,7 @@ fn build_meshes<'a>(
             let mut big_profile_offsets = Vec::new();
             for key in &sorted_profile_keys {
                 let profile = &shell_data.profiles[key];
-                let indices: Vec<u32> = profile.iter().copied().collect();
+                let indices: Vec<u32> = profile.to_vec();
                 let indices_offset = builder.create_vector(&indices);
                 big_profile_offsets.push(BigShellProfile::create(builder, &BigShellProfileArgs {
                     indices: Some(indices_offset),
@@ -441,7 +441,7 @@ fn build_meshes<'a>(
             sorted_hole_keys.sort_unstable();
             for hole_key in &sorted_hole_keys {
                 for hole in &shell_data.holes[hole_key] {
-                    let indices: Vec<u32> = hole.iter().copied().collect();
+                    let indices: Vec<u32> = hole.to_vec();
                     let indices_offset = builder.create_vector(&indices);
                     big_hole_offsets.push(BigShellHole::create(builder, &BigShellHoleArgs {
                         indices: Some(indices_offset),

@@ -2004,7 +2004,7 @@ fn emit_property(
     compact: bool,
     dedup: Option<&Arc<Mutex<DedupSets>>>,
     unmatched_histogram: &mut HashMap<String, u64>,
-    property_counter: &mut u64,
+    _property_counter: &mut u64,
     batch: &mut Vec<Triple>,
     sender: &Sender<Vec<Triple>>,
     batch_size: usize,
@@ -2029,7 +2029,7 @@ fn emit_property(
     let predicate_local = crate::property_local_name(prop_name);
     // In the non-dedup path keep value_repr as a borrowed &str to avoid a heap allocation
     // per property. Only convert to an owned String when canonical URIs are needed.
-    let (prop_subject, state_subject) = if let Some(_) = dedup {
+    let (prop_subject, state_subject) = if dedup.is_some() {
         let value_repr = crate::object_value_repr(&value).to_string();
         // Key on pset_name (not pset_guid) so properties with the same name and value
         // are shared across elements regardless of which pset entity they belong to.

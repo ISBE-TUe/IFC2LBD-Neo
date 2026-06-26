@@ -768,7 +768,7 @@ impl GeometryRouter {
                         self.extract_extrusion_direction_from_solid(&current, decoder)?;
                     let combined = match (mapping_chain.as_ref(), position_transform) {
                         (Some(chain), Some(pos)) => Some(chain * pos),
-                        (Some(chain), None) => Some(chain.clone()),
+                        (Some(chain), None) => Some(*chain),
                         (None, Some(pos)) => Some(pos),
                         (None, None) => None,
                     };
@@ -1306,28 +1306,25 @@ impl GeometryRouter {
 
                     let tri_before = result.triangle_count();
                     let mut csg_succeeded = false;
-                    match clipper.subtract_mesh(&result, opening_mesh) {
-                        Ok(csg_result) => {
-                            let min_tris = (tri_before / CSG_TRIANGLE_RETENTION_DIVISOR)
-                                .max(MIN_VALID_TRIANGLES);
-                            // CSG only counts as a success when the result actually
-                            // changed (either fewer triangles, indicating polygons
-                            // were removed, or more triangles, indicating the
-                            // opening was carved as new boundary tris). When the
-                            // safety thresholds in `subtract_mesh` short-circuit —
-                            // e.g. `MAX_CSG_POLYGONS_PER_MESH` rejects a high-poly
-                            // round/curved opening (issue #635) — the host mesh is
-                            // returned unchanged, leaving the void uncut.
-                            let changed = csg_result.triangle_count() != tri_before;
-                            if !csg_result.is_empty()
-                                && csg_result.triangle_count() >= min_tris
-                                && changed
-                            {
-                                result = csg_result;
-                                csg_succeeded = true;
-                            }
+                    if let Ok(csg_result) = clipper.subtract_mesh(&result, opening_mesh) {
+                        let min_tris = (tri_before / CSG_TRIANGLE_RETENTION_DIVISOR)
+                            .max(MIN_VALID_TRIANGLES);
+                        // CSG only counts as a success when the result actually
+                        // changed (either fewer triangles, indicating polygons
+                        // were removed, or more triangles, indicating the
+                        // opening was carved as new boundary tris). When the
+                        // safety thresholds in `subtract_mesh` short-circuit —
+                        // e.g. `MAX_CSG_POLYGONS_PER_MESH` rejects a high-poly
+                        // round/curved opening (issue #635) — the host mesh is
+                        // returned unchanged, leaving the void uncut.
+                        let changed = csg_result.triangle_count() != tri_before;
+                        if !csg_result.is_empty()
+                            && csg_result.triangle_count() >= min_tris
+                            && changed
+                        {
+                            result = csg_result;
+                            csg_succeeded = true;
                         }
-                        Err(_) => {}
                     }
                     csg_operation_count += 1;
 
@@ -1598,7 +1595,7 @@ impl GeometryRouter {
                     if item_meshes.len() == item_bounds_with_dir.len() {
                         for ((min_pt, max_pt, extrusion_dir), item_mesh) in item_bounds_with_dir
                             .into_iter()
-                            .zip(item_meshes.into_iter())
+                            .zip(item_meshes)
                         {
                             let frame = infer_opening_frame(&item_mesh, extrusion_dir.as_ref());
                             let direction_is_diagonal = extrusion_dir

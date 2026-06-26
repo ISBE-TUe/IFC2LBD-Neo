@@ -211,8 +211,8 @@ fn tessellate_bspline_surface(
     if u_degree >= u_knots.len() || v_degree >= v_knots.len() {
         return None;
     }
-    if u_knots.len() - u_degree - 1 >= u_knots.len()
-        || v_knots.len() - v_degree - 1 >= v_knots.len()
+    if u_knots.len() - u_degree > u_knots.len()
+        || v_knots.len() - v_degree > v_knots.len()
     {
         return None;
     }
@@ -1030,7 +1030,7 @@ fn process_cylindrical_face(
             end_raw
         };
         let span = end - start;
-        if span < 1e-6 || span > std::f64::consts::TAU - 1e-6 {
+        if !(1e-6..=std::f64::consts::TAU - 1e-6).contains(&span) {
             (0.0, std::f64::consts::TAU)
         } else {
             (start, end)
@@ -1417,7 +1417,7 @@ fn process_surface_of_revolution_face(
             let end = if end_raw < start { end_raw + TAU } else { end_raw };
             let s = end - start;
             // If the gap is near zero or full, treat it as a full revolution.
-            if s < 1e-6 || s > TAU - 1e-6 {
+            if !(1e-6..=TAU - 1e-6).contains(&s) {
                 (0.0, TAU)
             } else {
                 (start, s)

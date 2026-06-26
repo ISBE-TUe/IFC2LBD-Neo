@@ -186,7 +186,7 @@ fn arbitrary_closed_profile_inner(
                 .filter_map(|id| {
                     step.entities
                         .get(&id)
-                        .and_then(|e| crate::step_geom::parse_cartesian_point(e))
+                        .and_then(crate::step_geom::parse_cartesian_point)
                 })
                 .collect::<Vec<_>>()
         }

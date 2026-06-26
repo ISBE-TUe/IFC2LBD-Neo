@@ -346,7 +346,7 @@ fn write_grouped_turtle<W: Write>(
     let mut index = 0;
     while index < ordered.len() {
         let subject = &ordered[index].subject;
-        write!(writer, "{}\n", compact_iri(subject, instance_base))?;
+        writeln!(writer, "{}", compact_iri(subject, instance_base))?;
 
         let mut predicate_index = index;
         while predicate_index < ordered.len() && ordered[predicate_index].subject == *subject {

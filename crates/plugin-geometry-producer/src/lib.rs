@@ -407,7 +407,7 @@ mod gltf_writer {
             let pos_byte_offset = bin.len();
             for v in &all_pos { bin.extend_from_slice(&v.to_le_bytes()); }
             // 4-byte align
-            while bin.len() % 4 != 0 { bin.push(0); }
+            while !bin.len().is_multiple_of(4) { bin.push(0); }
             let pos_byte_len = bin.len() - pos_byte_offset;
             buffer_views_json.push(json!({
                 "buffer": 0,
@@ -430,7 +430,7 @@ mod gltf_writer {
             let nrm_bv_idx = buffer_views_json.len();
             let nrm_byte_offset = bin.len();
             for v in &all_nrm { bin.extend_from_slice(&v.to_le_bytes()); }
-            while bin.len() % 4 != 0 { bin.push(0); }
+            while !bin.len().is_multiple_of(4) { bin.push(0); }
             let nrm_byte_len = bin.len() - nrm_byte_offset;
             buffer_views_json.push(json!({
                 "buffer": 0,
@@ -451,7 +451,7 @@ mod gltf_writer {
             let idx_bv_idx = buffer_views_json.len();
             let idx_byte_offset = bin.len();
             for v in &all_idx { bin.extend_from_slice(&v.to_le_bytes()); }
-            while bin.len() % 4 != 0 { bin.push(0); }
+            while !bin.len().is_multiple_of(4) { bin.push(0); }
             let idx_byte_len = bin.len() - idx_byte_offset;
             buffer_views_json.push(json!({
                 "buffer": 0,
@@ -754,7 +754,7 @@ mod fragments {
         let empty_rels = builder.create_vector::<WIPOffset<Relation>>(&[]);
         let empty_rel_items = builder.create_vector::<i32>(&[]);
 
-        let metadata_str = format!("{{\"schema\":\"IFC4\",\"names\":[],\"descriptions\":[],\"crs\":null}}");
+        let metadata_str = "{\"schema\":\"IFC4\",\"names\":[],\"descriptions\":[],\"crs\":null}".to_string();
         let metadata = builder.create_string(&metadata_str);
         let root_guid = model.spatial_nodes.values()
             .find(|n| step.entities.get(&n.id).map(|e| e.entity_name == "IFCPROJECT").unwrap_or(false))

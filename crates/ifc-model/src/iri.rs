@@ -81,7 +81,10 @@ fn spatial_segment(spatial_type: SpatialType) -> &'static str {
 
 /// Resource IRI for a spatial node, e.g. `<base>/storey_<guid>`.
 pub fn spatial_resource_iri(base: &str, spatial_type: SpatialType, guid: &str) -> String {
-    format!("{base}/{}", lbd_local_name(spatial_segment(spatial_type), guid))
+    format!(
+        "{base}/{}",
+        lbd_local_name(spatial_segment(spatial_type), guid)
+    )
 }
 
 /// Resource IRI for an element node, e.g. `<base>/wall_<guid>`.
@@ -101,7 +104,12 @@ fn element_prefix(entity_name: &str) -> String {
         "IFCBUILDINGELEMENTPROXY" => "buildingelement".to_string(),
         _ => product_type_name(entity_name)
             .map(|name| name.to_ascii_lowercase())
-            .unwrap_or_else(|| format!("ifcowl_{}", pascal_ifc_name(entity_name).to_ascii_lowercase())),
+            .unwrap_or_else(|| {
+                format!(
+                    "ifcowl_{}",
+                    pascal_ifc_name(entity_name).to_ascii_lowercase()
+                )
+            }),
     }
 }
 
@@ -116,7 +124,10 @@ mod tests {
 
     #[test]
     fn prefix_safe_guid_token_rewrites_ifc_special_chars() {
-        assert_eq!(prefix_safe_guid_token("2O2Fr$t4X7Zf8NOew3FNtn"), "2O2Fr_t4X7Zf8NOew3FNtn");
+        assert_eq!(
+            prefix_safe_guid_token("2O2Fr$t4X7Zf8NOew3FNtn"),
+            "2O2Fr_t4X7Zf8NOew3FNtn"
+        );
     }
 
     #[test]

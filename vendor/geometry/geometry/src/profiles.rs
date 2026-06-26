@@ -1930,7 +1930,7 @@ impl ProfileProcessor {
                             if let Some((origin, x_axis)) =
                                 axis2_placement_location_and_x_axis_3d(&placement, decoder)
                             {
-                                if result.last().map_or(true, |last: &Point3<f64>| {
+                                if result.last().is_none_or(|last: &Point3<f64>| {
                                     (last - origin).norm() > 1e-9
                                 }) {
                                     result.push(origin);
@@ -2005,7 +2005,7 @@ impl ProfileProcessor {
         // surfaces visibly as railway signals authored at station 900 m
         // snapping onto the segment-start marker around station 800 m.
         if let Some(terminal) = last_curve_segment_terminal {
-            if result.last().map_or(true, |last: &Point3<f64>| {
+            if result.last().is_none_or(|last: &Point3<f64>| {
                 (last - terminal).norm() > 1e-9
             }) {
                 result.push(terminal);
@@ -2107,7 +2107,7 @@ impl ProfileProcessor {
             const JUNCTION_EPS: f64 = 1e-6;
             let mut iter = trimmed.into_iter();
             if let Some(first) = iter.next() {
-                let coincident = result.last().map_or(false, |last| {
+                let coincident = result.last().is_some_and(|last| {
                     (first.x - last.x).abs() < JUNCTION_EPS
                         && (first.y - last.y).abs() < JUNCTION_EPS
                         && (first.z - last.z).abs() < JUNCTION_EPS

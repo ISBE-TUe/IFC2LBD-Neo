@@ -813,11 +813,7 @@ fn parse_property_set_template(entity: &RawEntity) -> Option<PropertySetTemplate
         name,
         description: optional_string(entity.args.get(3)),
         applicable_entity: optional_string(entity.args.get(4)),
-        property_template_ids: entity
-            .args
-            .get(5)
-            .map(refs_from_list)
-            .unwrap_or_default(),
+        property_template_ids: entity.args.get(5).map(refs_from_list).unwrap_or_default(),
     })
 }
 

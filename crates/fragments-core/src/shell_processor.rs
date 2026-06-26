@@ -450,7 +450,7 @@ pub fn get_shell_data(
 
     for (_, (plane, tri_indices)) in plane_map {
         let mut face = ShellFace::new();
-        let mut valid = true;
+        let _valid = true;
 
         for tri_idx in &tri_indices {
             let [i1, i2, i3] = triangles[*tri_idx];
@@ -629,7 +629,11 @@ fn compute_face_ids(
                         let dot = (n1[0]*n2[0] + n1[1]*n2[1] + n1[2]*n2[2]).abs();
                         let is_hard = dot < FACE_THRESHOLD;
 
-                        if face_id_per_profile.contains_key(&other_pid) {
+                        if let std::collections::hash_map::Entry::Vacant(e) = face_id_per_profile.entry(other_pid) {
+                            let new_fid = if is_hard { let f = next_face_id; next_face_id += 1; f }
+                                         else { fid };
+                            e.insert(new_fid);
+                        } else {
                             if !is_hard {
                                 // Merge: replace all occurrences of other's face id with current
                                 let other_fid = face_id_per_profile[&other_pid];
@@ -637,10 +641,6 @@ fn compute_face_ids(
                                     if *v == other_fid { *v = fid; }
                                 }
                             }
-                        } else {
-                            let new_fid = if is_hard { let f = next_face_id; next_face_id += 1; f }
-                                         else { fid };
-                            face_id_per_profile.insert(other_pid, new_fid);
                         }
                     }
                 }
