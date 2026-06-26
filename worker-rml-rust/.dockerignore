@@ -1,6 +1,0 @@
-target/
-Cargo.lock
-.git
-.gitignore
-*.md
-build.sh
