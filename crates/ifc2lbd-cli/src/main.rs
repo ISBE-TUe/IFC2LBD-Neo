@@ -104,6 +104,12 @@ struct Args {
     #[arg(long = "list-modules", default_value_t = false)]
     list_modules: bool,
 
+    /// Input format: "ifc" (default) or "structured-data".
+    /// When "structured-data", the input file is read as raw bytes
+    /// (JSON/CSV/XML) instead of being parsed as IFC.
+    #[arg(long = "input-format", default_value = "ifc")]
+    input_format: String,
+
     /// Enable one or more modules by id. Can be provided multiple times.
     #[arg(long = "module")]
     module: Vec<String>,
@@ -226,20 +232,45 @@ fn main() -> anyhow::Result<()> {
         TurtleGrouping::Streaming
     };
     let parse_start = Instant::now();
-    let step = std::sync::Arc::new(
-        parse_step_file(input_path)
-            .with_context(|| format!("failed to parse STEP file {}", input_path.display()))?,
-    );
-    tracing::info!(
-        "phase parse_step_file completed in {:.3}s",
-        parse_start.elapsed().as_secs_f64()
-    );
-    let build_start = Instant::now();
-    let model = std::sync::Arc::new(build_model(&step).context("failed to build IFC model")?);
-    tracing::info!(
-        "phase build_model completed in {:.3}s",
-        build_start.elapsed().as_secs_f64()
-    );
+    let is_structured = args.input_format == "structured-data";
+
+    let (step, model, structured_data, rml_config) = if is_structured {
+        tracing::info!("Input format: structured-data (skipping IFC parsing)");
+        let input_bytes = std::fs::read(input_path)
+            .with_context(|| format!("failed to read input file {}", input_path.display()))?;
+        let sd = std::sync::Arc::new(structured_data::StructuredDataInput::from_raw(vec![
+            (input_path.file_name().unwrap_or_default().to_string_lossy().to_string(), input_bytes),
+        ]));
+        // Read RML mapping from module options
+        let rml_mapping = module_configs.get(lbd_pipeline::RML_MAPPER_ID)
+            .and_then(|m| m.get("rml_mapping"))
+            .cloned();
+        let rml_cfg = rml_mapping.map(|turtle| std::sync::Arc::new(structured_data::RmlMappingConfig {
+            mapping_turtle: turtle,
+        }));
+        (
+            std::sync::Arc::new(ifc_step::StepFile::default()),
+            std::sync::Arc::new(ifc_model::IfcModel::default()),
+            Some(sd),
+            rml_cfg,
+        )
+    } else {
+        let step = std::sync::Arc::new(
+            parse_step_file(input_path)
+                .with_context(|| format!("failed to parse STEP file {}", input_path.display()))?,
+        );
+        tracing::info!(
+            "phase parse_step_file completed in {:.3}s",
+            parse_start.elapsed().as_secs_f64()
+        );
+        let build_start = Instant::now();
+        let model = std::sync::Arc::new(build_model(&step).context("failed to build IFC model")?);
+        tracing::info!(
+            "phase build_model completed in {:.3}s",
+            build_start.elapsed().as_secs_f64()
+        );
+        (step, model, None, None)
+    };
 
     let base_options = ConvertOptions {
         base_uri: args.base_uri.clone(),
@@ -331,6 +362,14 @@ fn main() -> anyhow::Result<()> {
     ctx.insert(std::sync::Arc::new(OutputDir(output_dir.clone())));
     if settings.compress_output {
         ctx.insert(std::sync::Arc::new(pipeline_plugins::CompressOutput(true)));
+    }
+
+    // Insert structured data + RML config if in structured data mode
+    if let Some(sd) = &structured_data {
+        ctx.insert(sd.clone());
+    }
+    if let Some(cfg) = &rml_config {
+        ctx.insert(cfg.clone());
     }
 
     let preprocess_start = Instant::now();

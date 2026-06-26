@@ -46,7 +46,7 @@ pub fn parse_step_bytes(data: &[u8]) -> Result<StepFile, StepError> {
 }
 
 /// A parsed IFC STEP file.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct StepFile {
     /// The file header (schema version, description, etc.).
     pub header: StepHeader,

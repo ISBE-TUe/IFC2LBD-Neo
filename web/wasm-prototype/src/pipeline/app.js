@@ -343,6 +343,8 @@ function runSinkConversionInWorker(
 					inputBuffer: inputCopy.buffer,
 					request: requestPayload,
 					requestedThreads,
+					inputFormat: requestPayload.inputFormat,
+					structuredDataFiles: requestPayload.structuredDataFiles,
 				},
 			},
 			[inputCopy.buffer],

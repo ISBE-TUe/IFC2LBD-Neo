@@ -57,7 +57,7 @@ fn parts_from_uuid(uuid: &str) -> Option<GuidParts> {
 
 fn compressed_from_parts(parts: GuidParts) -> Option<String> {
     let nums = [
-        (parts.data1 / 16_777_216) as u32,
+        ((parts.data1 / 16_777_216)),
         parts.data1 % 16_777_216,
         (u32::from(parts.data2) * 256) + (u32::from(parts.data3) / 256),
         (u32::from(parts.data3 % 256) * 65_536)

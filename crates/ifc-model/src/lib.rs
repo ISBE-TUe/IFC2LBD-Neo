@@ -223,7 +223,7 @@ pub struct ProjectLibrary {
     pub name: Option<SmolStr>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct IfcModel {
     pub schema: StepSchema,
     pub spatial_nodes: HashMap<EntityId, SpatialNode>,

@@ -55,7 +55,7 @@ pub fn decode_ifc_unicode(input: &str) -> String {
                 }
             }
             // Decode UTF-16 to UTF-8
-            for ch in char::decode_utf16(utf16_units.into_iter()) {
+            for ch in char::decode_utf16(utf16_units) {
                 match ch {
                     Ok(c) => result.push(c),
                     Err(_) => result.push('\u{FFFD}'),

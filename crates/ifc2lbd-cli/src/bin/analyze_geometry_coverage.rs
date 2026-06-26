@@ -163,7 +163,7 @@ fn write_missing_report(path: &PathBuf, entries: &[GeometryCoverageEntry]) -> an
     let mut out = String::from("express_id\tcategory\tguid\treason\tdetail\n");
     for entry in entries {
         if let GeometryCoverageStatus::Missing { .. } = &entry.status {
-            let detail = reason_detail(&entry.status).replace('\t', " ").replace('\n', " ");
+            let detail = reason_detail(&entry.status).replace(['\t', '\n'], " ");
             out.push_str(&format!(
                 "{}\t{}\t{}\t{}\t{}\n",
                 entry.express_id,

@@ -1,8 +1,9 @@
 use crate::error::StepError;
 
 /// IFC schema version detected from the STEP file header.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum StepSchema {
+    #[default]
     Ifc2x3,
     Ifc4,
     Ifc4x1,
@@ -50,7 +51,7 @@ impl std::fmt::Display for StepSchema {
 }
 
 /// Parsed STEP file header information.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct StepHeader {
     /// The IFC schema version.
     pub schema: StepSchema,

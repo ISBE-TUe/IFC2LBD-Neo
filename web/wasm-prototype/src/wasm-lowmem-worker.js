@@ -45,6 +45,15 @@ self.addEventListener("message", async (event) => {
     const input = new Uint8Array(payload.inputBuffer);
     const request = payload.request || {};
 
+    // Pass inputFormat and structured data file metadata to the WASM converter
+    // so the runner knows whether to parse IFC or structured data.
+    if (payload.inputFormat) {
+      request.inputFormat = payload.inputFormat;
+    }
+    if (payload.structuredDataFiles) {
+      request.structuredDataFiles = payload.structuredDataFiles;
+    }
+
     // Rust now emits real measured durations in stage events.
     // We just forward them — no JS-side timing needed.
     const sink = (sinkEvent) => {

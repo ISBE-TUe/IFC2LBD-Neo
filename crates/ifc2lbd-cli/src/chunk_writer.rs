@@ -430,7 +430,7 @@ pub(crate) fn resolve_effective_core_chunk_count_for_estimated_bytes(
         .unwrap_or(available_cores)
         .max(min_chunk_count);
     let min_chunks_by_max_size =
-        ((estimated_nq_bytes + (MAX_CORE_CHUNK_BYTES - 1)) / MAX_CORE_CHUNK_BYTES).max(1) as usize;
+        estimated_nq_bytes.div_ceil(MAX_CORE_CHUNK_BYTES).max(1) as usize;
     let max_chunks_by_min_size = (estimated_nq_bytes / MIN_CORE_CHUNK_BYTES).max(1) as usize;
     let floor = min_chunk_count.max(min_chunks_by_max_size);
     let ceiling = max_chunks_by_min_size.max(floor);
