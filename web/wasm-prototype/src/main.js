@@ -11,7 +11,7 @@ const convertBtn = document.querySelector("#convert-btn");
 let conversionWorker = null;
 let conversionRequestId = 0;
 const pendingConversionRequests = new Map();
-const RUNTIME_BUILD = "worker-v9-2026-05-13T10:45Z";
+const RUNTIME_BUILD = __BUILD_VERSION__;
 
 const log = (line) => {
   logEl.textContent += `${new Date().toISOString()} ${line}\n`;

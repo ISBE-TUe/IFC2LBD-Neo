@@ -22,7 +22,7 @@ import { initLogPanel, log } from "./log-panel.js";
 import { saveConfig, loadConfig } from "./config.js";
 import { showCliCommand } from "./cli-command.js";
 
-const RUNTIME_BUILD = "pipeline-v11-2026-05-29T00:00Z";
+const RUNTIME_BUILD = __BUILD_VERSION__;
 
 // ---------------------------------------------------------------------------
 // Pipeline Templates
@@ -594,7 +594,7 @@ async function init() {
 	setupOutputDirectoryUiSupport();
 	initCiteWidget();
 
-	log("WASM ready. Pipeline dashboard v11.");
+  log(`WASM ready. Pipeline dashboard.`);
 	log(`Build: ${RUNTIME_BUILD}`);
 }
 
