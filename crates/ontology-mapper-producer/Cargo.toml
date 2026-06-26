@@ -1,0 +1,18 @@
+[package]
+name = "ontology-mapper-producer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+lbd-pipeline = { workspace = true }
+lbd-ontology = { workspace = true }
+lbd-converter = { workspace = true }
+structured-data = { path = "../structured-data" }
+rml-mapper-lib = { path = "../rml-mapper-lib", default-features = false }
+crossbeam = { workspace = true }
+rayon = { workspace = true }
+tempfile = "3"
+rio_api = { workspace = true }
+rio_turtle = { workspace = true }
+oxiri = "0.2"

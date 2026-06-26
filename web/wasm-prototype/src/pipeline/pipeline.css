@@ -1160,8 +1160,8 @@ body {
 
 .cite-widget {
 	position: fixed;
-	bottom: 96px;
-	right: 14px;
+	bottom: 8px;
+	right: 8px;
 	z-index: 900;
 	display: flex;
 	gap: 6px;

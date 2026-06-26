@@ -116,3 +116,17 @@ pub struct RmlMappingConfig {
     /// RML mapping file content (Turtle, UTF-8).
     pub mapping_turtle: String,
 }
+
+/// Ontology mapping configuration.
+///
+/// The runner reads the `alignment_file` and `ontology_file` module options,
+/// creates this config, and inserts it into `PipelineContext` as
+/// `Arc<OntologyMappingConfig>`. The ontology mapper producer reads it via
+/// `ctx.get::<OntologyMappingConfig>()`.
+#[derive(Clone, Debug)]
+pub struct OntologyMappingConfig {
+    /// Alignment file content (Turtle or RDF/XML, UTF-8).
+    pub alignment_turtle: String,
+    /// Ontology file content (Turtle or OWL, UTF-8).
+    pub ontology_turtle: String,
+}

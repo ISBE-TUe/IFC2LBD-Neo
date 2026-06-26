@@ -32,6 +32,7 @@ const PRODUCE_ORDER = [
 	"neo-ifc-topology-producer",
 	"neo-bbox-enricher",
 	"neo-rml-mapper",
+	"neo-ontology-mapper",
 ];
 const SERIALIZE_ORDER = [
 	"neo-turtle-serializer",
@@ -99,9 +100,8 @@ function render() {
 		activeModules,
 		modules,
 		stageStatuses,
-		running,
 		selectedPluginId,
-		ifcFile,
+		inputFormat,
 		showPreprocess,
 		showPostprocess,
 	} = getState();
@@ -122,11 +122,22 @@ function render() {
 		description: "Parse IFC STEP file and build typed model",
 	};
 
+	const parseStructuredMod = {
+		id: "neo-structured-data-import",
+		displayName: "Parse Structured Data",
+		stage: "Import",
+		failurePolicy: "Required",
+		wasmCompatible: true,
+		optionKeys: [],
+		description:
+			"Parse JSON/CSV/XML structured data for RML and ontology mapping",
+	};
+
 	const columns = stages.map((s) => ({
 		...s,
 		modules:
 			s.key === "Import"
-				? [parseMod]
+				? [parseMod, parseStructuredMod]
 				: sortModules(
 						modules.filter((m) => m.stage === s.key),
 						s.key,
@@ -151,8 +162,12 @@ function render() {
 		const col = columns[ci];
 		html += `<div class="session-column" data-stage="${col.key}">`;
 		for (const mod of col.modules) {
-			const isActive = mod.id === "parse" || activeModules.has(mod.id);
-			const isRequired = mod.id === "parse" || mod.id === "neo-file-export";
+			const isStructured = mod.id === "neo-structured-data-import";
+			const isActive =
+				mod.id === "parse" ||
+				(isStructured && inputFormat === "structured-data") ||
+				activeModules.has(mod.id);
+			const isRequired = mod.id === "parse" || mod.id === "neo-structured-data-import" || mod.id === "neo-file-export";
 			const status = stageStatuses[mod.id];
 			const statusStr = status?.status || "idle";
 			const isSelected = selectedPluginId === mod.id;

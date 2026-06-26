@@ -983,6 +983,7 @@ fn validate_activation_plan_with_args(
         || active.contains(lbd_pipeline::OMG_FOG_PRODUCER_ID)
         || active.contains(lbd_pipeline::IFCOWL_PRODUCER_ID)
         || active.contains(lbd_pipeline::RML_MAPPER_ID)
+        || active.contains(lbd_pipeline::ONTOLOGY_MAPPER_ID)
         || active.contains(GEOMETRY_PRODUCER_ID);
     if !has_any_producer {
         anyhow::bail!(

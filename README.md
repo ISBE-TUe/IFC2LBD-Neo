@@ -1,12 +1,12 @@
 # IFC2LBD-Neo
 
-High-performance Rust converter from IFC STEP to LBD, IfcOWL, and 3D geometry (Fragments/glTF/Parquet), built around a module-first pipeline architecture.
+High-performance Rust converter from IFC STEP to LBD, IfcOWL, and 3D geometry (Fragments/glTF/Parquet), built around a module-first pipeline architecture. Also supports structured data (JSON/CSV/XML) input via RML mappings and ontology alignment.
 
 ---
 
 ## Overview
 
-IFC2LBD-Neo reads IFC STEP files and produces RDF output in Turtle or N-Quads format, plus optional 3D geometry sidecars. The conversion pipeline is driven entirely by explicit module selection — there are no implicit profiles or hidden defaults. Every active preprocessor, producer, serializer, and exporter must be named on the command line (or selected in the web UI).
+IFC2LBD-Neo reads IFC STEP files (or structured data) and produces RDF output in Turtle or N-Quads format, plus optional 3D geometry sidecars. The conversion pipeline is driven entirely by explicit module selection — there are no implicit profiles or hidden defaults. Every active preprocessor, producer, serializer, and exporter must be named on the command line (or selected in the web UI).
 
 The project ships three artefacts:
 
@@ -41,25 +41,17 @@ ifc2lbd-neo model.ifc \
   --module neo-file-export
 ```
 
-Full pipeline with geometry (LBD + Fragments + gzip output):
+Structured data conversion via RML mapping:
 
 ```bash
-ifc2lbd-neo model.ifc \
+ifc2lbd-neo data.json \
+  --input-format structured-data \
   --output out.ttl \
-  --base-uri https://example.org/building/ \
-  --module neo-cleanup-preprocess \
-  --module neo-qto-preprocess \
-  --module neo-geometry-preprocess \
-  --module neo-bot-producer \
-  --module neo-beo-producer \
-  --module neo-bsdd-producer \
-  --module neo-omg-fog \
-  --module neo-geometry-producer \
+  --base-uri https://example.org/ \
+  --module neo-rml-mapper \
   --module neo-turtle-serializer \
   --module neo-file-export \
-  --module-opt neo-turtle-serializer.grouping=sorted \
-  --module-opt neo-geometry-producer.format=fragments \
-  --module-opt neo-file-export.compress=gzip
+  --module-opt neo-rml-mapper.rml_mapping=@mapping.ttl
 ```
 
 The web UI generates an equivalent CLI command from the current configuration via the "CLI command" button in the left rail.
@@ -79,15 +71,17 @@ The web UI generates an equivalent CLI command from the current configuration vi
 
 ### Producers
 
-| Module ID               | Output                       | Named graph slug |
-| ----------------------- | ---------------------------- | ---------------- |
-| `neo-bot-producer`      | BOT building topology        | `/bot`           |
-| `neo-beo-producer`      | BEO building elements        | `/beo`           |
-| `neo-props-opm`         | OPM property sets            | `/props`         |
-| `neo-bsdd-producer`     | bSDD typed properties        | `/bsdd`          |
-| `neo-omg-fog`           | OMG/FOG geometry links       | `/omg`           |
-| `neo-ifcowl-producer`   | Full IfcOWL ontology         | `/ifcowl`        |
-| `neo-geometry-producer` | 3D geometry sidecar file     | —                |
+| Module ID                 | Output                       | Named graph slug |
+| ------------------------- | ---------------------------- | ---------------- |
+| `neo-bot-producer`        | BOT building topology        | `/bot`           |
+| `neo-beo-producer`        | BEO building elements        | `/beo`           |
+| `neo-props-opm`           | OPM property sets            | `/props`         |
+| `neo-bsdd-producer`       | bSDD typed properties        | `/bsdd`          |
+| `neo-omg-fog`             | OMG/FOG geometry links       | `/omg`           |
+| `neo-ifcowl-producer`     | Full IfcOWL ontology         | `/ifcowl`        |
+| `neo-geometry-producer`   | 3D geometry sidecar file     | —                |
+| `neo-rml-mapper`          | RML-mapped triples from structured data | `/rml` |
+| `neo-ontology-mapper`     | Ontology-aligned triples from structured data | `/ontology` |
 
 Named graph IRIs are derived from `--base-uri`: `{base-uri}/{slug}`.
 
@@ -162,6 +156,23 @@ Named graph IRIs are derived from `--base-uri`: `{base-uri}/{slug}`.
 
 When `gzip` is set, the output file gets a `.gz` extension and is compressed with fast gzip. Suitable for direct Blazegraph/Oxigraph loading.
 
+### `neo-rml-mapper`
+
+| Option        | Values                  | Default   |
+| ------------- | ----------------------- | --------- |
+| `rml_mapping` | RML mapping file (Turtle) | (required) |
+
+Upload an RML mapping file (Turtle) that defines how structured data (JSON/CSV/XML) is transformed into RDF triples.
+
+### `neo-ontology-mapper`
+
+| Option            | Values                        | Default   |
+| ----------------- | ----------------------------- | --------- |
+| `alignment_file`  | Alignment file (Turtle/RDF)    | (optional) |
+| `ontology_file`   | Ontology file (Turtle/OWL)     | (optional) |
+
+The alignment file maps source predicates to target predicates using `owl:equivalentProperty`, `rdfs:subPropertyOf`, or EDOAL alignment entries. The ontology file provides additional `owl:equivalentProperty` mappings.
+
 ---
 
 ## Discovery and Diagnostics
@@ -198,7 +209,7 @@ bash scripts/build_linux_cli.sh   # -> ./ifc2lbd-neo-linux-x86_64
 `cross` does not work in this repo because of the nightly rustup override used
 for WASM; the script builds inside a Linux `rust` container instead. The cargo
 registry and target dir are cached, so only the first run is slow. See the
-header of [scripts/build_linux_cli.sh](scripts/build_linux_cli.sh) for details.
+header of [scripts/build_linux_cli.sh](scripts/build_linux_linux_cli.sh) for details.
 
 WebAssembly library (requires Rust nightly and wasm-bindgen-cli):
 
@@ -211,7 +222,7 @@ Web prototype (after building WASM):
 ```bash
 cd web/wasm-prototype
 npm ci
-npm run dev        # local dev server on port 5173
+npm run dev        # local dev server on port 3031
 ```
 
 For local testing with correct COOP/COEP headers (required for SharedArrayBuffer):
@@ -226,11 +237,22 @@ docker compose up --build
 
 ## Web Prototype
 
-The browser UI at [ifc2lbd-neo.pages.dev](https://ifc2lbd-neo.pages.dev) lets you load any IFC file, configure the module pipeline, and download the converted RDF output and geometry — all processing happens client-side in WebAssembly with no server upload.
+The browser UI at [ifc2lbd-neo.pages.dev](https://ifc2lbd-neo.pages.dev) lets you load any IFC file (or structured data), configure the module pipeline, and download the converted RDF output and geometry — all processing happens client-side in WebAssembly with no server upload.
 
 Automatic deployments are triggered on every push to `main` via the GitHub Actions workflow at `.github/workflows/deploy-web.yml`.
 
 The web prototype requires a cross-origin isolated context (COOP + COEP headers). Local dev via `docker compose` and the Cloudflare Pages deployment both set these headers correctly.
+
+Features:
+
+- IFC file import (file picker + directory picker)
+- Structured data import (JSON/CSV/XML) — click the "Parse Structured Data" module in the Import column to select files
+- Module pipeline grid with clickable activation circles
+- Preset configurations (Default, Geometry, IfcOWL, RML, Ontology — Turtle/N-Quads)
+- Compressed mode toggle (bSDD compact+dedup + gzip export)
+- CLI command generator with download bin buttons (Linux/macOS/Windows)
+- Citation widget (paper link + BibTeX copy)
+- Mobile: rotate-device overlay (landscape required)
 
 ---
 
@@ -259,7 +281,7 @@ cargo bench -p ifc2lbd-cli
 | Testing and benchmarking        | `docs/testing-and-benchmarking.md`          |
 | Geometry module plan            | `docs/geometry-module-plan.md`              |
 | Geometry dedup open work        | `docs/geometry-dedup-todo.md`               |
-| Oxigraph loading                | `docs/oxigraph-loading.md`                  |
+| Structured data + RML plan      | `docs/plan-structured-data-and-ontology-mapping.md` |
 | Open work items                 | `docs/todo.md`                              |
 
 ---
@@ -280,9 +302,12 @@ crates/
   fragments-core/              Fragments format serialization
   fragments-schema/            Flatbuffers schema for Fragments
   tessellated-model/           Shared tessellation result type
+  structured-data/             Structured data input types (JSON/CSV/XML)
+  rml-mapper-lib/              RML mapping engine (rio_api + rio_turtle)
+  rml-mapper-producer/         RML mapper producer plugin
+  ontology-mapper-producer/    Ontology alignment producer plugin
   plugin-geometry-preprocess/  Geometry tessellation pipeline plugin
   plugin-geometry-producer/    Geometry sidecar producer (Fragments/glTF/Parquet)
-  plugin-fragments-producer/   Standalone Fragments producer
   plugin-property-preprocess/  Cleanup and bSDD match preprocessors
   plugin-qto-preprocess/       QTO reconstruction preprocessor
   plugin-topology-full/        Full geometry-based topology plugin

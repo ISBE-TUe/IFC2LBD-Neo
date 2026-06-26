@@ -18,6 +18,7 @@ lbd-pipeline = { workspace = true }
 lbd-serializer = { workspace = true }
 structured-data = { workspace = true }
 rml-mapper-producer = { workspace = true }
+ontology-mapper-producer = { workspace = true }
 plugin-property-preprocess = { workspace = true }
 plugin-qto-preprocess = { workspace = true }
 plugin-geometry-preprocess = { workspace = true }

@@ -20,9 +20,10 @@ use lbd_pipeline::{
     FailurePolicy, ParallelismMode, PipelineContext, PipelinePlugin, PipelineStage, PluginManifest,
     PluginRegistry, ProducerError, ProducerPlugin, SerializerPlugin, TaggedBatch, BEO_PRODUCER_ID,
     BOT_PRODUCER_ID, BSDD_PRODUCER_ID, FILE_EXPORT_ID, IFCOWL_PRODUCER_ID, LOG_EXPORT_ID,
-    NQUADS_CHUNKED_SERIALIZER_ID, NQUADS_SERIALIZER_ID, OMG_FOG_PRODUCER_ID, PROPS_OPM_PRODUCER_ID,
-    RML_MAPPER_ID, STDOUT_EXPORT_ID, TURTLE_SERIALIZER_ID,
+    NQUADS_CHUNKED_SERIALIZER_ID, NQUADS_SERIALIZER_ID, OMG_FOG_PRODUCER_ID, ONTOLOGY_MAPPER_ID,
+    PROPS_OPM_PRODUCER_ID, RML_MAPPER_ID, STDOUT_EXPORT_ID, TURTLE_SERIALIZER_ID,
 };
+use ontology_mapper_producer::OntologyMapperProducerPlugin;
 use plugin_geometry_preprocess::GeometryPreprocessPlugin;
 use plugin_geometry_producer::GeometryProducerPlugin;
 use plugin_property_preprocess::{BsddMatchPreprocessPlugin, CleanupPreprocessPlugin};
@@ -100,6 +101,7 @@ pub fn module_option_keys(module_id: &str) -> Vec<String> {
         "neo-geometry-preprocess" => vec!["metadata".to_string()],
         "neo-geometry-producer" => vec!["format".to_string()],
         RML_MAPPER_ID => vec!["rml_mapping".to_string()],
+        ONTOLOGY_MAPPER_ID => vec!["alignment_file".to_string(), "ontology_file".to_string()],
         _ => Vec::new(),
     }
 }
@@ -120,6 +122,9 @@ pub fn built_in_registry() -> PluginRegistry {
     registry.register_producer(OmgFogProducerPlugin).unwrap();
     registry.register_producer(IfcowlProducerPlugin).unwrap();
     registry.register_producer(RmlMapperProducerPlugin).unwrap();
+    registry
+        .register_producer(OntologyMapperProducerPlugin)
+        .unwrap();
     registry
         .register_preprocess(GeometryPreprocessPlugin)
         .unwrap();

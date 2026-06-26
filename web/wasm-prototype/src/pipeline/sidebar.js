@@ -41,6 +41,7 @@ function render() {
 	const mod = modules.find((m) => m.id === selectedPluginId);
 	const status = stageStatuses[selectedPluginId];
 	const isParse = selectedPluginId === "parse";
+	const isStructuredImport = selectedPluginId === "neo-structured-data-import";
 
 	const content = panelEl.querySelector("#detail-content");
 	if (!content) return;
@@ -79,6 +80,24 @@ function render() {
       ${status?.triplesOut ? `<div class="detail-row"><span class="detail-label">Triples</span><span class="detail-value">${status.triplesOut.toLocaleString()}</span></div>` : ""}
       ${status?.error ? `<div class="detail-row"><span class="detail-label">Error</span><span class="detail-value detail-error">${status.error}</span></div>` : ""}
     </div>
+
+    ${
+			isStructuredImport
+				? `
+    <div class="detail-section">
+      <div class="detail-section-title">INPUT FILES</div>
+      <label class="rail-file-btn" id="structured-file-btn">
+        <span class="rail-file-text" id="structured-file-text">Choose file(s)…</span>
+        <input type="file" id="structured-file-input" accept=".json,.xml,.csv,.tsv" multiple />
+      </label>
+      <button class="rail-file-btn" id="btn-structured-dir" type="button" style="margin-top:6px;">
+        <span class="rail-file-text" id="structured-dir-text">Choose directory…</span>
+      </button>
+      <div class="rail-file-meta" id="structured-file-meta"></div>
+      <div class="rail-file-meta" id="structured-dir-unsupported" style="display:none">Directory selection is not supported in this browser.</div>
+    </div>`
+				: ""
+		}
 
     ${
 			optionKeys.length > 0
@@ -141,6 +160,55 @@ function render() {
 			opts[selectedPluginId][key] = text;
 			update({ moduleOptions: opts });
 		});
+	}
+
+	// Wire structured data file input (shown in detail panel for neo-structured-data-import)
+	if (isStructuredImport) {
+		content.querySelector("#structured-file-input")?.addEventListener("change", (e) => {
+			const files = Array.from(e.target.files || []);
+			if (!files.length) return;
+			update({ structuredDataFiles: files, inputFormat: "structured-data", ifcFile: null });
+			const meta = content.querySelector("#structured-file-meta");
+			if (meta) meta.textContent = files.length === 1 ? files[0].name : `${files.length} files selected`;
+			document.querySelector("#rail-file-text").textContent = "Choose IFC file…";
+		});
+
+		const dirBtn = content.querySelector("#btn-structured-dir");
+		if (dirBtn) {
+			if (typeof window.showDirectoryPicker === "function") {
+				dirBtn.addEventListener("click", async () => {
+					try {
+						const dirHandle = await window.showDirectoryPicker();
+						const files = [];
+						for await (const entry of dirHandle.values()) {
+							if (entry.kind === "file") {
+								const file = await entry.getFile();
+								if (/\.(json|xml|csv|tsv)$/i.test(file.name)) {
+									files.push(file);
+								}
+							}
+						}
+						if (files.length) {
+							update({ structuredDataFiles: files, inputFormat: "structured-data", ifcFile: null });
+							const meta = content.querySelector("#structured-file-meta");
+							if (meta) meta.textContent = `${files.length} files from ${dirHandle.name}`;
+							document.querySelector("#rail-file-text").textContent = "Choose IFC file…";
+						} else {
+							const meta = content.querySelector("#structured-file-meta");
+							if (meta) meta.textContent = "No JSON/CSV/XML files found in directory.";
+						}
+					} catch (err) {
+						if (err.name !== "AbortError") {
+							const meta = content.querySelector("#structured-file-meta");
+							if (meta) meta.textContent = `Error: ${err.message}`;
+						}
+					}
+				});
+			} else {
+				content.querySelector("#structured-dir-unsupported").style.display = "block";
+				dirBtn.style.display = "none";
+			}
+		}
 	}
 }
 
@@ -293,6 +361,26 @@ function optionControl(pluginId, key) {
         <div style="display:flex;flex-direction:column;gap:4px;">
           <input type="file" data-option-key="rml_mapping" accept=".ttl,.turtle,.n3" class="detail-input" style="padding:2px;" />
           ${filename ? `<span style="font-size:10px;color:var(--text-dim);">${filename}</span>` : ""}
+        </div>
+      </div>`;
+	}
+	if (key === "alignment_file") {
+		return `
+      <div class="detail-row">
+        <span class="detail-label">Alignment file</span>
+        <div style="display:flex;flex-direction:column;gap:4px;">
+          <input type="file" data-option-key="alignment_file" accept=".ttl,.turtle,.n3,.rdf,.xml,.owl" class="detail-input" style="padding:2px;" />
+          ${current ? `<span style="font-size:10px;color:var(--text-dim);">loaded (${current.length} chars)</span>` : ""}
+        </div>
+      </div>`;
+	}
+	if (key === "ontology_file") {
+		return `
+      <div class="detail-row">
+        <span class="detail-label">Ontology file</span>
+        <div style="display:flex;flex-direction:column;gap:4px;">
+          <input type="file" data-option-key="ontology_file" accept=".ttl,.turtle,.n3,.rdf,.xml,.owl" class="detail-input" style="padding:2px;" />
+          ${current ? `<span style="font-size:10px;color:var(--text-dim);">loaded (${current.length} chars)</span>` : ""}
         </div>
       </div>`;
 	}

@@ -45,3 +45,6 @@ web/wasm-prototype/src/wasm/ifc2lbd_wasm_bg.wasm
 # Pi agent / lens (local tooling, not pushed)
 .pi-lens/
 .pi/
+
+# npm package tarballs (build artifacts)
+*.tgz

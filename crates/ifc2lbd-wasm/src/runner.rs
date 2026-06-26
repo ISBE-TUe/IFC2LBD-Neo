@@ -66,13 +66,26 @@ use lbd_pipeline::{
     spawn_preprocessors_with, spawn_producers, PipelineContext, PipelineLogBundle, PipelineStage,
     PluginRegistry, ResourceLimits, BEO_PRODUCER_ID, BOT_PRODUCER_ID, BSDD_PRODUCER_ID,
     FILE_EXPORT_ID, IFCOWL_PRODUCER_ID, LOG_EXPORT_ID, NQUADS_CHUNKED_SERIALIZER_ID,
-    NQUADS_SERIALIZER_ID, OMG_FOG_PRODUCER_ID, PROPS_OPM_PRODUCER_ID, QTO_PREPROCESS_ID,
-    STDOUT_EXPORT_ID, TURTLE_SERIALIZER_ID,
+    NQUADS_SERIALIZER_ID, OMG_FOG_PRODUCER_ID, ONTOLOGY_MAPPER_ID, PROPS_OPM_PRODUCER_ID,
+    QTO_PREPROCESS_ID, RML_MAPPER_ID, STDOUT_EXPORT_ID, TURTLE_SERIALIZER_ID,
 };
+use structured_data::{OntologyMappingConfig, RmlMappingConfig, StructuredDataInput};
 
 /// Returns true if the named-graph IRI belongs to an IfcOWL (or alignment) graph.
 fn is_ifcowl_graph(iri: &str) -> bool {
     iri.ends_with("/ifcowl") || iri.ends_with("/alignment")
+}
+
+// Thread-local storage for structured data + RML/ontology configs.
+// Set in run_to_sink() when input_format == "structured-data",
+// read in make_pipeline_context() to insert into PipelineContext.
+thread_local! {
+    static CURRENT_STRUCTURED_DATA: std::cell::RefCell<Option<std::sync::Arc<StructuredDataInput>>> =
+        const { std::cell::RefCell::new(None) };
+    static CURRENT_RML_CONFIG: std::cell::RefCell<Option<std::sync::Arc<RmlMappingConfig>>> =
+        const { std::cell::RefCell::new(None) };
+    static CURRENT_ONTOLOGY_CONFIG: std::cell::RefCell<Option<std::sync::Arc<OntologyMappingConfig>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 fn resolve_nquads_graph_iri(
@@ -126,6 +139,9 @@ fn active_producer_ids_from_settings(settings: &ExecutionSettings) -> Vec<String
         PROPS_OPM_PRODUCER_ID,
         OMG_FOG_PRODUCER_ID,
         IFCOWL_PRODUCER_ID,
+        RML_MAPPER_ID,
+        ONTOLOGY_MAPPER_ID,
+        ONTOLOGY_MAPPER_ID,
         GEOMETRY_PRODUCER_ID,
     ] {
         if settings.has(id) {
@@ -1246,6 +1262,8 @@ fn turtle_to_sink_joined(
     let props_receiver = raw_receivers.remove(PROPS_OPM_PRODUCER_ID);
     let omg_receiver = raw_receivers.remove(OMG_FOG_PRODUCER_ID);
     let ifcowl_receiver = raw_receivers.remove(IFCOWL_PRODUCER_ID);
+    let rml_receiver = raw_receivers.remove(RML_MAPPER_ID);
+    let ontology_receiver = raw_receivers.remove(ONTOLOGY_MAPPER_ID);
 
     let compress = settings
         .module_option(FILE_EXPORT_ID, "compress")
@@ -1296,6 +1314,8 @@ fn turtle_to_sink_joined(
         collect_and_emit!(bsdd_receiver, BSDD_PRODUCER_ID);
         collect_and_emit!(props_receiver, PROPS_OPM_PRODUCER_ID);
         collect_and_emit!(omg_receiver, OMG_FOG_PRODUCER_ID);
+        collect_and_emit!(rml_receiver, RML_MAPPER_ID);
+        collect_and_emit!(ontology_receiver, ONTOLOGY_MAPPER_ID);
         // Write sorted LBD triples first (BOT/BEO/PROPS/OMG — bounded in size).
         serialize_turtle_grouped_to_writer(&all_triples, &mut writer, Some(&instance_base))?;
         drop(all_triples);
@@ -1346,6 +1366,8 @@ fn turtle_to_sink_joined(
         drain_and_emit!(props_receiver, PROPS_OPM_PRODUCER_ID);
         drain_and_emit!(omg_receiver, OMG_FOG_PRODUCER_ID);
         drain_and_emit!(ifcowl_receiver, IFCOWL_PRODUCER_ID);
+        drain_and_emit!(rml_receiver, RML_MAPPER_ID);
+        drain_and_emit!(ontology_receiver, ONTOLOGY_MAPPER_ID);
     }
     let serialize_ms = now_ms() - serialize_t0;
 
@@ -1440,6 +1462,8 @@ fn turtle_to_sink_separate(
     let props_receiver = raw_receivers.remove(PROPS_OPM_PRODUCER_ID);
     let omg_receiver = raw_receivers.remove(OMG_FOG_PRODUCER_ID);
     let ifcowl_receiver = raw_receivers.remove(IFCOWL_PRODUCER_ID);
+    let rml_receiver = raw_receivers.remove(RML_MAPPER_ID);
+    let ontology_receiver = raw_receivers.remove(ONTOLOGY_MAPPER_ID);
 
     emit_stage_event(
         sink,
@@ -1498,6 +1522,18 @@ fn turtle_to_sink_separate(
         "ifcowl",
         IFCOWL_PRODUCER_ID,
         TurtleGrouping::Streaming
+    );
+    drain_sep_and_emit!(
+        rml_receiver,
+        "rml",
+        RML_MAPPER_ID,
+        effective_grouping
+    );
+    drain_sep_and_emit!(
+        ontology_receiver,
+        "ontology",
+        ONTOLOGY_MAPPER_ID,
+        effective_grouping
     );
     let serialize_ms = now_ms() - serialize_t0;
 
@@ -1656,6 +1692,8 @@ fn nquads_to_sink(
     let props_receiver = raw_receivers.remove(PROPS_OPM_PRODUCER_ID);
     let omg_receiver = raw_receivers.remove(OMG_FOG_PRODUCER_ID);
     let ifcowl_receiver = raw_receivers.remove(IFCOWL_PRODUCER_ID);
+    let rml_receiver = raw_receivers.remove(RML_MAPPER_ID);
+    let ontology_receiver = raw_receivers.remove(ONTOLOGY_MAPPER_ID);
 
     let serializer_id = if settings.output_formats.nquads_chunked {
         NQUADS_CHUNKED_SERIALIZER_ID
@@ -1714,6 +1752,8 @@ fn nquads_to_sink(
         drain_chunked!(props_receiver, "props", PROPS_OPM_PRODUCER_ID);
         drain_chunked!(omg_receiver, "omg", OMG_FOG_PRODUCER_ID);
         drain_chunked!(ifcowl_receiver, "ifcowl", IFCOWL_PRODUCER_ID);
+        drain_chunked!(rml_receiver, "rml", RML_MAPPER_ID);
+        drain_chunked!(ontology_receiver, "ontology", ONTOLOGY_MAPPER_ID);
         let serialize_ms = now_ms() - serialize_t0;
 
         emit_export_events(sink, settings, "running", 0)?;
@@ -1784,6 +1824,8 @@ fn nquads_to_sink(
         drain_merged!(props_receiver, "props", PROPS_OPM_PRODUCER_ID);
         drain_merged!(omg_receiver, "omg", OMG_FOG_PRODUCER_ID);
         drain_merged!(ifcowl_receiver, "ifcowl", IFCOWL_PRODUCER_ID);
+        drain_merged!(rml_receiver, "rml", RML_MAPPER_ID);
+        drain_merged!(ontology_receiver, "ontology", ONTOLOGY_MAPPER_ID);
         let serialize_ms = now_ms() - serialize_t0;
 
         emit_export_events(sink, settings, "running", 0)?;
@@ -2080,6 +2122,75 @@ fn export_browser_files(
             )
         });
 
+        // RML + ontology mappers: run via spawn_producers (they need context, not IfcModel)
+        let rml_triples: Vec<lbd_ontology::Triple> = if settings.has(RML_MAPPER_ID) {
+            let registry = crate::plugins::browser_registry();
+            let producer_ids = vec![RML_MAPPER_ID.to_string()];
+            let limits = lbd_pipeline::ResourceLimits {
+                memory_budget_bytes: 0,
+                thread_count: rayon::current_num_threads().max(1),
+                channel_capacity: 16,
+                batch_size: options.stream_batch_size,
+            };
+            let mut rml_ctx = lbd_pipeline::PipelineContext::new(limits);
+            rml_ctx.insert(std::sync::Arc::new(options.clone()));
+            CURRENT_STRUCTURED_DATA.with(|cell| {
+                if let Some(sd) = cell.borrow().clone() {
+                    rml_ctx.insert(sd);
+                }
+            });
+            CURRENT_RML_CONFIG.with(|cell| {
+                if let Some(cfg) = cell.borrow().clone() {
+                    rml_ctx.insert(cfg);
+                }
+            });
+            let rml_ctx = std::sync::Arc::new(rml_ctx);
+            let receivers = lbd_pipeline::spawn_producers(&producer_ids, &registry, &rml_ctx, 16);
+            let mut all = Vec::new();
+            for (_, rx) in receivers {
+                for batch in rx {
+                    all.extend(batch.triples);
+                }
+            }
+            all
+        } else {
+            Vec::new()
+        };
+
+        let ontology_triples: Vec<lbd_ontology::Triple> = if settings.has(ONTOLOGY_MAPPER_ID) {
+            let registry = crate::plugins::browser_registry();
+            let producer_ids = vec![ONTOLOGY_MAPPER_ID.to_string()];
+            let limits = lbd_pipeline::ResourceLimits {
+                memory_budget_bytes: 0,
+                thread_count: rayon::current_num_threads().max(1),
+                channel_capacity: 16,
+                batch_size: options.stream_batch_size,
+            };
+            let mut onto_ctx = lbd_pipeline::PipelineContext::new(limits);
+            onto_ctx.insert(std::sync::Arc::new(options.clone()));
+            CURRENT_STRUCTURED_DATA.with(|cell| {
+                if let Some(sd) = cell.borrow().clone() {
+                    onto_ctx.insert(sd);
+                }
+            });
+            CURRENT_ONTOLOGY_CONFIG.with(|cell| {
+                if let Some(cfg) = cell.borrow().clone() {
+                    onto_ctx.insert(cfg);
+                }
+            });
+            let onto_ctx = std::sync::Arc::new(onto_ctx);
+            let receivers = lbd_pipeline::spawn_producers(&producer_ids, &registry, &onto_ctx, 16);
+            let mut all = Vec::new();
+            for (_, rx) in receivers {
+                for batch in rx {
+                    all.extend(batch.triples);
+                }
+            }
+            all
+        } else {
+            Vec::new()
+        };
+
         macro_rules! write_producer_nq {
             ($triples:expr, $slug:literal) => {
                 if !$triples.is_empty() {
@@ -2102,6 +2213,8 @@ fn export_browser_files(
         write_producer_nq!(props_triples, "props");
         write_producer_nq!(omg_triples, "omg");
         write_producer_nq!(ifcowl_triples, "ifcowl");
+        write_producer_nq!(rml_triples, "rml");
+        write_producer_nq!(ontology_triples, "ontology");
 
         files.push(ExportedFile {
             filename: format!("{}.nq", settings.output_stem),

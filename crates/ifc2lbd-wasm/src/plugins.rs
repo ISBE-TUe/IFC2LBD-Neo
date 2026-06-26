@@ -9,22 +9,26 @@ use flate2::Compression;
 use crossbeam::channel::Sender;
 use ifc_model::IfcModel;
 use ifc_step::StepFile;
-use lbd_converter::{stream_beo, stream_bot, stream_bsdd_with_cache, stream_omg_fog, stream_props_opm, BsddMatchCache, ConvertOptions};
-use serde_json::json;
+use lbd_converter::{
+    stream_beo, stream_bot, stream_bsdd_with_cache, stream_omg_fog, stream_props_opm,
+    BsddMatchCache, ConvertOptions,
+};
 use lbd_ontology::Triple;
 use lbd_pipeline::{
     BatchKind, DerivedFile, ExportError, ExportFileSummary, ExportPlugin, ExportSession,
-    FailurePolicy, FILE_EXPORT_ID, IFCOWL_PRODUCER_ID, LOG_EXPORT_ID, NQUADS_CHUNKED_SERIALIZER_ID,
-    NQUADS_SERIALIZER_ID, OMG_FOG_PRODUCER_ID, ParallelismMode, PipelineContext, PipelinePlugin,
-    PipelineStage, PluginManifest, PluginRegistry, ProducerError,
-    ProducerPlugin, SerializerPlugin, TaggedBatch, BEO_PRODUCER_ID, BOT_PRODUCER_ID,
-    BSDD_PRODUCER_ID, PROPS_OPM_PRODUCER_ID, RML_MAPPER_ID, TURTLE_SERIALIZER_ID,
+    FailurePolicy, ParallelismMode, PipelineContext, PipelinePlugin, PipelineStage, PluginManifest,
+    PluginRegistry, ProducerError, ProducerPlugin, SerializerPlugin, TaggedBatch, BEO_PRODUCER_ID,
+    BOT_PRODUCER_ID, BSDD_PRODUCER_ID, FILE_EXPORT_ID, IFCOWL_PRODUCER_ID, LOG_EXPORT_ID,
+    NQUADS_CHUNKED_SERIALIZER_ID, NQUADS_SERIALIZER_ID, OMG_FOG_PRODUCER_ID, ONTOLOGY_MAPPER_ID,
+    PROPS_OPM_PRODUCER_ID, RML_MAPPER_ID, TURTLE_SERIALIZER_ID,
 };
-use rml_mapper_producer::RmlMapperProducerPlugin;
-use plugin_property_preprocess::{BsddMatchPreprocessPlugin, CleanupPreprocessPlugin};
-use plugin_qto_preprocess::QtoPreprocessPlugin;
+use ontology_mapper_producer::OntologyMapperProducerPlugin;
 use plugin_geometry_preprocess::GeometryPreprocessPlugin;
 use plugin_geometry_producer::GeometryProducerPlugin;
+use plugin_property_preprocess::{BsddMatchPreprocessPlugin, CleanupPreprocessPlugin};
+use plugin_qto_preprocess::QtoPreprocessPlugin;
+use rml_mapper_producer::RmlMapperProducerPlugin;
+use serde_json::json;
 use wasm_bindgen::prelude::*;
 
 use crate::types::ModuleManifestView;
@@ -65,20 +69,30 @@ pub(crate) fn module_option_keys(module_id: &str) -> Vec<String> {
         ],
         TURTLE_SERIALIZER_ID => vec!["grouping".to_string(), "layout".to_string()],
         IFCOWL_PRODUCER_ID => vec!["mode".to_string()],
-        BSDD_PRODUCER_ID => vec!["profile".to_string(), "compact".to_string(), "include_standard_attrs".to_string(), "dedup_properties".to_string()],
+        BSDD_PRODUCER_ID => vec![
+            "profile".to_string(),
+            "compact".to_string(),
+            "include_standard_attrs".to_string(),
+            "dedup_properties".to_string(),
+        ],
         FILE_EXPORT_ID => vec!["output_stem".to_string(), "compress".to_string()],
         LOG_EXPORT_ID => vec![],
         "neo-geometry-preprocess" => vec!["metadata".to_string()],
         "neo-geometry-producer" => vec!["format".to_string()],
         RML_MAPPER_ID => vec!["rml_mapping".to_string()],
+        ONTOLOGY_MAPPER_ID => vec!["alignment_file".to_string(), "ontology_file".to_string()],
         _ => Vec::new(),
     }
 }
 
 pub(crate) fn browser_registry() -> PluginRegistry {
     let mut registry = PluginRegistry::new();
-    registry.register_preprocess(CleanupPreprocessPlugin).unwrap();
-    registry.register_preprocess(BsddMatchPreprocessPlugin).unwrap();
+    registry
+        .register_preprocess(CleanupPreprocessPlugin)
+        .unwrap();
+    registry
+        .register_preprocess(BsddMatchPreprocessPlugin)
+        .unwrap();
     registry.register_preprocess(QtoPreprocessPlugin).unwrap();
     // Modular LBD producers
     registry.register_producer(BotProducerPlugin).unwrap();
@@ -87,15 +101,28 @@ pub(crate) fn browser_registry() -> PluginRegistry {
     registry.register_producer(PropsOpmProducerPlugin).unwrap();
     registry.register_producer(OmgFogProducerPlugin).unwrap();
     // Geometry pipeline
-    registry.register_preprocess(GeometryPreprocessPlugin).unwrap();
-    registry.register_producer(GeometryProducerPlugin::default()).unwrap();
+    registry
+        .register_preprocess(GeometryPreprocessPlugin)
+        .unwrap();
+    registry
+        .register_producer(GeometryProducerPlugin::default())
+        .unwrap();
     // Other producers
     registry.register_producer(IfcowlProducerPlugin).unwrap();
     registry.register_producer(RmlMapperProducerPlugin).unwrap();
+    registry
+        .register_producer(OntologyMapperProducerPlugin)
+        .unwrap();
     // Serializers (registration only; serialization happens in runner.rs)
-    registry.register_serializer(TurtleSerializerPlugin).unwrap();
-    registry.register_serializer(NquadsSerializerPlugin).unwrap();
-    registry.register_serializer(NquadsChunkedSerializerPlugin).unwrap();
+    registry
+        .register_serializer(TurtleSerializerPlugin)
+        .unwrap();
+    registry
+        .register_serializer(NquadsSerializerPlugin)
+        .unwrap();
+    registry
+        .register_serializer(NquadsChunkedSerializerPlugin)
+        .unwrap();
     // Export
     registry.register_export(FileExportPlugin).unwrap();
     registry.register_export(LogExportPlugin).unwrap();
@@ -115,7 +142,10 @@ fn forward_as_tagged(
     rayon::spawn(move || {
         for batch in raw_receiver {
             if tagged_sender
-                .send(TaggedBatch { kind: kind.clone(), triples: batch })
+                .send(TaggedBatch {
+                    kind: kind.clone(),
+                    triples: batch,
+                })
                 .is_err()
             {
                 break;
@@ -171,8 +201,7 @@ impl ProducerPlugin for BotProducerPlugin {
 
         let (raw_sender, raw_receiver) =
             crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
-        let graph_iri =
-            BatchKind::new(format!("{}bot", options.base_uri.trim_end_matches('/')));
+        let graph_iri = BatchKind::new(format!("{}bot", options.base_uri.trim_end_matches('/')));
         forward_as_tagged(raw_receiver, graph_iri, sender.clone());
 
         stream_bot(&model, &options, &raw_sender)
@@ -225,8 +254,7 @@ impl ProducerPlugin for BeoProducerPlugin {
 
         let (raw_sender, raw_receiver) =
             crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
-        let graph_iri =
-            BatchKind::new(format!("{}beo", options.base_uri.trim_end_matches('/')));
+        let graph_iri = BatchKind::new(format!("{}beo", options.base_uri.trim_end_matches('/')));
         forward_as_tagged(raw_receiver, graph_iri, sender.clone());
 
         stream_beo(&model, &options, &raw_sender)
@@ -245,7 +273,8 @@ impl PipelinePlugin for BsddProducerPlugin {
             id: BSDD_PRODUCER_ID,
             display_name: "bSDD",
             stage: PipelineStage::Produce,
-            description: "Generates standalone bSDD semantic class/property triples with OPM states.",
+            description:
+                "Generates standalone bSDD semantic class/property triples with OPM states.",
             inputs: vec!["ifc-model"],
             outputs: vec!["bsdd-triples"],
             requires: vec![],
@@ -276,23 +305,26 @@ impl ProducerPlugin for BsddProducerPlugin {
 
         let (raw_sender, raw_receiver) =
             crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
-        let graph_iri =
-            BatchKind::new(format!("{}bsdd", options.base_uri.trim_end_matches('/')));
+        let graph_iri = BatchKind::new(format!("{}bsdd", options.base_uri.trim_end_matches('/')));
         forward_as_tagged(raw_receiver, graph_iri, sender.clone());
 
         let cache = ctx.get::<BsddMatchCache>();
-        let (_, dedup_stats) = stream_bsdd_with_cache(&model, &options, &raw_sender, cache.as_deref())
-            .map_err(|e| ProducerError::Conversion(format!("bSDD streaming failed: {e}")))?;
+        let (_, dedup_stats) =
+            stream_bsdd_with_cache(&model, &options, &raw_sender, cache.as_deref())
+                .map_err(|e| ProducerError::Conversion(format!("bSDD streaming failed: {e}")))?;
         if options.bsdd_dedup_properties {
-            ctx.write_log(BSDD_PRODUCER_ID, json!({
-                "dedup_properties": true,
-                "prop_instances_deduped": dedup_stats.prop_instances_deduped,
-                "set_defs_deduped": dedup_stats.set_defs_deduped,
-                "set_contains_deduped": dedup_stats.set_contains_deduped,
-                "total_triples_saved": dedup_stats.prop_instances_deduped
-                    + dedup_stats.set_defs_deduped
-                    + dedup_stats.set_contains_deduped,
-            }));
+            ctx.write_log(
+                BSDD_PRODUCER_ID,
+                json!({
+                    "dedup_properties": true,
+                    "prop_instances_deduped": dedup_stats.prop_instances_deduped,
+                    "set_defs_deduped": dedup_stats.set_defs_deduped,
+                    "set_contains_deduped": dedup_stats.set_contains_deduped,
+                    "total_triples_saved": dedup_stats.prop_instances_deduped
+                        + dedup_stats.set_defs_deduped
+                        + dedup_stats.set_contains_deduped,
+                }),
+            );
         }
         Ok(())
     }
@@ -343,8 +375,7 @@ impl ProducerPlugin for PropsOpmProducerPlugin {
 
         let (raw_sender, raw_receiver) =
             crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
-        let graph_iri =
-            BatchKind::new(format!("{}props", options.base_uri.trim_end_matches('/')));
+        let graph_iri = BatchKind::new(format!("{}props", options.base_uri.trim_end_matches('/')));
         forward_as_tagged(raw_receiver, graph_iri, sender.clone());
 
         stream_props_opm(&model, &options, &raw_sender)
@@ -398,8 +429,7 @@ impl ProducerPlugin for OmgFogProducerPlugin {
 
         let (raw_sender, raw_receiver) =
             crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
-        let graph_iri =
-            BatchKind::new(format!("{}omg", options.base_uri.trim_end_matches('/')));
+        let graph_iri = BatchKind::new(format!("{}omg", options.base_uri.trim_end_matches('/')));
         forward_as_tagged(raw_receiver, graph_iri, sender.clone());
 
         stream_omg_fog(&model, &options, &raw_sender)
@@ -458,10 +488,7 @@ impl ProducerPlugin for IfcowlProducerPlugin {
 
         let (ifcowl_sender, ifcowl_receiver) =
             crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
-        let graph_iri = BatchKind::new(format!(
-            "{}ifcowl",
-            options.base_uri.trim_end_matches('/')
-        ));
+        let graph_iri = BatchKind::new(format!("{}ifcowl", options.base_uri.trim_end_matches('/')));
         forward_as_tagged(ifcowl_receiver, graph_iri, sender.clone());
 
         lbd_converter::modules::ifcowl::stream_ifcowl(
@@ -566,7 +593,8 @@ impl PipelinePlugin for FileExportPlugin {
             id: FILE_EXPORT_ID,
             display_name: "File exporter",
             stage: PipelineStage::Export,
-            description: "Collects serialized output and sidecar artefacts in memory for browser download.",
+            description:
+                "Collects serialized output and sidecar artefacts in memory for browser download.",
             inputs: vec!["turtle-bytes", "nquads-bytes"],
             outputs: vec!["browser-files"],
             requires: vec![],
@@ -581,10 +609,7 @@ impl PipelinePlugin for FileExportPlugin {
 }
 
 impl ExportPlugin for FileExportPlugin {
-    fn start_session(
-        &self,
-        ctx: &PipelineContext,
-    ) -> Result<Box<dyn ExportSession>, ExportError> {
+    fn start_session(&self, ctx: &PipelineContext) -> Result<Box<dyn ExportSession>, ExportError> {
         let compress = ctx.get::<CompressOutput>().map(|c| c.0).unwrap_or(false);
         Ok(Box::new(WasmFileExportSession {
             buffers: Arc::new(Mutex::new(Vec::new())),
@@ -600,7 +625,8 @@ impl PipelinePlugin for LogExportPlugin {
             id: LOG_EXPORT_ID,
             display_name: "Log exporter",
             stage: PipelineStage::Export,
-            description: "Collects serialized output and writes conversion-log.json sidecar in memory.",
+            description:
+                "Collects serialized output and writes conversion-log.json sidecar in memory.",
             inputs: vec!["turtle-bytes", "nquads-bytes"],
             outputs: vec!["browser-files", "log-sidecar"],
             requires: vec![],
@@ -615,10 +641,7 @@ impl PipelinePlugin for LogExportPlugin {
 }
 
 impl ExportPlugin for LogExportPlugin {
-    fn start_session(
-        &self,
-        ctx: &PipelineContext,
-    ) -> Result<Box<dyn ExportSession>, ExportError> {
+    fn start_session(&self, ctx: &PipelineContext) -> Result<Box<dyn ExportSession>, ExportError> {
         let logs = ctx.read_log_bundle();
         Ok(Box::new(WasmLogExportSession {
             buffers: Arc::new(Mutex::new(Vec::new())),
@@ -739,7 +762,12 @@ impl ExportSession for WasmLogExportSession {
             let filename = format!("{module_id}.log.json");
             let json = serde_json::to_vec_pretty(stats)
                 .map_err(|e| ExportError::Export(format!("cannot serialize {filename}: {e}")))?;
-            guard.push((filename, "application/json".to_string(), "log".to_string(), json));
+            guard.push((
+                filename,
+                "application/json".to_string(),
+                "log".to_string(),
+                json,
+            ));
         }
         for (filename, mime_type, role, bytes) in guard.iter() {
             summaries.push(ExportFileSummary {

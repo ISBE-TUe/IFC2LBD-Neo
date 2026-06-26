@@ -163,6 +163,34 @@ const TEMPLATES = [
 		modules: ["neo-rml-mapper", "neo-nquads-serializer", "neo-file-export"],
 		options: {},
 	},
+	{
+		id: "ontology-turtle",
+		label: "Ontology Mapping → Turtle",
+		desc: "Ontology mapper with Turtle output",
+		modules: ["neo-ontology-mapper", "neo-turtle-serializer", "neo-file-export"],
+		options: { ...TURTLE_OPTS },
+	},
+	{
+		id: "ontology-nquads",
+		label: "Ontology Mapping → N-Quads",
+		desc: "Ontology mapper with N-Quads output",
+		modules: ["neo-ontology-mapper", "neo-nquads-serializer", "neo-file-export"],
+		options: {},
+	},
+	{
+		id: "rml-ontology-turtle",
+		label: "RML + Ontology → Turtle",
+		desc: "RML mapper + ontology mapping with Turtle output",
+		modules: ["neo-rml-mapper", "neo-ontology-mapper", "neo-turtle-serializer", "neo-file-export"],
+		options: { ...TURTLE_OPTS },
+	},
+	{
+		id: "rml-ontology-nquads",
+		label: "RML + Ontology → N-Quads",
+		desc: "RML mapper + ontology mapping with N-Quads output",
+		modules: ["neo-rml-mapper", "neo-ontology-mapper", "neo-nquads-serializer", "neo-file-export"],
+		options: {},
+	},
 ];
 
 function applyTemplate(templateId) {
@@ -506,73 +534,6 @@ async function init() {
 		log(`File: ${file.name} (${bytesToHuman(file.size)})`);
 	});
 
-	// Structured data file input
-	document
-		.querySelector("#structured-file-input")
-		?.addEventListener("change", (e) => {
-			const files = Array.from(e.target.files || []);
-			if (!files.length) return;
-			update({
-				structuredDataFiles: files,
-				inputFormat: "structured-data",
-				ifcFile: null,
-			});
-			const meta = document.querySelector("#structured-file-meta");
-			if (meta)
-				meta.textContent =
-					files.length === 1 ? files[0].name : `${files.length} files selected`;
-			document.querySelector("#rail-file-text").textContent =
-				"Choose IFC file…";
-		});
-
-	// Structured data directory picker
-	const structDirBtn = document.querySelector("#btn-structured-dir");
-	const structDirText = document.querySelector("#structured-dir-text");
-	const structDirUnsupported = document.querySelector(
-		"#structured-dir-unsupported",
-	);
-	if (structDirBtn) {
-		if (typeof window.showDirectoryPicker === "function") {
-			structDirBtn.addEventListener("click", async () => {
-				try {
-					const dirHandle = await window.showDirectoryPicker();
-					const files = [];
-					for await (const entry of dirHandle.values()) {
-						if (entry.kind === "file") {
-							const file = await entry.getFile();
-							if (/\.(json|xml|csv|tsv)$/i.test(file.name)) {
-								files.push(file);
-							}
-						}
-					}
-					if (files.length) {
-						update({
-							structuredDataFiles: files,
-							inputFormat: "structured-data",
-							ifcFile: null,
-						});
-						const meta = document.querySelector("#structured-file-meta");
-						if (meta)
-							meta.textContent = `${files.length} files from ${dirHandle.name}`;
-						document.querySelector("#rail-file-text").textContent =
-							"Choose IFC file…";
-					} else {
-						const meta = document.querySelector("#structured-file-meta");
-						if (meta)
-							meta.textContent = "No JSON/CSV/XML files found in directory.";
-					}
-				} catch (err) {
-					if (err.name !== "AbortError") {
-						const meta = document.querySelector("#structured-file-meta");
-						if (meta) meta.textContent = `Error: ${err.message}`;
-					}
-				}
-			});
-		} else {
-			if (structDirUnsupported) structDirUnsupported.style.display = "block";
-			if (structDirBtn) structDirBtn.style.display = "none";
-		}
-	}
 	document
 		.querySelector("#btn-output-dir")
 		?.addEventListener("click", async () => {

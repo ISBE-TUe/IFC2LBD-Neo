@@ -11,7 +11,7 @@ use lbd_pipeline::ActivationPlan;
 use lbd_pipeline::{
     BEO_PRODUCER_ID, BOT_PRODUCER_ID, BSDD_PRODUCER_ID, FILE_EXPORT_ID, IFCOWL_PRODUCER_ID,
     LOG_EXPORT_ID, NQUADS_CHUNKED_SERIALIZER_ID, NQUADS_SERIALIZER_ID, OMG_FOG_PRODUCER_ID,
-    PROPS_OPM_PRODUCER_ID, RML_MAPPER_ID, TURTLE_SERIALIZER_ID,
+    ONTOLOGY_MAPPER_ID, PROPS_OPM_PRODUCER_ID, RML_MAPPER_ID, TURTLE_SERIALIZER_ID,
 };
 
 pub(crate) fn normalize_base_for_graph_iri(base_uri: &str) -> String {
@@ -37,7 +37,8 @@ pub(crate) fn validate_activation_plan(plan: &ActivationPlan) -> Result<(), Wasm
         || active.contains(PROPS_OPM_PRODUCER_ID)
         || active.contains(OMG_FOG_PRODUCER_ID)
         || active.contains(IFCOWL_PRODUCER_ID)
-        || active.contains(RML_MAPPER_ID);
+        || active.contains(RML_MAPPER_ID)
+        || active.contains(ONTOLOGY_MAPPER_ID);
     if !has_any_producer {
         return Err(WasmApiError::Message(format!(
             "module plan must include at least one producer (`{}`, `{}`, `{}`, `{}`, …)",
@@ -343,6 +344,18 @@ pub(crate) fn validate_typed_module_configs(
                         other => {
                             return Err(WasmApiError::Message(format!(
                                 "unknown option `{RML_MAPPER_ID}.{other}`"
+                            )))
+                        }
+                    }
+                }
+            }
+            ONTOLOGY_MAPPER_ID => {
+                for k in entries.keys() {
+                    match k.as_str() {
+                        "alignment_file" | "ontology_file" => {} // UTF-8 text, accepted as-is
+                        other => {
+                            return Err(WasmApiError::Message(format!(
+                                "unknown option `{ONTOLOGY_MAPPER_ID}.{other}`"
                             )))
                         }
                     }
