@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1036" height="364" viewBox="0 20 1036 364" role="img" aria-label="LDAC logo">
+  <g fill="none" stroke-linecap="butt" stroke-linejoin="miter" stroke-width="14">
+    <path d="M23 380 H205 V186" stroke="#29d43a"/>
+    <path d="M230 384 V107" stroke="#fff200"/>
+    <path d="M255 384 V234" stroke="#ff1111"/>
+    <path d="M281 384 V148" stroke="#19c7f2"/>
+    <path d="M307 384 V47" stroke="#0718ff"/>
+    <path d="M332 384 V213" stroke="#c017c9"/>
+  </g>
+  <text x="372" y="384" fill="#111111" font-family="Arial, Helvetica, sans-serif" font-size="235" font-weight="400" letter-spacing="27">LDAC</text>
+</svg>

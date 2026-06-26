@@ -5,26 +5,43 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>IFC2LBD-Neo Pipeline</title>
     <style>
-      body { background: #d5d5d5; }
-      .preload * { transition-duration: 0s !important; }
+      body {
+        background: #d5d5d5;
+      }
+      .preload * {
+        transition-duration: 0s !important;
+      }
       #wasm-loading {
-        position: fixed; inset: 0;
-        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        position: fixed;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
         gap: 12px;
       }
       .wasm-spin {
-        width: 28px; height: 28px;
+        width: 28px;
+        height: 28px;
         border: 2px solid #c5c5c5;
         border-top-color: #555;
         border-radius: 50%;
         animation: spin 0.7s linear infinite;
       }
-      @keyframes spin { to { transform: rotate(360deg); } }
-      .wasm-loading-label {
-        font-family: 'JetBrains Mono', monospace;
-        font-size: 11px; color: #888; letter-spacing: 0.05em;
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
       }
-      .pipeline-app { visibility: hidden; }
+      .wasm-loading-label {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 11px;
+        color: #888;
+        letter-spacing: 0.05em;
+      }
+      .pipeline-app {
+        visibility: hidden;
+      }
     </style>
   </head>
   <body class="preload">
@@ -33,16 +50,24 @@
       <span class="wasm-loading-label">Loading…</span>
     </div>
     <div class="pipeline-app" id="pipeline-view">
-
       <!-- Top Bar: just brand + transport -->
       <div class="top-bar">
-        <img class="brand-logo" src="/TUe-logo-square-black.png" alt="TU/e" />
+        <img class="brand-logo" src="/ldac-logo.svg" alt="LDAC" />
         <span class="brand-name">IFC2LBD-NEO</span>
         <span class="top-spacer"></span>
         <span class="top-info" id="runtime-info"></span>
         <div class="music-widget" id="music-widget">
-          <input type="range" class="music-volume" id="music-volume" min="0" max="100" value="40" />
-          <button class="music-btn" id="btn-music" title="soundtrack">&#9834;</button>
+          <input
+            type="range"
+            class="music-volume"
+            id="music-volume"
+            min="0"
+            max="100"
+            value="40"
+          />
+          <button class="music-btn" id="btn-music" title="soundtrack">
+            &#9834;
+          </button>
         </div>
         <button class="run-btn top-btn" id="btn-run">▶ RUN</button>
       </div>
@@ -54,19 +79,35 @@
           <div class="rail-section">
             <div class="rail-field-label">Import Directory</div>
             <label class="rail-file-btn" id="rail-file-btn">
-              <span class="rail-file-text" id="rail-file-text">Choose IFC file…</span>
-              <input type="file" id="file-input" accept=".ifc,.ifczip,.step,.stp" />
+              <span class="rail-file-text" id="rail-file-text"
+                >Choose IFC file…</span
+              >
+              <input
+                type="file"
+                id="file-input"
+                accept=".ifc,.ifczip,.step,.stp"
+              />
             </label>
             <div class="rail-file-meta" id="rail-file-meta"></div>
           </div>
           <div class="rail-section">
             <div class="rail-field-label">Output Directory (optional)</div>
             <button class="rail-file-btn" id="btn-output-dir" type="button">
-              <span class="rail-file-text" id="output-dir-text">Choose output folder…</span>
+              <span class="rail-file-text" id="output-dir-text"
+                >Choose output folder…</span
+              >
             </button>
             <div class="rail-file-meta" id="output-dir-meta"></div>
-            <button class="rail-btn" id="btn-output-dir-clear" type="button">Clear output folder</button>
-            <div class="rail-file-meta" id="output-dir-unsupported" style="display:none">Output folder selection is not supported in this browser.</div>
+            <button class="rail-btn" id="btn-output-dir-clear" type="button">
+              Clear output folder
+            </button>
+            <div
+              class="rail-file-meta"
+              id="output-dir-unsupported"
+              style="display: none"
+            >
+              Output folder selection is not supported in this browser.
+            </div>
           </div>
           <div class="rail-section">
             <div class="rail-field">
@@ -79,21 +120,39 @@
           <div class="rail-section">
             <div class="rail-field">
               <span class="rail-field-label">Base IRI</span>
-              <input type="text" class="rail-input" id="base-uri-input" value="https://lbd.example.com/" />
+              <input
+                type="text"
+                class="rail-input"
+                id="base-uri-input"
+                value="https://lbd.example.com/"
+              />
             </div>
             <div class="rail-field">
               <span class="rail-field-label">Stem</span>
-              <input type="text" class="rail-input" id="output-stem-input" value="converted-model" />
+              <input
+                type="text"
+                class="rail-input"
+                id="output-stem-input"
+                value="converted-model"
+              />
             </div>
           </div>
           <div class="rail-section">
             <div class="rail-field rail-field-toggles">
               <label class="rail-toggle-item">
-                <input type="checkbox" class="rail-toggle" id="toggle-preprocess" />
+                <input
+                  type="checkbox"
+                  class="rail-toggle"
+                  id="toggle-preprocess"
+                />
                 <span class="rail-toggle-label">Pre</span>
               </label>
               <label class="rail-toggle-item">
-                <input type="checkbox" class="rail-toggle" id="toggle-postprocess" />
+                <input
+                  type="checkbox"
+                  class="rail-toggle"
+                  id="toggle-postprocess"
+                />
                 <span class="rail-toggle-label">Post</span>
               </label>
             </div>
@@ -101,7 +160,13 @@
           <div class="rail-section rail-bottom">
             <button class="rail-btn" id="btn-load">Load config</button>
             <button class="rail-btn" id="btn-save">Save config</button>
-            <button class="rail-btn" id="btn-cli-cmd" title="Generate equivalent CLI command">CLI command</button>
+            <button
+              class="rail-btn"
+              id="btn-cli-cmd"
+              title="Generate equivalent CLI command"
+            >
+              CLI command
+            </button>
           </div>
         </div>
 
@@ -111,7 +176,9 @@
 
       <!-- Bottom Bar -->
       <div class="bottom-bar">
-        <div class="downloads-bar" id="downloads"><span class="downloads-empty">No files.</span></div>
+        <div class="downloads-bar" id="downloads">
+          <span class="downloads-empty">No files.</span>
+        </div>
         <div class="log-bar">
           <div class="log-header" id="log-toggle">▾ LOG</div>
           <div id="log-output"></div>
@@ -131,7 +198,62 @@
       </div>
     </div>
 
-    <div id="mobile-view" style="display:none"></div>
+    <div id="mobile-view" style="display: none">
+      <div class="app">
+        <div class="topbar">
+          <img class="logo-horizontal" src="/ldac-logo.svg" alt="LDAC" style="height:32px;" />
+          <div class="topbar-text">
+            <h1>IFC2LBD-Neo</h1>
+          </div>
+        </div>
+        <div class="container">
+          <div class="card">
+            <form id="convert-form">
+              <div class="field">
+                <span>IFC File</span>
+                <input type="file" id="ifc-file" accept=".ifc,.ifczip,.step,.stp" required />
+              </div>
+              <div class="field">
+                <span>Base URI</span>
+                <input type="url" id="base-uri" value="https://lbd.example.com/" />
+              </div>
+              <div class="field">
+                <span>Output Stem</span>
+                <input type="text" id="output-stem" value="converted-model" />
+              </div>
+              <div class="field">
+                <span>Serializer</span>
+                <div class="row">
+                  <label class="checkbox"><input type="radio" name="serializer" value="ttl" checked /> Turtle</label>
+                  <label class="checkbox"><input type="radio" name="serializer" value="nq" /> N-Quads</label>
+                </div>
+              </div>
+              <div class="field">
+                <span>Options</span>
+                <label class="checkbox"><input type="checkbox" id="emit-ifcowl" /> Emit IfcOWL sidecar</label>
+              </div>
+              <button type="submit" class="btn-primary" id="convert-btn">Convert</button>
+            </form>
+          </div>
+          <div class="card">
+            <h2>Modules</h2>
+            <ul class="meta-list" id="modules"></ul>
+          </div>
+          <div class="card">
+            <h2>Runtime</h2>
+            <ul class="meta-list" id="runtime"></ul>
+          </div>
+          <div class="card">
+            <h2>Downloads</h2>
+            <div class="downloads" id="downloads">No files exported.</div>
+          </div>
+          <div class="card">
+            <h2>Log</h2>
+            <pre class="log" id="log"></pre>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <!-- CLI Command Modal (hidden until triggered) -->
     <div id="cli-modal">
