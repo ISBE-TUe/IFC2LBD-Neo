@@ -1523,12 +1523,7 @@ fn turtle_to_sink_separate(
         IFCOWL_PRODUCER_ID,
         TurtleGrouping::Streaming
     );
-    drain_sep_and_emit!(
-        rml_receiver,
-        "rml",
-        RML_MAPPER_ID,
-        effective_grouping
-    );
+    drain_sep_and_emit!(rml_receiver, "rml", RML_MAPPER_ID, effective_grouping);
     drain_sep_and_emit!(
         ontology_receiver,
         "ontology",

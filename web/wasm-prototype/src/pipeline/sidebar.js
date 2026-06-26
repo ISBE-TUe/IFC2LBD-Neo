@@ -164,14 +164,25 @@ function render() {
 
 	// Wire structured data file input (shown in detail panel for neo-structured-data-import)
 	if (isStructuredImport) {
-		content.querySelector("#structured-file-input")?.addEventListener("change", (e) => {
-			const files = Array.from(e.target.files || []);
-			if (!files.length) return;
-			update({ structuredDataFiles: files, inputFormat: "structured-data", ifcFile: null });
-			const meta = content.querySelector("#structured-file-meta");
-			if (meta) meta.textContent = files.length === 1 ? files[0].name : `${files.length} files selected`;
-			document.querySelector("#rail-file-text").textContent = "Choose IFC file…";
-		});
+		content
+			.querySelector("#structured-file-input")
+			?.addEventListener("change", (e) => {
+				const files = Array.from(e.target.files || []);
+				if (!files.length) return;
+				update({
+					structuredDataFiles: files,
+					inputFormat: "structured-data",
+					ifcFile: null,
+				});
+				const meta = content.querySelector("#structured-file-meta");
+				if (meta)
+					meta.textContent =
+						files.length === 1
+							? files[0].name
+							: `${files.length} files selected`;
+				document.querySelector("#rail-file-text").textContent =
+					"Choose IFC file…";
+			});
 
 		const dirBtn = content.querySelector("#btn-structured-dir");
 		if (dirBtn) {
@@ -189,13 +200,20 @@ function render() {
 							}
 						}
 						if (files.length) {
-							update({ structuredDataFiles: files, inputFormat: "structured-data", ifcFile: null });
+							update({
+								structuredDataFiles: files,
+								inputFormat: "structured-data",
+								ifcFile: null,
+							});
 							const meta = content.querySelector("#structured-file-meta");
-							if (meta) meta.textContent = `${files.length} files from ${dirHandle.name}`;
-							document.querySelector("#rail-file-text").textContent = "Choose IFC file…";
+							if (meta)
+								meta.textContent = `${files.length} files from ${dirHandle.name}`;
+							document.querySelector("#rail-file-text").textContent =
+								"Choose IFC file…";
 						} else {
 							const meta = content.querySelector("#structured-file-meta");
-							if (meta) meta.textContent = "No JSON/CSV/XML files found in directory.";
+							if (meta)
+								meta.textContent = "No JSON/CSV/XML files found in directory.";
 						}
 					} catch (err) {
 						if (err.name !== "AbortError") {
@@ -205,7 +223,8 @@ function render() {
 					}
 				});
 			} else {
-				content.querySelector("#structured-dir-unsupported").style.display = "block";
+				content.querySelector("#structured-dir-unsupported").style.display =
+					"block";
 				dirBtn.style.display = "none";
 			}
 		}

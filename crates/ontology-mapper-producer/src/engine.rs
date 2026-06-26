@@ -6,7 +6,7 @@
 use lbd_ontology::{Object, Triple};
 use rio_api::model::{Subject as RioSubject, Term as RioTerm};
 use rio_api::parser::TriplesParser;
-use rio_turtle::{TurtleParser, NTriplesParser};
+use rio_turtle::{NTriplesParser, TurtleParser};
 use std::collections::HashMap;
 use std::io::{BufReader, Cursor};
 
@@ -193,8 +193,7 @@ fn rio_triple_to_triple(triple: rio_api::model::Triple) -> Triple {
             rio_api::model::Literal::LanguageTaggedString { value, language: _ } => {
                 Object::TypedLiteral {
                     value: value.to_string(),
-                    datatype: "http://www.w3.org/1999/02/22-rdf-syntax-ns#langString"
-                        .to_string(),
+                    datatype: "http://www.w3.org/1999/02/22-rdf-syntax-ns#langString".to_string(),
                 }
             }
             rio_api::model::Literal::Typed { value, datatype } => Object::TypedLiteral {
@@ -223,7 +222,10 @@ mod tests {
 "#;
         let mappings = parse_rdf_mappings(alignment).unwrap();
         assert!(mappings.len() >= 2);
-        assert!(mappings.iter().any(|(s, t)| s == "http://example.org/source/hasName" && t == "http://example.org/target/name"));
+        assert!(mappings
+            .iter()
+            .any(|(s, t)| s == "http://example.org/source/hasName"
+                && t == "http://example.org/target/name"));
     }
 
     #[test]
@@ -232,7 +234,10 @@ mod tests {
 <http://example.org/source/hasFirstName> rdfs:subPropertyOf <http://example.org/target/name> .
 "#;
         let mappings = parse_rdf_mappings(ontology).unwrap();
-        assert!(mappings.iter().any(|(s, t)| s == "http://example.org/source/hasFirstName" && t == "http://example.org/target/name"));
+        assert!(mappings
+            .iter()
+            .any(|(s, t)| s == "http://example.org/source/hasFirstName"
+                && t == "http://example.org/target/name"));
     }
 
     #[test]

@@ -167,7 +167,10 @@ function render() {
 				mod.id === "parse" ||
 				(isStructured && inputFormat === "structured-data") ||
 				activeModules.has(mod.id);
-			const isRequired = mod.id === "parse" || mod.id === "neo-structured-data-import" || mod.id === "neo-file-export";
+			const isRequired =
+				mod.id === "parse" ||
+				mod.id === "neo-structured-data-import" ||
+				mod.id === "neo-file-export";
 			const status = stageStatuses[mod.id];
 			const statusStr = status?.status || "idle";
 			const isSelected = selectedPluginId === mod.id;
