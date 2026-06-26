@@ -1155,8 +1155,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0"
 dependencies = [
  "cfg-if",
+ "js-sys",
  "libc",
  "wasi",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -1773,6 +1775,7 @@ version = "0.1.0"
 dependencies = [
  "crossbeam",
  "flate2",
+ "getrandom 0.2.17",
  "ifc-model",
  "ifc-step",
  "js-sys",

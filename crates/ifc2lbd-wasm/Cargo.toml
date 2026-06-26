@@ -41,3 +41,5 @@ percent-encoding = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen-rayon = "1"
+# getrandom needs the "js" feature on wasm32 (pulled in by oxigraph → rand)
+getrandom = { version = "0.2", features = ["js"] }
