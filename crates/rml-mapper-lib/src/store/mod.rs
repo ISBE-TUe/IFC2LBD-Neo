@@ -11,7 +11,7 @@
 //! - `RdfFormat`: Supported RDF serialization formats
 //! - Namespace prefix management
 //! - Pattern matching for quad queries
-//! - RDF parsing and serialization via oxigraph
+//! - RDF parsing via `rio_api` + `rio_turtle` (no oxigraph dependency)
 //!
 //! # Examples
 //!
@@ -33,18 +33,18 @@
 //! ```
 
 use crate::error::{Result, RmlError};
-use crate::term::{BlankNode, Literal, NamedNode, Quad, Term, TermRef};
-use oxigraph::io::{RdfFormat as OxiFormat, RdfParser, RdfSerializer};
-use oxigraph::model::{
-    vocab::xsd, BlankNode as OxiBlankNode, Literal as OxiLiteral, NamedNode as OxiNamedNode,
-    Quad as OxiQuad, Subject as OxiSubject, Term as OxiTerm,
-};
+use crate::term::{BlankNode, Literal, NamedNode, Quad, TermRef};
+use rio_api::model::{GraphName as RioGraphName, Subject as RioSubject, Term as RioTerm};
+use rio_api::parser::{QuadsParser, TriplesParser};
+use rio_turtle::{NQuadsParser, NTriplesParser, TriGParser, TurtleError, TurtleParser};
 use std::collections::{HashMap, HashSet};
-use std::io::{Read, Write};
+use std::io::Read;
 
 /// RDF serialization formats
 ///
-/// Supported formats for reading and writing RDF data.
+/// Supported formats for reading RDF data.
+/// Serialization (writing) is no longer supported — the executor streams
+/// quads directly through a channel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RdfFormat {
     /// Turtle format (.ttl)
@@ -55,22 +55,11 @@ pub enum RdfFormat {
     NQuads,
     /// TriG format (.trig)
     TriG,
-    /// RDF/XML format (.rdf, .xml)
+    /// RDF/XML format (.rdf, .xml) — not supported by rio_turtle
     RdfXml,
 }
 
 impl RdfFormat {
-    /// Converts to oxigraph's RdfFormat
-    fn to_oxigraph(&self) -> OxiFormat {
-        match self {
-            RdfFormat::Turtle => OxiFormat::Turtle,
-            RdfFormat::NTriples => OxiFormat::NTriples,
-            RdfFormat::NQuads => OxiFormat::NQuads,
-            RdfFormat::TriG => OxiFormat::TriG,
-            RdfFormat::RdfXml => OxiFormat::RdfXml,
-        }
-    }
-
     /// Detects format from file extension
     pub fn from_extension(ext: &str) -> Option<Self> {
         match ext.to_lowercase().as_str() {
@@ -174,7 +163,10 @@ pub trait QuadStore {
         object: Option<&TermRef>,
         graph: Option<&NamedNode>,
     ) -> Result<Option<Quad>> {
-        Ok(self.get_quads(subject, predicate, object, graph)?.into_iter().next())
+        Ok(self
+            .get_quads(subject, predicate, object, graph)?
+            .into_iter()
+            .next())
     }
 
     /// Checks if the store contains a quad matching the pattern
@@ -192,7 +184,9 @@ pub trait QuadStore {
         object: Option<&TermRef>,
         graph: Option<&NamedNode>,
     ) -> Result<bool> {
-        Ok(!self.get_quads(subject, predicate, object, graph)?.is_empty())
+        Ok(!self
+            .get_quads(subject, predicate, object, graph)?
+            .is_empty())
     }
 
     /// Returns true if the store is empty
@@ -212,11 +206,13 @@ pub trait QuadStore {
 
     /// Writes RDF data to an output stream
     ///
-    /// # Arguments
-    ///
-    /// * `output` - Output stream to write to
-    /// * `format` - RDF format for serialization
-    fn write<W: Write>(&self, output: W, format: RdfFormat) -> Result<()>;
+    /// **Not supported** — the executor streams quads directly through a channel.
+    /// This default implementation always returns an error.
+    fn write<W: std::io::Write>(&self, _output: W, _format: RdfFormat) -> Result<()> {
+        Err(RmlError::Serialization(
+            "QuadStore::write() is not supported — the executor streams quads directly".into(),
+        ))
+    }
 
     /// Copies namespace prefixes from another store
     ///
@@ -405,8 +401,7 @@ impl QuadStore for InMemoryQuadStore {
         object: TermRef,
         graph: Option<NamedNode>,
     ) -> Result<()> {
-        let quad = Quad::new(subject, predicate, object, graph)
-            .map_err(RmlError::Validation)?;
+        let quad = Quad::new(subject, predicate, object, graph).map_err(RmlError::Validation)?;
         self.quads.insert(quad);
         Ok(())
     }
@@ -456,44 +451,112 @@ impl QuadStore for InMemoryQuadStore {
     }
 
     fn read<R: Read>(&mut self, input: R, base: Option<&str>, format: RdfFormat) -> Result<()> {
-        // Create parser with optional base IRI
-        let rdf_parser = RdfParser::from_format(format.to_oxigraph());
-        
-        let rdf_parser = if let Some(base_str) = base {
-            rdf_parser.with_base_iri(base_str)
-                .map_err(|e| RmlError::Parse(e.to_string()))?
-        } else {
-            rdf_parser
-        };
-        
-        let parser = rdf_parser.for_reader(input);
+        // Read all input into a string
+        let mut buf = String::new();
+        let mut reader = std::io::BufReader::new(input);
+        reader.read_to_string(&mut buf)?;
 
-        for result in parser {
-            let oxi_quad = result.map_err(|e| RmlError::Parse(e.to_string()))?;
-            let quad = convert_from_oxigraph_quad(oxi_quad)?;
-            self.quads.insert(quad);
+        // Parse base IRI if provided
+        let base_iri = base
+            .map(|b| oxiri::Iri::parse(b.to_string()))
+            .transpose()
+            .map_err(|e| RmlError::Parse(e.to_string()))?;
+
+        // Capture conversion errors from inside the parse callback
+        let mut conv_err: Option<RmlError> = None;
+
+        match format {
+            RdfFormat::Turtle => {
+                let mut parser = TurtleParser::new(buf.as_bytes(), base_iri);
+                if let Err(e) = parser.parse_all(&mut |triple| {
+                    if conv_err.is_some() {
+                        return Ok(()) as std::result::Result<(), TurtleError>;
+                    }
+                    match convert_from_rio_triple(triple) {
+                        Ok(quad) => {
+                            self.quads.insert(quad);
+                        }
+                        Err(e) => {
+                            conv_err = Some(e);
+                        }
+                    }
+                    Ok(()) as std::result::Result<(), TurtleError>
+                }) {
+                    conv_err = Some(RmlError::Parse(e.to_string()));
+                }
+            }
+            RdfFormat::NTriples => {
+                let mut parser = NTriplesParser::new(buf.as_bytes());
+                if let Err(e) = parser.parse_all(&mut |triple| {
+                    if conv_err.is_some() {
+                        return Ok(()) as std::result::Result<(), TurtleError>;
+                    }
+                    match convert_from_rio_triple(triple) {
+                        Ok(quad) => {
+                            self.quads.insert(quad);
+                        }
+                        Err(e) => {
+                            conv_err = Some(e);
+                        }
+                    }
+                    Ok(()) as std::result::Result<(), TurtleError>
+                }) {
+                    conv_err = Some(RmlError::Parse(e.to_string()));
+                }
+            }
+            RdfFormat::NQuads => {
+                let mut parser = NQuadsParser::new(buf.as_bytes());
+                if let Err(e) = parser.parse_all(&mut |quad| {
+                    if conv_err.is_some() {
+                        return Ok(()) as std::result::Result<(), TurtleError>;
+                    }
+                    match convert_from_rio_quad(quad) {
+                        Ok(q) => {
+                            self.quads.insert(q);
+                        }
+                        Err(e) => {
+                            conv_err = Some(e);
+                        }
+                    }
+                    Ok(()) as std::result::Result<(), TurtleError>
+                }) {
+                    conv_err = Some(RmlError::Parse(e.to_string()));
+                }
+            }
+            RdfFormat::TriG => {
+                let mut parser = TriGParser::new(buf.as_bytes(), base_iri);
+                if let Err(e) = parser.parse_all(&mut |quad| {
+                    if conv_err.is_some() {
+                        return Ok(()) as std::result::Result<(), TurtleError>;
+                    }
+                    match convert_from_rio_quad(quad) {
+                        Ok(q) => {
+                            self.quads.insert(q);
+                        }
+                        Err(e) => {
+                            conv_err = Some(e);
+                        }
+                    }
+                    Ok(()) as std::result::Result<(), TurtleError>
+                }) {
+                    conv_err = Some(RmlError::Parse(e.to_string()));
+                }
+            }
+            RdfFormat::RdfXml => {
+                return Err(RmlError::Parse(
+                    "RDF/XML format is not supported (use Turtle or N-Triples)".into(),
+                ));
+            }
+        }
+
+        if let Some(e) = conv_err {
+            return Err(e);
         }
 
         Ok(())
     }
 
-    fn write<W: Write>(&self, output: W, format: RdfFormat) -> Result<()> {
-        let mut serializer = RdfSerializer::from_format(format.to_oxigraph())
-            .for_writer(output);
-
-        for quad in self.iter() {
-            let oxi_quad = convert_to_oxigraph_quad(quad)?;
-            serializer
-                .serialize_quad(&oxi_quad)
-                .map_err(|e| RmlError::Serialization(e.to_string()))?;
-        }
-
-        serializer
-            .finish()
-            .map_err(|e| RmlError::Serialization(e.to_string()))?;
-
-        Ok(())
-    }
+    // write() uses the default trait implementation which returns an error.
 
     fn copy_namespaces(&mut self, other: &InMemoryQuadStore) {
         for (prefix, iri) in other.get_namespaces() {
@@ -630,122 +693,77 @@ impl QuadStore for InMemoryQuadStore {
     }
 }
 
-// Conversion functions between our types and oxigraph types
+// ---------------------------------------------------------------------------
+// Conversion helpers: rio_api model → our term types
+// ---------------------------------------------------------------------------
 
-/// Converts an oxigraph quad to our Quad type
-fn convert_from_oxigraph_quad(oxi_quad: OxiQuad) -> Result<Quad> {
-    let subject = convert_from_oxigraph_subject(oxi_quad.subject)?;
-    let predicate = convert_from_oxigraph_named_node(oxi_quad.predicate)?;
-    let object = convert_from_oxigraph_term(oxi_quad.object)?;
-    let graph = match oxi_quad.graph_name {
-        oxigraph::model::GraphName::NamedNode(n) => Some(convert_from_oxigraph_named_node(n)?),
-        oxigraph::model::GraphName::BlankNode(_) => {
+/// Converts a `rio_api::model::Subject` to our `TermRef`.
+fn convert_from_rio_subject(subject: RioSubject) -> Result<TermRef> {
+    match subject {
+        RioSubject::NamedNode(n) => Ok(TermRef::NamedNode(NamedNode::new_unchecked(n.iri))),
+        RioSubject::BlankNode(b) => Ok(TermRef::BlankNode(BlankNode::new(b.id))),
+        RioSubject::Triple(_) => Err(RmlError::Parse(
+            "RDF-star triples as subjects are not supported".into(),
+        )),
+    }
+}
+
+/// Converts a `rio_api::model::Term` to our `TermRef`.
+fn convert_from_rio_term(term: RioTerm) -> Result<TermRef> {
+    match term {
+        RioTerm::NamedNode(n) => Ok(TermRef::NamedNode(NamedNode::new_unchecked(n.iri))),
+        RioTerm::BlankNode(b) => Ok(TermRef::BlankNode(BlankNode::new(b.id))),
+        RioTerm::Literal(l) => match l {
+            rio_api::model::Literal::Simple { value } => Ok(TermRef::Literal(Literal::new(value))),
+            rio_api::model::Literal::LanguageTaggedString { value, language } => {
+                Ok(TermRef::Literal(Literal::with_language(value, language)))
+            }
+            rio_api::model::Literal::Typed { value, datatype } => {
+                if datatype.iri == "http://www.w3.org/2001/XMLSchema#string" {
+                    Ok(TermRef::Literal(Literal::new(value)))
+                } else {
+                    Ok(TermRef::Literal(Literal::with_datatype(
+                        value,
+                        datatype.iri,
+                    )))
+                }
+            }
+        },
+        RioTerm::Triple(_) => Err(RmlError::Parse("RDF-star triples are not supported".into())),
+    }
+}
+
+/// Converts a `rio_api::model::Triple` to our `Quad` (with no graph name).
+fn convert_from_rio_triple(triple: rio_api::model::Triple) -> Result<Quad> {
+    let subject = convert_from_rio_subject(triple.subject)?;
+    let predicate = NamedNode::new_unchecked(triple.predicate.iri);
+    let object = convert_from_rio_term(triple.object)?;
+    Quad::new(subject, predicate, object, None).map_err(RmlError::Validation)
+}
+
+/// Converts a `rio_api::model::Quad` to our `Quad`.
+fn convert_from_rio_quad(quad: rio_api::model::Quad) -> Result<Quad> {
+    let subject = convert_from_rio_subject(quad.subject)?;
+    let predicate = NamedNode::new_unchecked(quad.predicate.iri);
+    let object = convert_from_rio_term(quad.object)?;
+    let graph = match quad.graph_name {
+        Some(RioGraphName::NamedNode(n)) => Some(NamedNode::new_unchecked(n.iri)),
+        Some(RioGraphName::BlankNode(_)) => {
             return Err(RmlError::Parse(
-                "Blank node graph names are not supported".to_string(),
+                "Blank node graph names are not supported".into(),
             ))
         }
-        oxigraph::model::GraphName::DefaultGraph => None,
+        None => None,
     };
 
     Quad::new(subject, predicate, object, graph).map_err(RmlError::Validation)
 }
 
-/// Converts our Quad to an oxigraph quad
-fn convert_to_oxigraph_quad(quad: &Quad) -> Result<OxiQuad> {
-    let subject = convert_to_oxigraph_subject(quad.subject())?;
-    let predicate = convert_to_oxigraph_named_node(quad.predicate())?;
-    let object = convert_to_oxigraph_term(quad.object())?;
-    let graph_name = match quad.graph() {
-        Some(g) => {
-            oxigraph::model::GraphName::NamedNode(convert_to_oxigraph_named_node(g)?)
-        }
-        None => oxigraph::model::GraphName::DefaultGraph,
-    };
-
-    Ok(OxiQuad {
-        subject,
-        predicate,
-        object,
-        graph_name,
-    })
-}
-
-fn convert_from_oxigraph_subject(subject: OxiSubject) -> Result<TermRef> {
-    match subject {
-        OxiSubject::NamedNode(n) => Ok(TermRef::NamedNode(convert_from_oxigraph_named_node(n)?)),
-        OxiSubject::BlankNode(b) => Ok(TermRef::BlankNode(BlankNode::new(b.as_str()))),
-        OxiSubject::Triple(_) => Err(RmlError::Parse(
-            "RDF-star triples as subjects are not supported".to_string(),
-        )),
-    }
-}
-
-fn convert_to_oxigraph_subject(subject: &TermRef) -> Result<OxiSubject> {
-    match subject {
-        TermRef::NamedNode(n) => Ok(OxiSubject::NamedNode(convert_to_oxigraph_named_node(n)?)),
-        TermRef::BlankNode(b) => Ok(OxiSubject::BlankNode(
-            OxiBlankNode::new_unchecked(b.id()),
-        )),
-        TermRef::Literal(_) => Err(RmlError::Validation(
-            "Literal cannot be used as subject".to_string(),
-        )),
-    }
-}
-
-fn convert_from_oxigraph_named_node(node: OxiNamedNode) -> Result<NamedNode> {
-    NamedNode::new(node.as_str()).map_err(RmlError::Parse)
-}
-
-fn convert_to_oxigraph_named_node(node: &NamedNode) -> Result<OxiNamedNode> {
-    OxiNamedNode::new(node.iri()).map_err(|e| RmlError::Parse(e.to_string()))
-}
-
-fn convert_from_oxigraph_term(term: OxiTerm) -> Result<TermRef> {
-    match term {
-        OxiTerm::NamedNode(n) => Ok(TermRef::NamedNode(convert_from_oxigraph_named_node(n)?)),
-        OxiTerm::BlankNode(b) => Ok(TermRef::BlankNode(BlankNode::new(b.as_str()))),
-        OxiTerm::Literal(l) => Ok(TermRef::Literal(convert_from_oxigraph_literal(l))),
-        OxiTerm::Triple(_) => Err(RmlError::Parse(
-            "RDF-star triples are not supported".to_string(),
-        )),
-    }
-}
-
-fn convert_to_oxigraph_term(term: &TermRef) -> Result<OxiTerm> {
-    match term {
-        TermRef::NamedNode(n) => Ok(OxiTerm::NamedNode(convert_to_oxigraph_named_node(n)?)),
-        TermRef::BlankNode(b) => Ok(OxiTerm::BlankNode(OxiBlankNode::new_unchecked(b.id()))),
-        TermRef::Literal(l) => Ok(OxiTerm::Literal(convert_to_oxigraph_literal(l)?)),
-    }
-}
-
-fn convert_from_oxigraph_literal(literal: OxiLiteral) -> Literal {
-    if let Some(lang) = literal.language() {
-        Literal::with_language(literal.value(), lang)
-    } else if literal.datatype() != xsd::STRING {
-        Literal::with_datatype(literal.value(), literal.datatype().as_str())
-    } else {
-        Literal::new(literal.value())
-    }
-}
-
-fn convert_to_oxigraph_literal(literal: &Literal) -> Result<OxiLiteral> {
-    if let Some(lang) = literal.language() {
-        Ok(OxiLiteral::new_language_tagged_literal_unchecked(
-            literal.value(),
-            lang,
-        ))
-    } else if let Some(datatype) = literal.datatype() {
-        let dt = OxiNamedNode::new(datatype).map_err(|e| RmlError::Parse(e.to_string()))?;
-        Ok(OxiLiteral::new_typed_literal(literal.value(), dt))
-    } else {
-        Ok(OxiLiteral::new_simple_literal(literal.value()))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::term::Term;
+    use std::collections::HashSet;
 
     #[test]
     fn test_create_empty_store() {
@@ -867,12 +885,7 @@ mod tests {
             .unwrap();
 
         store
-            .add_quad(
-                subject.into(),
-                age_pred,
-                Literal::new("30").into(),
-                None,
-            )
+            .add_quad(subject.into(), age_pred, Literal::new("30").into(), None)
             .unwrap();
 
         let quads = store.get_quads(None, Some(&name_pred), None, None).unwrap();
@@ -889,7 +902,12 @@ mod tests {
         let object = Literal::new("John Doe");
 
         store
-            .add_quad(subject.clone().into(), predicate.clone(), object.into(), None)
+            .add_quad(
+                subject.clone().into(),
+                predicate.clone(),
+                object.into(),
+                None,
+            )
             .unwrap();
 
         let subject_ref = TermRef::NamedNode(subject);
@@ -1017,7 +1035,9 @@ mod tests {
             )
             .unwrap();
 
-        let count = store.rename_all_predicates(&old_pred, new_pred.clone()).unwrap();
+        let count = store
+            .rename_all_predicates(&old_pred, new_pred.clone())
+            .unwrap();
         assert_eq!(count, 1);
 
         let quads = store.get_quads(None, Some(&new_pred), None, None).unwrap();
@@ -1037,20 +1057,19 @@ mod tests {
         let new_obj = Literal::new("Jane Doe");
 
         store
-            .add_quad(
-                subject.into(),
-                predicate,
-                old_obj.clone().into(),
-                None,
-            )
+            .add_quad(subject.into(), predicate, old_obj.clone().into(), None)
             .unwrap();
 
         let old_obj_ref = TermRef::Literal(old_obj);
         let new_obj_ref = TermRef::Literal(new_obj.clone());
-        let count = store.rename_all_objects(&old_obj_ref, new_obj_ref.clone()).unwrap();
+        let count = store
+            .rename_all_objects(&old_obj_ref, new_obj_ref.clone())
+            .unwrap();
         assert_eq!(count, 1);
 
-        let quads = store.get_quads(None, None, Some(&new_obj_ref), None).unwrap();
+        let quads = store
+            .get_quads(None, None, Some(&new_obj_ref), None)
+            .unwrap();
         assert_eq!(quads.len(), 1);
         assert_eq!(quads[0].object().value(), "Jane Doe");
     }
@@ -1101,29 +1120,125 @@ mod tests {
     }
 
     #[test]
-    fn test_read_write_turtle() {
+    fn test_read_turtle() {
         let mut store = InMemoryQuadStore::new();
-
-        let subject = NamedNode::new("http://example.org/person/1").unwrap();
-        let predicate = NamedNode::new("http://xmlns.com/foaf/0.1/name").unwrap();
-        let object = Literal::new("John Doe");
-
+        let turtle = r#"
+            @prefix foaf: <http://xmlns.com/foaf/0.1/> .
+            <http://example.org/person/1> foaf:name "John Doe" .
+        "#;
         store
-            .add_quad(TermRef::NamedNode(subject), predicate, TermRef::Literal(object), None)
+            .read(turtle.as_bytes(), None, RdfFormat::Turtle)
             .unwrap();
 
-        // Write to buffer
-        let mut buffer = Vec::new();
-        store.write(&mut buffer, RdfFormat::NTriples).unwrap();
+        assert_eq!(store.size(), 1);
 
-        // Read back
-        let mut store2 = InMemoryQuadStore::new();
-        store2
-            .read(buffer.as_slice(), None, RdfFormat::NTriples)
+        let name_pred = NamedNode::new("http://xmlns.com/foaf/0.1/name").unwrap();
+        let quads = store.get_quads(None, Some(&name_pred), None, None).unwrap();
+        assert_eq!(quads.len(), 1);
+        assert_eq!(quads[0].object().value(), "John Doe");
+    }
+
+    #[test]
+    fn test_read_ntriples() {
+        let mut store = InMemoryQuadStore::new();
+        let nt = r#"<http://example.org/person/1> <http://xmlns.com/foaf/0.1/name> "John Doe" ."#;
+        store
+            .read(nt.as_bytes(), None, RdfFormat::NTriples)
             .unwrap();
 
-        assert_eq!(store2.size(), 1);
-        assert!(store.is_isomorphic(&store2).unwrap());
+        assert_eq!(store.size(), 1);
+    }
+
+    #[test]
+    fn test_read_nquads() {
+        let mut store = InMemoryQuadStore::new();
+        let nq = r#"<http://example.org/person/1> <http://xmlns.com/foaf/0.1/name> "John Doe" <http://example.org/graph1> ."#;
+        store.read(nq.as_bytes(), None, RdfFormat::NQuads).unwrap();
+
+        assert_eq!(store.size(), 1);
+
+        let graph = NamedNode::new("http://example.org/graph1").unwrap();
+        let quads = store.get_quads(None, None, None, Some(&graph)).unwrap();
+        assert_eq!(quads.len(), 1);
+    }
+
+    #[test]
+    fn test_read_turtle_with_typed_literal() {
+        let mut store = InMemoryQuadStore::new();
+        let turtle = r#"
+            @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+            <http://example.org/person/1> <http://example.org/age> "30"^^xsd:integer .
+        "#;
+        store
+            .read(turtle.as_bytes(), None, RdfFormat::Turtle)
+            .unwrap();
+
+        let quads = store.get_quads(None, None, None, None).unwrap();
+        assert_eq!(quads.len(), 1);
+        match quads[0].object() {
+            TermRef::Literal(l) => {
+                assert_eq!(l.value(), "30");
+                assert_eq!(
+                    l.datatype(),
+                    Some("http://www.w3.org/2001/XMLSchema#integer")
+                );
+            }
+            _ => panic!("expected literal"),
+        }
+    }
+
+    #[test]
+    fn test_read_turtle_with_language_tag() {
+        let mut store = InMemoryQuadStore::new();
+        let turtle = r#"
+            <http://example.org/person/1> <http://example.org/label> "Hello"@en .
+        "#;
+        store
+            .read(turtle.as_bytes(), None, RdfFormat::Turtle)
+            .unwrap();
+
+        let quads = store.get_quads(None, None, None, None).unwrap();
+        assert_eq!(quads.len(), 1);
+        match quads[0].object() {
+            TermRef::Literal(l) => {
+                assert_eq!(l.value(), "Hello");
+                assert_eq!(l.language(), Some("en"));
+            }
+            _ => panic!("expected literal"),
+        }
+    }
+
+    #[test]
+    fn test_read_turtle_with_blank_node() {
+        let mut store = InMemoryQuadStore::new();
+        let turtle = r#"
+            @prefix foaf: <http://xmlns.com/foaf/0.1/> .
+            _:b1 foaf:name "John Doe" .
+        "#;
+        store
+            .read(turtle.as_bytes(), None, RdfFormat::Turtle)
+            .unwrap();
+
+        let quads = store.get_quads(None, None, None, None).unwrap();
+        assert_eq!(quads.len(), 1);
+        assert!(quads[0].subject().is_blank_node());
+    }
+
+    #[test]
+    fn test_write_not_supported() {
+        let mut store = InMemoryQuadStore::new();
+        store
+            .add_quad(
+                NamedNode::new("http://example.org/s").unwrap().into(),
+                NamedNode::new("http://example.org/p").unwrap(),
+                Literal::new("o").into(),
+                None,
+            )
+            .unwrap();
+
+        let mut buf = Vec::new();
+        let result = store.write(&mut buf, RdfFormat::NTriples);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -1146,7 +1261,12 @@ mod tests {
         let object = Literal::new("John Doe");
 
         store
-            .add_quad(TermRef::BlankNode(subject), predicate, TermRef::Literal(object), None)
+            .add_quad(
+                TermRef::BlankNode(subject),
+                predicate,
+                TermRef::Literal(object),
+                None,
+            )
             .unwrap();
 
         assert_eq!(store.size(), 1);
@@ -1189,7 +1309,12 @@ mod tests {
         let object = Literal::new("John Doe");
 
         store
-            .add_quad(TermRef::NamedNode(subject.clone()), predicate.clone(), TermRef::Literal(object), None)
+            .add_quad(
+                TermRef::NamedNode(subject.clone()),
+                predicate.clone(),
+                TermRef::Literal(object),
+                None,
+            )
             .unwrap();
 
         let subject_ref = TermRef::NamedNode(subject);
@@ -1210,7 +1335,12 @@ mod tests {
         let object = Literal::new("John Doe");
 
         store
-            .add_quad(TermRef::NamedNode(subject), predicate, TermRef::Literal(object), None)
+            .add_quad(
+                TermRef::NamedNode(subject),
+                predicate,
+                TermRef::Literal(object),
+                None,
+            )
             .unwrap();
 
         assert_eq!(store.size(), 1);

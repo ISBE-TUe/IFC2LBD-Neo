@@ -10,7 +10,7 @@
 //! 2. Iterates over records from each logical source
 //! 3. Applies term generators to create RDF triples
 //! 4. Handles joins between triples maps
-//! 5. Outputs to target stores
+//! 5. Streams output quads through a `crossbeam::channel::Sender<Vec<Quad>>`
 //!
 //! # Examples
 //!
@@ -26,8 +26,11 @@
 //! let factory = MappingFactory::new(None, StrictMode::Strict);
 //! let mapping = factory.create_mapping(&mapping_store).unwrap();
 //!
-//! let mut executor = Executor::new(mapping, PathBuf::from("."), StrictMode::Strict);
-//! let output_store = executor.execute().unwrap();
+//! let (tx, rx) = crossbeam::channel::unbounded();
+//! let mut executor = Executor::new(mapping, PathBuf::from("."), StrictMode::Strict)
+//!     .with_output_sender(tx);
+//! executor.execute().unwrap();
+//! // Collect quads from rx...
 //! ```
 
 use crate::access::{Access, LocalFileAccess};
@@ -35,11 +38,13 @@ use crate::error::{Result, RmlError};
 use crate::mapping::{MappingDocument, ObjectMap, StrictMode};
 use crate::namespaces::RDF;
 use crate::records::{Record, RecordsFactory};
-use crate::store::InMemoryQuadStore;
 use crate::term::{NamedNode, Quad, Term, TermRef};
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::PathBuf;
+
+/// Batch size for streaming quads through the output channel.
+const BATCH_SIZE: usize = 1000;
 
 /// Pre-computed constants to avoid repeated allocations in hot loops
 struct PrecomputedConstants {
@@ -61,14 +66,15 @@ impl PrecomputedConstants {
 /// - Iterating over records using RecordsFactory
 /// - Generating subjects, predicates, and objects using TermGenerators
 /// - Handling joins between triples maps
-/// - Adding generated quads to the output store
+/// - Streaming generated quads through an output channel
 pub struct Executor {
     /// The mapping document to execute
     mapping: MappingDocument,
     /// Factory for creating record iterators
     records_factory: RecordsFactory,
-    /// Output quad store
-    output_store: InMemoryQuadStore,
+    /// Optional streaming output sender. When set, the executor streams
+    /// batches of quads through this channel instead of buffering them.
+    output_sender: Option<crossbeam::channel::Sender<Vec<Quad>>>,
     /// Base path for resolving relative file paths
     base_path: PathBuf,
     /// Strict mode for IRI validation
@@ -113,7 +119,12 @@ impl ExecutionContext {
     }
 
     /// Caches subjects for a triples map and record index
-    fn cache_subjects(&mut self, triples_map_id: String, record_index: usize, subjects: Vec<TermRef>) {
+    fn cache_subjects(
+        &mut self,
+        triples_map_id: String,
+        record_index: usize,
+        subjects: Vec<TermRef>,
+    ) {
         self.subjects_cache
             .entry(triples_map_id)
             .or_default()
@@ -133,7 +144,7 @@ impl Executor {
         Self {
             mapping,
             records_factory: RecordsFactory::new(),
-            output_store: InMemoryQuadStore::new(),
+            output_sender: None,
             base_path,
             _strict_mode: strict_mode,
             context: ExecutionContext::new(),
@@ -141,22 +152,36 @@ impl Executor {
         }
     }
 
-    /// Executes all triples maps and returns the output store
-    ///
-    /// # Returns
-    ///
-    /// A reference to the output quad store containing all generated triples
-    pub fn execute(&mut self) -> Result<&InMemoryQuadStore> {
+    /// Set the streaming output sender. When set, the executor streams
+    /// batches of quads through this channel instead of buffering them.
+    pub fn with_output_sender(mut self, sender: crossbeam::channel::Sender<Vec<Quad>>) -> Self {
+        self.output_sender = Some(sender);
+        self
+    }
+
+    /// Executes all triples maps, streaming output quads through the
+    /// output channel (if set).
+    pub fn execute(&mut self) -> Result<()> {
         let num_triples_maps = self.mapping.triples_maps.len();
 
         for i in 0..num_triples_maps {
             self.execute_triples_map_by_index(i)?;
         }
 
-        // Deduplicate — RML mappings can produce duplicate quads
-        self.output_store.deduplicate_vec();
+        Ok(())
+    }
 
-        Ok(&self.output_store)
+    /// Sends a batch of quads through the output channel.
+    /// No-op if no output sender is set.
+    fn send_quads(&mut self, quads: Vec<Quad>) -> Result<()> {
+        if let Some(sender) = &self.output_sender {
+            if !quads.is_empty() {
+                sender
+                    .send(quads)
+                    .map_err(|_| RmlError::Execution("output channel closed".into()))?;
+            }
+        }
+        Ok(())
     }
 
     /// Executes a triples map by index
@@ -166,46 +191,59 @@ impl Executor {
         let has_joins = self.mapping.triples_maps[index]
             .predicate_object_maps
             .iter()
-            .any(|pom| pom.object_maps.iter().any(|om| matches!(om, ObjectMap::RefObjectMap { .. })));
+            .any(|pom| {
+                pom.object_maps
+                    .iter()
+                    .any(|om| matches!(om, ObjectMap::RefObjectMap { .. }))
+            });
+
+        let mut batch = Vec::with_capacity(BATCH_SIZE);
 
         if has_joins {
             // Sequential path for joins (needs mutable self for caching)
             for (record_index, record) in records.iter().enumerate() {
                 let quads = self.process_record_by_index(record, index, record_index)?;
-                for quad in quads {
-                    self.output_store.add_quad_direct(quad);
+                batch.extend(quads);
+                if batch.len() >= BATCH_SIZE {
+                    self.send_quads(std::mem::take(&mut batch))?;
                 }
             }
         } else {
             // Parallel path for non-join triples maps
-            let mapping = &self.mapping;
-            let constants = &self.constants;
-            let triples_map = &mapping.triples_maps[index];
+            let all_quads: Vec<Vec<Quad>> = {
+                let mapping = &self.mapping;
+                let constants = &self.constants;
+                let triples_map = &mapping.triples_maps[index];
 
-            // Process records in parallel using rayon
-            let all_quads: Vec<Vec<Quad>> = records
-                .par_iter()
-                .map(|record| {
-                    Self::process_record_parallel(record, triples_map, constants)
-                })
-                .collect::<Result<Vec<_>>>()?;
+                // Process records in parallel using rayon
+                records
+                    .par_iter()
+                    .map(|record| Self::process_record_parallel(record, triples_map, constants))
+                    .collect::<Result<Vec<_>>>()?
+            };
 
-            // Bulk insert all quads
-            let total_quads: usize = all_quads.iter().map(|q| q.len()).sum();
-            self.output_store.reserve(total_quads);
+            // Stream all quads through the output channel
             for quads in all_quads {
-                for quad in quads {
-                    self.output_store.add_quad_direct(quad);
+                batch.extend(quads);
+                if batch.len() >= BATCH_SIZE {
+                    self.send_quads(std::mem::take(&mut batch))?;
                 }
             }
 
             // Cache subjects for potential downstream joins
-            let triples_map_id = triples_map.id.value().to_string();
+            let triples_map_id = self.mapping.triples_maps[index].id.value().to_string();
             for (record_index, record) in records.iter().enumerate() {
-                let subjects = triples_map.subject_map.term_generator.generate(record)?;
-                self.context.cache_subjects(triples_map_id.clone(), record_index, subjects);
+                let subjects = self.mapping.triples_maps[index]
+                    .subject_map
+                    .term_generator
+                    .generate(record)?;
+                self.context
+                    .cache_subjects(triples_map_id.clone(), record_index, subjects);
             }
         }
+
+        // Flush remaining quads
+        self.send_quads(batch)?;
 
         Ok(())
     }
@@ -225,13 +263,17 @@ impl Executor {
         let subject_graph = if triples_map.subject_map.graph_maps.is_empty() {
             None
         } else {
-            let graph_terms = triples_map.subject_map.graph_maps[0].term_generator.generate(record)?;
+            let graph_terms = triples_map.subject_map.graph_maps[0]
+                .term_generator
+                .generate(record)?;
             if graph_terms.is_empty() {
                 None
             } else if let TermRef::NamedNode(node) = &graph_terms[0] {
                 Some(node.clone())
             } else {
-                return Err(RmlError::Validation("Graph name must be a named node".to_string()));
+                return Err(RmlError::Validation(
+                    "Graph name must be a named node".to_string(),
+                ));
             }
         };
 
@@ -285,7 +327,9 @@ impl Executor {
                 } else if let TermRef::NamedNode(node) = &graph_terms[0] {
                     Some(node.clone())
                 } else {
-                    return Err(RmlError::Validation("Graph name must be a named node".to_string()));
+                    return Err(RmlError::Validation(
+                        "Graph name must be a named node".to_string(),
+                    ));
                 }
             };
 
@@ -302,7 +346,9 @@ impl Executor {
                     .map_err(RmlError::Validation)?;
                     quads.push(quad);
                 } else {
-                    return Err(RmlError::Validation("Predicate must be a named node".to_string()));
+                    return Err(RmlError::Validation(
+                        "Predicate must be a named node".to_string(),
+                    ));
                 }
             } else {
                 // General path with cartesian product
@@ -348,17 +394,29 @@ impl Executor {
             .generate(record)?;
 
         // Cache subjects for potential joins
-        let triples_map_id = self.mapping.triples_maps[triples_map_index].id.value().to_string();
-        self.context.cache_subjects(triples_map_id.clone(), record_index, subjects.clone());
+        let triples_map_id = self.mapping.triples_maps[triples_map_index]
+            .id
+            .value()
+            .to_string();
+        self.context
+            .cache_subjects(triples_map_id.clone(), record_index, subjects.clone());
 
         // Get graph from subject map (used as default for all triples from this triples map)
-        let subject_graph_maps = &self.mapping.triples_maps[triples_map_index].subject_map.graph_maps;
+        let subject_graph_maps = &self.mapping.triples_maps[triples_map_index]
+            .subject_map
+            .graph_maps;
         let subject_graph = self.get_graph(subject_graph_maps, record)?;
 
         // Generate rdf:type triples for classes (using pre-computed constant)
-        if !self.mapping.triples_maps[triples_map_index].subject_map.classes.is_empty() {
+        if !self.mapping.triples_maps[triples_map_index]
+            .subject_map
+            .classes
+            .is_empty()
+        {
             for subject in &subjects {
-                let classes = &self.mapping.triples_maps[triples_map_index].subject_map.classes;
+                let classes = &self.mapping.triples_maps[triples_map_index]
+                    .subject_map
+                    .classes;
                 for class in classes {
                     let quad = Quad::new(
                         subject.clone(),
@@ -374,7 +432,9 @@ impl Executor {
         }
 
         // Process each predicate-object map
-        let num_poms = self.mapping.triples_maps[triples_map_index].predicate_object_maps.len();
+        let num_poms = self.mapping.triples_maps[triples_map_index]
+            .predicate_object_maps
+            .len();
         for pom_index in 0..num_poms {
             let pom_quads = self.process_predicate_object_map_by_index(
                 record,
@@ -402,7 +462,9 @@ impl Executor {
 
         // Generate predicate(s)
         let mut all_predicates = Vec::new();
-        let predicate_maps = &self.mapping.triples_maps[triples_map_index].predicate_object_maps[pom_index].predicate_maps;
+        let predicate_maps = &self.mapping.triples_maps[triples_map_index].predicate_object_maps
+            [pom_index]
+            .predicate_maps;
         for predicate_map in predicate_maps {
             let predicates = predicate_map.term_generator.generate(record)?;
             all_predicates.extend(predicates);
@@ -410,10 +472,15 @@ impl Executor {
 
         // Generate object(s)
         let mut all_objects = Vec::new();
-        let num_object_maps = self.mapping.triples_maps[triples_map_index].predicate_object_maps[pom_index].object_maps.len();
+        let num_object_maps = self.mapping.triples_maps[triples_map_index].predicate_object_maps
+            [pom_index]
+            .object_maps
+            .len();
 
         for obj_map_index in 0..num_object_maps {
-            let object_map = &self.mapping.triples_maps[triples_map_index].predicate_object_maps[pom_index].object_maps[obj_map_index];
+            let object_map = &self.mapping.triples_maps[triples_map_index].predicate_object_maps
+                [pom_index]
+                .object_maps[obj_map_index];
 
             match object_map {
                 ObjectMap::TermMap { term_generator } => {
@@ -436,7 +503,9 @@ impl Executor {
         }
 
         // Get graph: use POM's graph if present, otherwise fall back to subject map's graph
-        let pom_graph_maps = &self.mapping.triples_maps[triples_map_index].predicate_object_maps[pom_index].graph_maps;
+        let pom_graph_maps = &self.mapping.triples_maps[triples_map_index].predicate_object_maps
+            [pom_index]
+            .graph_maps;
         let graph = if pom_graph_maps.is_empty() {
             subject_graph.cloned()
         } else {
@@ -509,7 +578,10 @@ impl Executor {
         for (parent_index, parent_record) in parent_records.iter().enumerate() {
             if self.evaluate_join_conditions(child_record, parent_record, join_conditions)? {
                 // Get or generate subjects from the parent record
-                let parent_subjects = if let Some(cached) = self.context.get_subjects(&parent_triples_map_id, parent_index) {
+                let parent_subjects = if let Some(cached) = self
+                    .context
+                    .get_subjects(&parent_triples_map_id, parent_index)
+                {
                     cached.clone()
                 } else {
                     // Generate subjects for the parent record
@@ -520,8 +592,15 @@ impl Executor {
                         .find(|tm| tm.id.value() == parent_triples_map_id)
                         .unwrap();
 
-                    let subjects = parent_tm.subject_map.term_generator.generate(parent_record)?;
-                    self.context.cache_subjects(parent_triples_map_id.clone(), parent_index, subjects.clone());
+                    let subjects = parent_tm
+                        .subject_map
+                        .term_generator
+                        .generate(parent_record)?;
+                    self.context.cache_subjects(
+                        parent_triples_map_id.clone(),
+                        parent_index,
+                        subjects.clone(),
+                    );
                     subjects
                 };
 
@@ -565,7 +644,10 @@ impl Executor {
 
     /// Gets records from a logical source by triples map index
     fn get_records_by_index(&mut self, triples_map_index: usize) -> Result<Vec<Record>> {
-        let triples_map_id = self.mapping.triples_maps[triples_map_index].id.value().to_string();
+        let triples_map_id = self.mapping.triples_maps[triples_map_index]
+            .id
+            .value()
+            .to_string();
 
         // Check cache first — return a reference-counted clone instead of deep clone
         if let Some(cached) = self.context.get_records(&triples_map_id) {
@@ -573,18 +655,23 @@ impl Executor {
         }
 
         // Create access to the data source
-        let source = &self.mapping.triples_maps[triples_map_index].logical_source.source;
+        let source = &self.mapping.triples_maps[triples_map_index]
+            .logical_source
+            .source;
         let access = self.create_access(source)?;
 
         // Create record iterator
-        let reference_formulation = &self.mapping.triples_maps[triples_map_index].logical_source.reference_formulation;
-        let iterator_expr = self.mapping.triples_maps[triples_map_index].logical_source.iterator.as_deref();
+        let reference_formulation = &self.mapping.triples_maps[triples_map_index]
+            .logical_source
+            .reference_formulation;
+        let iterator_expr = self.mapping.triples_maps[triples_map_index]
+            .logical_source
+            .iterator
+            .as_deref();
 
-        let mut iterator = self.records_factory.create_iterator(
-            access,
-            reference_formulation,
-            iterator_expr,
-        )?;
+        let mut iterator =
+            self.records_factory
+                .create_iterator(access, reference_formulation, iterator_expr)?;
 
         // Collect all records
         let records = iterator.collect_all()?;
@@ -641,21 +728,6 @@ impl Executor {
             ))
         }
     }
-
-    /// Returns a reference to the output store
-    pub fn output_store(&self) -> &InMemoryQuadStore {
-        &self.output_store
-    }
-
-    /// Returns a mutable reference to the output store
-    pub fn output_store_mut(&mut self) -> &mut InMemoryQuadStore {
-        &mut self.output_store
-    }
-
-    /// Consumes the executor and returns the output store
-    pub fn into_output_store(self) -> InMemoryQuadStore {
-        self.output_store
-    }
 }
 
 /// Configuration options for the executor
@@ -705,19 +777,29 @@ pub struct ExecutionStats {
 mod tests {
     use super::*;
     use crate::mapping::{
-        JoinCondition, LogicalSource, ObjectMap, PredicateMap, PredicateObjectMap,
-        SubjectMap, TriplesMap,
+        JoinCondition, LogicalSource, ObjectMap, PredicateMap, PredicateObjectMap, SubjectMap,
+        TriplesMap,
     };
     use crate::namespaces::QL;
     use crate::records::RecordValue;
-    use crate::store::QuadStore;
     use crate::term::{Literal, NamedNode};
     use crate::termgenerator::{
         ConstantExtractor, LiteralGenerator, NamedNodeGenerator, ReferenceExtractor,
         TemplateExtractor,
     };
-    use tempfile::NamedTempFile;
+    use std::collections::HashSet;
     use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    /// Helper: execute an executor that has no output sender and collect nothing.
+    /// Used for tests that only check execution doesn't error.
+    fn execute_collect(executor: &mut Executor) -> Vec<Quad> {
+        let (tx, rx) = crossbeam::channel::unbounded();
+        executor.output_sender = Some(tx);
+        executor.execute().unwrap();
+        executor.output_sender = None; // drop tx to close the channel
+        rx.into_iter().flatten().collect()
+    }
 
     fn create_test_csv_file() -> NamedTempFile {
         let mut file = NamedTempFile::new().unwrap();
@@ -759,11 +841,8 @@ mod tests {
             crate::termgenerator::StrictMode::Strict,
         );
 
-        let name_object = LiteralGenerator::new(
-            Box::new(ReferenceExtractor::new("name")),
-            None,
-            None,
-        );
+        let name_object =
+            LiteralGenerator::new(Box::new(ReferenceExtractor::new("name")), None, None);
 
         let name_pom = PredicateObjectMap {
             predicate_maps: vec![PredicateMap {
@@ -818,15 +897,15 @@ mod tests {
         let base_path = PathBuf::from(".");
 
         let mut executor = Executor::new(mapping, base_path, StrictMode::Strict);
-        let output_store = executor.execute().unwrap();
+        let quads = execute_collect(&mut executor);
 
         // Should have generated quads for 2 records
         // Each record generates: 1 rdf:type + 1 name + 1 age = 3 quads
         // Total: 2 * 3 = 6 quads
-        assert_eq!(output_store.size(), 6);
+        assert_eq!(quads.len(), 6);
 
         // Check that we have the expected subjects
-        let subjects = output_store.get_subjects().unwrap();
+        let subjects: HashSet<_> = quads.iter().map(|q| q.subject().clone()).collect();
         assert_eq!(subjects.len(), 2);
     }
 
@@ -839,17 +918,21 @@ mod tests {
         let base_path = PathBuf::from(".");
 
         let mut executor = Executor::new(mapping, base_path, StrictMode::Strict);
-        let output_store = executor.execute().unwrap();
+        let quads = execute_collect(&mut executor);
 
         // Check for rdf:type triples
         let rdf_type = NamedNode::new(format!("{}type", RDF)).unwrap();
-        let type_quads = output_store.get_quads(None, Some(&rdf_type), None, None).unwrap();
+        let type_quads: Vec<_> = quads
+            .iter()
+            .filter(|q| q.predicate() == &rdf_type)
+            .collect();
 
         // Should have 2 rdf:type triples (one for each person)
         assert_eq!(type_quads.len(), 2);
 
         // Check that the class is foaf:Person
-        let foaf_person = TermRef::NamedNode(NamedNode::new("http://xmlns.com/foaf/0.1/Person").unwrap());
+        let foaf_person =
+            TermRef::NamedNode(NamedNode::new("http://xmlns.com/foaf/0.1/Person").unwrap());
         for quad in type_quads {
             assert_eq!(quad.object(), &foaf_person);
         }
@@ -864,16 +947,22 @@ mod tests {
         let base_path = PathBuf::from(".");
 
         let mut executor = Executor::new(mapping, base_path, StrictMode::Strict);
-        let output_store = executor.execute().unwrap();
+        let quads = execute_collect(&mut executor);
 
         // Check for name predicates
         let name_pred = NamedNode::new("http://xmlns.com/foaf/0.1/name").unwrap();
-        let name_quads = output_store.get_quads(None, Some(&name_pred), None, None).unwrap();
+        let name_quads: Vec<_> = quads
+            .iter()
+            .filter(|q| q.predicate() == &name_pred)
+            .collect();
         assert_eq!(name_quads.len(), 2);
 
         // Check for age predicates
         let age_pred = NamedNode::new("http://xmlns.com/foaf/0.1/age").unwrap();
-        let age_quads = output_store.get_quads(None, Some(&age_pred), None, None).unwrap();
+        let age_quads: Vec<_> = quads
+            .iter()
+            .filter(|q| q.predicate() == &age_pred)
+            .collect();
         assert_eq!(age_quads.len(), 2);
     }
 
@@ -934,7 +1023,7 @@ mod tests {
         let mut executor = Executor::new(mapping, base_path, StrictMode::Strict);
 
         // Execute the mapping
-        executor.execute().unwrap();
+        let _ = execute_collect(&mut executor);
 
         // Check that records were cached
         let triples_map_id = "http://example.org/map1";
@@ -955,7 +1044,7 @@ mod tests {
         let mut executor = Executor::new(mapping, base_path, StrictMode::Strict);
 
         // Execute the mapping
-        executor.execute().unwrap();
+        let _ = execute_collect(&mut executor);
 
         // Check that subjects were cached
         let triples_map_id = "http://example.org/map1";
@@ -969,24 +1058,9 @@ mod tests {
         let base_path = PathBuf::from(".");
 
         let mut executor = Executor::new(mapping, base_path, StrictMode::Strict);
-        let output_store = executor.execute().unwrap();
+        let quads = execute_collect(&mut executor);
 
-        assert_eq!(output_store.size(), 0);
-    }
-
-    #[test]
-    fn test_into_output_store() {
-        let csv_file = create_test_csv_file();
-        let csv_path = csv_file.path().to_str().unwrap();
-
-        let mapping = create_simple_mapping(csv_path);
-        let base_path = PathBuf::from(".");
-
-        let mut executor = Executor::new(mapping, base_path, StrictMode::Strict);
-        executor.execute().unwrap();
-
-        let output_store = executor.into_output_store();
-        assert_eq!(output_store.size(), 6);
+        assert_eq!(quads.len(), 0);
     }
 
     #[test]
@@ -1004,11 +1078,11 @@ mod tests {
         let base_path = PathBuf::from(".");
 
         let mut executor = Executor::new(mapping, base_path, StrictMode::Strict);
-        let output_store = executor.execute().unwrap();
+        let quads = execute_collect(&mut executor);
 
         // Should generate quads for all 3 records
         // Each record: 1 rdf:type + 1 name + 1 age = 3 quads
         // Total: 3 * 3 = 9 quads
-        assert_eq!(output_store.size(), 9);
+        assert_eq!(quads.len(), 9);
     }
 }

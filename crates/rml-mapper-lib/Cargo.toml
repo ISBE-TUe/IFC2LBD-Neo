@@ -9,19 +9,19 @@ keywords = ["rml", "rdf", "mapping", "data-transformation", "semantic-web"]
 categories = ["database", "parser-implementations", "web-programming"]
 
 [features]
-default = ["remote", "database", "bzip2-compression"]
+default = ["remote", "database"]
 # Remote file access via HTTP (reqwest) — not available on WASM
 remote = ["dep:reqwest"]
 # Database access via sqlx (MySQL/Postgres/SQLite) — not available on WASM
 database = ["dep:sqlx", "dep:tokio"]
-# bzip2 compression (C library — not available on WASM)
-bzip2-compression = ["dep:bzip2"]
 # CLI binary (not needed when used as a library)
 cli = ["dep:clap"]
 
 [dependencies]
-# RDF handling and serialization
-oxigraph = "0.4"
+# RDF parsing (rio_api + rio_turtle replace oxigraph)
+rio_api = { workspace = true }
+rio_turtle = { workspace = true }
+oxiri = "0.2"
 
 # Database access (optional — not available on WASM)
 sqlx = { version = "0.8", features = [
@@ -71,10 +71,7 @@ const_format = "0.2"
 
 # Parallel processing
 rayon = "1.10"
-
-# Compression
-flate2 = "1.0"
-bzip2 = { version = "0.4", optional = true }
+crossbeam = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3.12"

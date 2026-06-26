@@ -14,7 +14,6 @@ pub mod mapping;
 pub mod executor;
 pub mod termgenerator;
 pub mod functions;
-pub mod target;
 pub mod conformer;
 
 // Re-export key types for convenience
