@@ -1,3 +1,5 @@
+#![allow(unused_imports)]
+
 use std::collections::{HashMap, HashSet};
 
 use crate::types::{

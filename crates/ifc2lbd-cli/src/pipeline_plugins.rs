@@ -1,3 +1,5 @@
+#![allow(unused_imports)]
+
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::PathBuf;

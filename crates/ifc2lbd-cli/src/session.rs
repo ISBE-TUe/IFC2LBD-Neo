@@ -1,3 +1,5 @@
+#![allow(unused_imports)]
+
 //! Shared `ExportSession` wrapper used by all writer threads.
 //!
 //! Each writer thread (LBD serializer, IfcOWL sidecar, chunk writer worker)

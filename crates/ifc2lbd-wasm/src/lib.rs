@@ -1,3 +1,5 @@
+#![allow(unused_imports)]
+
 mod api;
 mod memory;
 mod plugins;

@@ -1,8 +1,8 @@
 #![allow(unused_imports)]
 
-use std::io::{self, Write};
 use flate2::write::GzEncoder;
 use flate2::Compression;
+use std::io::{self, Write};
 
 #[cfg(target_arch = "wasm32")]
 use js_sys::{Function, Object, Reflect, Uint8Array};
@@ -141,10 +141,12 @@ impl<'a> SinkChunkWriter<'a> {
         if self.compress && !self.pending.is_empty() {
             let uncompressed = std::mem::take(&mut self.pending);
             let mut enc = GzEncoder::new(Vec::new(), Compression::fast());
-            enc.write_all(&uncompressed)
-                .map_err(|e| SerializerError::Io(io::Error::new(io::ErrorKind::Other, e.to_string())))?;
-            self.pending = enc.finish()
-                .map_err(|e| SerializerError::Io(io::Error::new(io::ErrorKind::Other, e.to_string())))?;
+            enc.write_all(&uncompressed).map_err(|e| {
+                SerializerError::Io(io::Error::new(io::ErrorKind::Other, e.to_string()))
+            })?;
+            self.pending = enc.finish().map_err(|e| {
+                SerializerError::Io(io::Error::new(io::ErrorKind::Other, e.to_string()))
+            })?;
         }
         self.flush_pending()?;
         self.emit_end()?;
@@ -350,7 +352,10 @@ impl<'a> SinkQuadChunkWriter<'a> {
     fn ensure_open(&mut self) -> Result<(), SerializerError> {
         if self.current_writer.is_none() {
             let gz = if self.compress { ".gz" } else { "" };
-            let filename = format!("{}.part-{:03}.nq{gz}", self.chunk_prefix, self.current_index);
+            let filename = format!(
+                "{}.part-{:03}.nq{gz}",
+                self.chunk_prefix, self.current_index
+            );
             let writer = SinkChunkWriter::new(
                 self.sink,
                 filename.clone(),

@@ -1,3 +1,5 @@
+#![allow(unused_imports)]
+
 use lbd_converter::IfcowlMode;
 use lbd_pipeline::ActivationError;
 use serde::{Deserialize, Serialize};

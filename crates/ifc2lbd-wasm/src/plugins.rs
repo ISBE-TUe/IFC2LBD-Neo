@@ -1,3 +1,5 @@
+#![allow(unused_imports)]
+
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 

@@ -1,3 +1,5 @@
+#![allow(unused_imports)]
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;

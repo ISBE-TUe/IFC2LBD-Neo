@@ -1,3 +1,5 @@
+#![allow(unused_imports)]
+
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::BufReader;

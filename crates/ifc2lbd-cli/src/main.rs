@@ -1,3 +1,5 @@
+#![allow(unused_imports)]
+
 //! Provides the command-line interface and end-to-end orchestration of the pipeline.
 //! Parses flags and module options, wires together parsing, modeling, conversion, and serialization.
 

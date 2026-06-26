@@ -1,0 +1,5 @@
+# Clippy is disabled project-wide.
+# This config exists to prevent clippy auto-fix from stripping imports
+# that are used in #[cfg(target_arch = "wasm32")] blocks.
+# If you want to run clippy manually, use: cargo clippy -- -W clippy::all
+# But NEVER auto-fix.

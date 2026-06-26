@@ -1,3 +1,5 @@
+#![allow(unused_imports)]
+
 //! N-Quads file chunking writer.
 //!
 //! Splits N-Quads output into multiple files based on line count, byte size,
