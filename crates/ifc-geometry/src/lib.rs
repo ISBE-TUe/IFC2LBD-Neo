@@ -70,7 +70,9 @@ pub enum GeometryMissingReason {
 /// deep BSP recursion from complex boolean/CSG operations on native targets.
 /// Inside that thread, elements are processed in parallel chunks via rayon::scope.
 pub fn stream_meshes(ifc_content: Arc<String>, element_ids: &[u64]) -> Vec<FlatMesh> {
-    if element_ids.is_empty() { return Vec::new(); }
+    if element_ids.is_empty() {
+        return Vec::new();
+    }
 
     let element_ids_vec: Vec<u64> = element_ids.to_vec();
 
@@ -180,7 +182,11 @@ fn tessellate_chunk(
             Err(_) => continue,
         };
 
-        let guid = element.get(0).and_then(|a| a.as_string()).unwrap_or("").to_string();
+        let guid = element
+            .get(0)
+            .and_then(|a| a.as_string())
+            .unwrap_or("")
+            .to_string();
         let category = element.ifc_type.to_string();
 
         let world_flat = match router.resolve_scaled_placement(&element, decoder) {
@@ -188,24 +194,33 @@ fn tessellate_chunk(
             Err(_) => IDENTITY_4X4,
         };
 
-        let sub_meshes = match router.process_element_submeshes_in_definition_space(&element, decoder) {
-            Ok(s) if !s.sub_meshes.is_empty() => s,
-            _ => continue,
-        };
+        let sub_meshes =
+            match router.process_element_submeshes_in_definition_space(&element, decoder) {
+                Ok(s) if !s.sub_meshes.is_empty() => s,
+                _ => continue,
+            };
 
         let mut geometries = Vec::with_capacity(sub_meshes.sub_meshes.len());
 
         let elem_placement = nalgebra::Matrix4::from_column_slice(&world_flat);
-        let first_to = sub_meshes.sub_meshes.first()
+        let first_to = sub_meshes
+            .sub_meshes
+            .first()
             .and_then(|s| s.local_matrix)
             .unwrap_or_else(nalgebra::Matrix4::identity);
-        let first_to_inv = first_to.try_inverse()
+        let first_to_inv = first_to
+            .try_inverse()
             .unwrap_or_else(nalgebra::Matrix4::identity);
         let world_transform = mat4_to_col16(&(elem_placement * first_to));
 
         for (i, sub) in sub_meshes.sub_meshes.into_iter().enumerate() {
-            if sub.mesh.positions.is_empty() { continue; }
-            let color = color_map.get(&sub.geometry_id).copied().unwrap_or(DEFAULT_COLOR);
+            if sub.mesh.positions.is_empty() {
+                continue;
+            }
+            let color = color_map
+                .get(&sub.geometry_id)
+                .copied()
+                .unwrap_or(DEFAULT_COLOR);
             let local_transform = if i == 0 {
                 IDENTITY_4X4
             } else {
@@ -223,7 +238,12 @@ fn tessellate_chunk(
         }
 
         if !geometries.is_empty() {
-            results.push(FlatMesh { express_id: eid, guid, category, geometries });
+            results.push(FlatMesh {
+                express_id: eid,
+                guid,
+                category,
+                geometries,
+            });
         }
     }
 
@@ -262,9 +282,11 @@ fn coverage_chunk(
         let category = element.ifc_type.to_string();
 
         let status = match router.process_element_submeshes_in_definition_space(&element, decoder) {
-            Ok(sub_meshes) if !sub_meshes.sub_meshes.is_empty() => GeometryCoverageStatus::HasGeometry {
-                geometry_count: sub_meshes.sub_meshes.len(),
-            },
+            Ok(sub_meshes) if !sub_meshes.sub_meshes.is_empty() => {
+                GeometryCoverageStatus::HasGeometry {
+                    geometry_count: sub_meshes.sub_meshes.len(),
+                }
+            }
             Ok(_) => GeometryCoverageStatus::Missing {
                 reason: GeometryMissingReason::EmptySubmeshes,
             },
@@ -304,16 +326,26 @@ fn build_color_map(
 
     let mut scanner = EntityScanner::new(content);
     while let Some((id, type_name, _start, _end)) = scanner.next_entity() {
-        if type_name != "IFCSTYLEDITEM" { continue; }
-        let Ok(entity) = decoder.decode_by_id(id) else { continue; };
+        if type_name != "IFCSTYLEDITEM" {
+            continue;
+        }
+        let Ok(entity) = decoder.decode_by_id(id) else {
+            continue;
+        };
 
         // arg[0] = Item (ref to geometry item)
-        let Some(item_ref) = entity.get_ref(0) else { continue; };
+        let Some(item_ref) = entity.get_ref(0) else {
+            continue;
+        };
         // arg[1] = Styles (list of style refs)
-        let Some(styles_list) = entity.get_list(1) else { continue; };
+        let Some(styles_list) = entity.get_list(1) else {
+            continue;
+        };
 
         for style_attr in styles_list {
-            let Some(style_id) = style_attr.as_entity_ref() else { continue; };
+            let Some(style_id) = style_attr.as_entity_ref() else {
+                continue;
+            };
             if let Some(rgba) = resolve_style_color(decoder, style_id) {
                 map.insert(item_ref, rgba);
                 break;
@@ -323,16 +355,26 @@ fn build_color_map(
 
     let mut scanner = EntityScanner::new(content);
     while let Some((id, type_name, _start, _end)) = scanner.next_entity() {
-        if type_name != "IFCMATERIALDEFINITIONREPRESENTATION" { continue; }
-        let Ok(entity) = decoder.decode_by_id(id) else { continue; };
+        if type_name != "IFCMATERIALDEFINITIONREPRESENTATION" {
+            continue;
+        }
+        let Ok(entity) = decoder.decode_by_id(id) else {
+            continue;
+        };
 
         // IfcProductRepresentation(Name, Description, Representations)
         // + IfcMaterialDefinitionRepresentation(RepresentedMaterial)
-        let Some(material_id) = entity.get_ref(3) else { continue; };
-        let Some(representations) = entity.get_list(2) else { continue; };
+        let Some(material_id) = entity.get_ref(3) else {
+            continue;
+        };
+        let Some(representations) = entity.get_list(2) else {
+            continue;
+        };
 
         for repr_attr in representations {
-            let Some(repr_id) = repr_attr.as_entity_ref() else { continue; };
+            let Some(repr_id) = repr_attr.as_entity_ref() else {
+                continue;
+            };
             if let Some(rgba) = resolve_material_representation_color(decoder, repr_id) {
                 map.entry(material_id).or_insert(rgba);
                 break;
@@ -355,7 +397,9 @@ fn resolve_material_representation_color(
     // IfcRepresentation(..., Items)
     let items = repr.get_list(3)?;
     for item_attr in items {
-        let Some(item_id) = item_attr.as_entity_ref() else { continue; };
+        let Some(item_id) = item_attr.as_entity_ref() else {
+            continue;
+        };
         if let Some(color) = resolve_styled_item_color(decoder, item_id) {
             return Some(color);
         }
@@ -427,7 +471,9 @@ fn resolve_style_color(
             // arg[0] = SurfaceColour ref, no transparency attribute on shading
             let colour_id = entity.get_ref(0)?;
             let colour = decoder.decode_by_id(colour_id).ok()?;
-            if colour.ifc_type.to_string() != "IfcColourRgb" { return None; }
+            if colour.ifc_type.to_string() != "IfcColourRgb" {
+                return None;
+            }
             let r = colour.get(1).and_then(|a| a.as_float()).unwrap_or(0.8) as f32;
             let g = colour.get(2).and_then(|a| a.as_float()).unwrap_or(0.8) as f32;
             let b = colour.get(3).and_then(|a| a.as_float()).unwrap_or(0.8) as f32;
@@ -437,29 +483,31 @@ fn resolve_style_color(
             // arg[0] = SurfaceColour ref
             let colour_id = entity.get_ref(0)?;
             let colour = decoder.decode_by_id(colour_id).ok()?;
-            if colour.ifc_type.to_string() != "IfcColourRgb" { return None; }
+            if colour.ifc_type.to_string() != "IfcColourRgb" {
+                return None;
+            }
             let r = colour.get(1).and_then(|a| a.as_float()).unwrap_or(0.8) as f32;
             let g = colour.get(2).and_then(|a| a.as_float()).unwrap_or(0.8) as f32;
             let b = colour.get(3).and_then(|a| a.as_float()).unwrap_or(0.8) as f32;
             let transparency = entity.get(1).and_then(|a| a.as_float()).unwrap_or(0.0) as f32;
             let a = (1.0 - transparency.clamp(0.0, 1.0)).clamp(0.0, 1.0);
-            Some([r.clamp(0.0,1.0), g.clamp(0.0,1.0), b.clamp(0.0,1.0), a])
+            Some([r.clamp(0.0, 1.0), g.clamp(0.0, 1.0), b.clamp(0.0, 1.0), a])
         }
         _ => None,
     }
 }
 
 const IDENTITY_4X4: [f64; 16] = [
-    1.0, 0.0, 0.0, 0.0,
-    0.0, 1.0, 0.0, 0.0,
-    0.0, 0.0, 1.0, 0.0,
-    0.0, 0.0, 0.0, 1.0,
+    1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
 ];
 
 /// Convert nalgebra Matrix4 to column-major [f64; 16] array.
 fn mat4_to_col16(m: &nalgebra::Matrix4<f64>) -> [f64; 16] {
     let s = m.as_slice();
-    [s[0],s[1],s[2],s[3], s[4],s[5],s[6],s[7], s[8],s[9],s[10],s[11], s[12],s[13],s[14],s[15]]
+    [
+        s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7], s[8], s[9], s[10], s[11], s[12], s[13],
+        s[14], s[15],
+    ]
 }
 
 fn geometry_thread_stack_bytes() -> usize {
