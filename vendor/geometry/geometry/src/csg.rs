@@ -1686,11 +1686,11 @@ fn add_triangle_to_mesh(mesh: &mut Mesh, triangle: &Triangle) {
 /// On desktop, this is a no-op because the frontend computes normals in JS
 /// after decoding (normals are not sent over IPC to save bandwidth).
 /// WASM path keeps full normal calculation.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 #[inline]
 pub fn calculate_normals(_mesh: &mut Mesh) {}
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 #[inline]
 pub fn calculate_normals(mesh: &mut Mesh) {
     let vertex_count = mesh.vertex_count();

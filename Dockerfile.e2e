@@ -1,0 +1,6 @@
+FROM rust:latest
+RUN rustup toolchain install nightly --component rust-src --target wasm32-unknown-unknown
+RUN apt-get update && apt-get install -y wabt binaryen cmake
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install -y nodejs
+RUN npm install -g playwright && npx playwright install --with-deps chromium
+WORKDIR /app

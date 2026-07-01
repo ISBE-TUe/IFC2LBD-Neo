@@ -213,7 +213,7 @@ impl<'a> ParserState<'a> {
 /// Get current timestamp (mock implementation for native Rust)
 /// In WASM, this would use web_sys::window().performance().now()
 fn get_timestamp() -> f64 {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -222,7 +222,7 @@ fn get_timestamp() -> f64 {
             * 1000.0
     }
 
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(target_family = "wasm")]
     {
         // In WASM, would use:
         // web_sys::window().unwrap().performance().unwrap().now()

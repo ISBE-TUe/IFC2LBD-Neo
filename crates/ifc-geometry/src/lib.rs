@@ -78,10 +78,9 @@ pub fn stream_meshes(ifc_content: Arc<String>, element_ids: &[u64]) -> Vec<FlatM
     // worker stack. Keep geometry on a dedicated large-stack thread and allow a
     // local override for diagnostics without another rebuild.
     //
-    // WASM: std::thread::Builder::new().stack_size() is not supported on wasm32.
-    // Geometry runs directly on the rayon worker thread; the WASM shadow stack
-    // handles BSP recursion depth there without a custom stack_size.
-    #[cfg(not(target_arch = "wasm32"))]
+    // WASM: std::thread::Builder::new().stack_size() is not supported on
+    // wasm32 or wasm64.  Geometry runs directly on the rayon worker thread.
+    #[cfg(not(target_family = "wasm"))]
     {
         std::thread::Builder::new()
             .name("ifc-geometry".to_string())
@@ -91,7 +90,7 @@ pub fn stream_meshes(ifc_content: Arc<String>, element_ids: &[u64]) -> Vec<FlatM
             .join()
             .unwrap_or_default()
     }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(target_family = "wasm")]
     {
         tessellate_parallel(ifc_content, element_ids_vec)
     }
@@ -111,7 +110,7 @@ pub fn analyze_geometry_coverage(
 
     let element_ids_vec: Vec<u64> = element_ids.to_vec();
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     {
         std::thread::Builder::new()
             .name("ifc-geometry".to_string())
@@ -121,7 +120,7 @@ pub fn analyze_geometry_coverage(
             .join()
             .unwrap_or_default()
     }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(target_family = "wasm")]
     {
         analyze_coverage_parallel(ifc_content, element_ids_vec)
     }
