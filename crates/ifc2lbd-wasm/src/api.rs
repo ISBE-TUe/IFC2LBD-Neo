@@ -16,6 +16,7 @@ use crate::types::*;
 
 #[wasm_bindgen(js_name = listModules)]
 pub fn list_modules() -> Result<JsValue, JsValue> {
+    crate::ensure_panic_hook();
     let registry = browser_registry();
     let modules: Vec<ModuleManifestView> = registry.manifests().into_iter().map(to_view).collect();
     serde_wasm_bindgen::to_value(&modules).map_err(js_err)
@@ -26,6 +27,7 @@ pub fn resolve_plan(
     requested_modules: JsValue,
     module_options: JsValue,
 ) -> Result<JsValue, JsValue> {
+    crate::ensure_panic_hook();
     let requested: Vec<String> =
         serde_wasm_bindgen::from_value(requested_modules).map_err(js_err)?;
     let options: Vec<String> = if module_options.is_null() || module_options.is_undefined() {
@@ -40,11 +42,13 @@ pub fn resolve_plan(
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen(js_name = initNeoThreadPool)]
 pub fn init_neo_thread_pool(threads: usize) -> js_sys::Promise {
+    crate::ensure_panic_hook();
     wasm_bindgen_rayon::init_thread_pool(threads)
 }
 
 #[wasm_bindgen(js_name = convertIfc)]
 pub fn convert_ifc(input: &[u8], request: JsValue) -> Result<JsValue, JsValue> {
+    crate::ensure_panic_hook();
     let request: ConversionRequest = serde_wasm_bindgen::from_value(request).map_err(js_err)?;
     let result = convert_ifc_impl(input, request).map_err(js_err)?;
     serde_wasm_bindgen::to_value(&result).map_err(js_err)
@@ -57,6 +61,7 @@ pub fn convert_ifc_to_sink(
     request: JsValue,
     sink: Function,
 ) -> Result<JsValue, JsValue> {
+    crate::ensure_panic_hook();
     let request: ConversionRequest = serde_wasm_bindgen::from_value(request).map_err(js_err)?;
     let result = convert_ifc_to_sink_impl(input, request, &sink).map_err(js_err)?;
     serde_wasm_bindgen::to_value(&result).map_err(js_err)
@@ -64,6 +69,7 @@ pub fn convert_ifc_to_sink(
 
 #[wasm_bindgen(js_name = benchmarkConvertIfc)]
 pub fn benchmark_convert_ifc(input: &[u8], request: JsValue) -> Result<JsValue, JsValue> {
+    crate::ensure_panic_hook();
     let request: ConversionRequest = serde_wasm_bindgen::from_value(request).map_err(js_err)?;
     let result = benchmark_convert_ifc_impl(input, request).map_err(js_err)?;
     serde_wasm_bindgen::to_value(&result).map_err(js_err)
@@ -71,6 +77,7 @@ pub fn benchmark_convert_ifc(input: &[u8], request: JsValue) -> Result<JsValue, 
 
 #[wasm_bindgen(js_name = planExecution)]
 pub fn plan_execution(input_size_bytes: f64, request: JsValue) -> Result<JsValue, JsValue> {
+    crate::ensure_panic_hook();
     let request: ConversionRequest = serde_wasm_bindgen::from_value(request).map_err(js_err)?;
     let settings = requested_settings_for_planning(&request).map_err(js_err)?;
     let (mode, estimated_peak_mb, feasibility_check_mb, reason) =
