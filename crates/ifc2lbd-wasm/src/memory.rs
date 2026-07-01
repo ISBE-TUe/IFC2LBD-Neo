@@ -47,11 +47,21 @@ pub(crate) fn effective_ifcowl_workers(mode: ExecutionMode, request: &Conversion
 /// buffers).
 const WASM_MEMORY_CEILING_MB: u64 = 3200;
 
-/// Hard cap on WASM linear memory set via `--max-memory=4294901760`
-/// (≈ 4096 MB) in `.cargo/config.toml`.  When the estimated peak
-/// exceeds this, the conversion will OOM-trap — abort early with a
-/// clear message instead of letting the user hit an opaque
+/// Hard cap on WASM linear memory set via `--max-memory` in
+/// `.cargo/config.toml`.  When the estimated peak exceeds this,
+/// the conversion will OOM-trap — abort early with a clear message
+/// instead of letting the user hit an opaque
 /// `RuntimeError: unreachable executed`.
+///
+/// - **wasm32**: `--max-memory=4294901760` (≈ 4096 MB)
+/// - **wasm64**: `--max-memory=17179869184` (16 GiB).  We use 14 336 MB
+///   as the pre-flight ceiling, leaving ~2 GiB headroom for the WASM
+///   runtime, JS engine heap, and rayon worker stacks under the
+///   browser's 16 GiB JS API limit.
+#[cfg(target_arch = "wasm64")]
+pub(crate) const WASM_MEMORY_HARD_CAP_MB: u64 = 14336;
+
+#[cfg(not(target_arch = "wasm64"))]
 pub(crate) const WASM_MEMORY_HARD_CAP_MB: u64 = 4096;
 
 /// Safety multiplier applied to the estimated peak before comparing

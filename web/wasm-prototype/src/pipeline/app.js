@@ -24,6 +24,28 @@ import { showCliCommand } from "./cli-command.js";
 
 const RUNTIME_BUILD = __BUILD_VERSION__;
 
+// Detect browser support for WASM memory64 (> 4 GiB linear memory).
+// Requires: Chrome 133+, Firefox 134+, Edge 133+. Safari: not supported.
+const detectWasm64Support = () => {
+	try {
+		// Test creating a shared i64 memory — requires cross-origin isolation
+		// (COOP/COEP headers, already configured in vite.config.js).
+		new WebAssembly.Memory({
+			address: "i64",
+			initial: 1n,
+			maximum: 256n,
+			shared: true,
+		});
+		return true;
+	} catch {
+		return false;
+	}
+};
+
+const WASM64_SUPPORTED = detectWasm64Support();
+const WASM32_HARD_CAP_MB = 4096;
+const WASM64_HARD_CAP_MB = 14336; // 14 GiB, leaving ~2 GiB headroom under the 16 GiB browser limit
+
 // ---------------------------------------------------------------------------
 // Pipeline Templates
 // ---------------------------------------------------------------------------
@@ -368,6 +390,7 @@ function runSinkConversionInWorker(
 	requestPayload,
 	expectedFiles,
 	requestedThreads,
+	wasmVariant = "wasm32",
 ) {
 	return new Promise((resolve, reject) => {
 		const worker = getConversionWorker();
@@ -389,6 +412,7 @@ function runSinkConversionInWorker(
 					inputBuffer: inputCopy.buffer,
 					request: requestPayload,
 					requestedThreads,
+					wasmVariant,
 					inputFormat: requestPayload.inputFormat,
 					structuredDataFiles: requestPayload.structuredDataFiles,
 				},
@@ -672,6 +696,9 @@ async function init() {
 
 	log(`WASM ready. Pipeline dashboard.`);
 	log(`Build: ${RUNTIME_BUILD}`);
+	log(
+		`WASM: ${WASM64_SUPPORTED ? "wasm64 (16 GiB limit) + wasm32 (4 GiB limit)" : "wasm32 (4 GiB limit)"}${WASM64_SUPPORTED ? "" : " — wasm64 not supported in this browser"}`,
+	);
 }
 
 // ---------------------------------------------------------------------------
@@ -769,10 +796,23 @@ async function runConversion() {
 			`Mode=${executionPlan.selectedMode} est=${executionPlan.estimatedPeakMb}MB`,
 		);
 
-		if (executionPlan.estimatedPeakMb > 4096) {
+		// Pre-flight memory check: choose wasm32 (fast) or wasm64 (large files).
+		const needsWasm64 = executionPlan.estimatedPeakMb > WASM32_HARD_CAP_MB;
+		const useWasm64 = needsWasm64 && WASM64_SUPPORTED;
+
+		if (needsWasm64 && !WASM64_SUPPORTED) {
 			throw new Error(
-				`Estimated peak memory (${executionPlan.estimatedPeakMb} MB) exceeds the browser limit (4096 MB). Use the CLI for files this large.`,
+				`Estimated peak memory (${executionPlan.estimatedPeakMb} MB) exceeds the wasm32 limit (${WASM32_HARD_CAP_MB} MB). This browser does not support wasm64 (memory64). Use the CLI for files this large.`,
 			);
+		}
+		if (executionPlan.estimatedPeakMb > WASM64_HARD_CAP_MB) {
+			throw new Error(
+				`Estimated peak memory (${executionPlan.estimatedPeakMb} MB) exceeds even the wasm64 limit (${WASM64_HARD_CAP_MB} MB). Use the CLI for files this large.`,
+			);
+		}
+
+		if (useWasm64) {
+			log(`Using wasm64 (memory64) for large file: ${executionPlan.estimatedPeakMb} MB estimated peak`);
 		}
 
 		const requestedThreads = Math.max(
@@ -880,6 +920,7 @@ async function runConversion() {
 			requestPayload,
 			expectedFiles,
 			requestedThreads,
+			useWasm64 ? "wasm64" : "wasm32",
 		);
 
 		// Geometry sidecar files (fragments/parquet/gltf) — returned as base64 in bundle

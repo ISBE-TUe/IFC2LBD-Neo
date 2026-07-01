@@ -1,15 +1,26 @@
-import initWasm, {
-	convertIfcToSink,
-	initNeoThreadPool,
-} from "./wasm/ifc2lbd_wasm.js";
+// wasm-lowmem-worker.js — Low-memory WASM conversion worker
+//
+// Dynamically loads the wasm32 or wasm64 module based on the `wasmVariant`
+// field in the convert payload.  wasm32 is the default (fast, no bounds
+// checks on 64-bit systems).  wasm64 is used for large files that exceed
+// the 4 GiB wasm32 memory cap (slower due to bounds checks, but 16 GiB cap).
 
 let wasmReady = false;
 let threadPoolInitialized = false;
 let threadPoolSize = 0;
+let wasmApi = null;
 
-const ensureWasm = async () => {
-	if (wasmReady) return;
-	await initWasm();
+// Statically-analyzable import map so Vite can bundle both variants.
+const wasmLoaders = {
+	wasm32: () => import("./wasm/ifc2lbd_wasm.js"),
+	wasm64: () => import("./wasm64/ifc2lbd_wasm.js"),
+};
+
+const ensureWasm = async (variant) => {
+	if (wasmReady && wasmApi) return;
+	const loader = wasmLoaders[variant] || wasmLoaders.wasm32;
+	wasmApi = await loader();
+	await wasmApi.default();
 	wasmReady = true;
 };
 
@@ -17,7 +28,7 @@ const ensureThreadPool = async (requestedThreads) => {
 	const threads = Math.max(2, Number(requestedThreads || 4));
 	if (threadPoolInitialized) return { threads: threadPoolSize, reused: true };
 	await withTimeout(
-		initNeoThreadPool(threads),
+		wasmApi.initNeoThreadPool(threads),
 		8000,
 		"initNeoThreadPool timeout",
 	);
@@ -41,13 +52,15 @@ self.addEventListener("message", async (event) => {
 	if (!id || type !== "convert") return;
 
 	try {
+		const variant = payload?.wasmVariant || "wasm32";
+
 		self.postMessage({
 			id,
 			type: "status",
 			phase: "init-wasm",
 			status: "start",
 		});
-		await ensureWasm();
+		await ensureWasm(variant);
 		self.postMessage({
 			id,
 			type: "status",
@@ -134,7 +147,9 @@ self.addEventListener("message", async (event) => {
 
 		self.postMessage({ id, type: "status", phase: "convert", status: "start" });
 		const streamResult = await withTimeout(
-			Promise.resolve().then(() => convertIfcToSink(input, request, sink)),
+			Promise.resolve().then(() =>
+				wasmApi.convertIfcToSink(input, request, sink),
+			),
 			20000,
 			"convertIfcToSink timeout",
 		);

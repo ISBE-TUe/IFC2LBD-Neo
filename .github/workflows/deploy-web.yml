@@ -15,11 +15,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust nightly + wasm32 target
+      - name: Install Rust nightly + wasm targets
         uses: dtolnay/rust-toolchain@nightly
         with:
           targets: wasm32-unknown-unknown
           components: rust-src
+          # wasm64-unknown-unknown is a Tier 3 target — no pre-built std,
+          # but -Z build-std (in build_wasm_web.sh) handles it. We only
+          # need rust-src (already listed) for the std rebuild.
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
