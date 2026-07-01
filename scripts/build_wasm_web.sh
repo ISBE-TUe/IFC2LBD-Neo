@@ -121,6 +121,14 @@ PY
 		echo "Patched worker helpers: $worker_helpers"
 	fi
 
+	# For wasm64: patch the generated JS to fix f64 ↔ BigInt ABI issues.
+	# wasm-bindgen 0.2.126 generates JS that doesn't properly convert
+	# f64 returns (from malloc, add_to_stack_pointer) to BigInt where
+	# the wasm functions expect i64 params.
+	if [[ "$target" == "wasm64-unknown-unknown" ]]; then
+		python3 "$ROOT_DIR/scripts/patch_wasm64_js.py" "$outdir/ifc2lbd_wasm.js"
+	fi
+
 	echo "✓ $target done → $outdir"
 }
 
