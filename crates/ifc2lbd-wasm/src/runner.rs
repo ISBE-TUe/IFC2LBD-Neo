@@ -399,16 +399,10 @@ impl PipelineRunner {
             reason
         ));
 
-        // Pre-flight: if the estimated peak exceeds the WASM hard cap,
-        // abort early with a clear message instead of OOM-trapping later.
-        if estimated_peak_mb > WASM_MEMORY_HARD_CAP_MB {
-            return Err(WasmApiError::Message(format!(
-                "Estimated peak memory ({estimated_peak_mb} MB) exceeds the \
-                 browser WASM limit (~{WASM_MEMORY_HARD_CAP_MB} MB). This file \
-                 is too large for in-browser conversion. Please use the CLI \
-                 (ifc2lbd-neo) for files this size."
-            )));
-        }
+        // Pre-flight memory check is done on the JS side (app.js) which
+        // knows the correct hard cap for the selected variant (4096 for
+        // wasm32, 14336 for wasm64) and selects the right binary before
+        // dispatching to the worker. No Rust-side check needed here.
 
         // Parse stage
         emit_stage_event(sink, "parse", "Preprocess", "running", 0, 0, 0, None)
