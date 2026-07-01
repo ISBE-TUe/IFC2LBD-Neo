@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT_DIR_32="$ROOT_DIR/web/wasm-prototype/src/wasm"
-OUT_DIR_64="$ROOT_DIR/web/wasm-prototype/src/wasm64"
+OUT_DIR_64="$ROOT_DIR/web/wasm-prototype/public/wasm64"
 
 mkdir -p "$OUT_DIR_32" "$OUT_DIR_64"
 
@@ -133,6 +133,10 @@ build_target "wasm32-unknown-unknown" "$OUT_DIR_32" "65535"
 
 # wasm64 (16 GiB max — for large files that exceed the 4 GiB wasm32 cap)
 # Requires wasm-bindgen >= 0.2.122 (PR #5004 added wasm64 threading support)
+# Output goes to public/wasm64/ so Vite deploys it as a static asset
+# (Vite can't statically resolve dynamic imports from src/wasm64/).
+OUT_DIR_64="$ROOT_DIR/web/wasm-prototype/public/wasm64"
+mkdir -p "$OUT_DIR_64"
 build_target "wasm64-unknown-unknown" "$OUT_DIR_64" "262144"
 
 echo ""

@@ -12,22 +12,28 @@ let wasmApi = null;
 
 // Use explicit if/else with static string literals so Vite/Rollup can
 // statically analyze and rewrite each import to the correct production
-// chunk URL.  Variable-path imports (import(path)) or @vite-ignore would
-// leave the source path unresolved, failing in production where chunk
-// URLs differ from source paths.  Both modules always exist at build time
-// — wasm64 is a stub when the wasm64 build fails (see build_wasm_web.sh).
+// chunk URL.
+//
+// wasm32: bundled by Vite (import("./wasm/ifc2lbd_wasm.js"))
+// wasm64: loaded from /wasm64/ (public dir, not bundled — 24 MB binary
+//         only fetched when a file exceeds the 4 GB wasm32 cap)
+//         Uses a variable + @vite-ignore so Vite doesn't try to resolve
+//         the path at build time (the file only exists in public/ at
+//         runtime after CI deploys it).
+const WASM64_URL = "/wasm64/ifc2lbd_wasm.js";
+
 const ensureWasm = async (variant) => {
 	if (wasmReady && wasmApi) return;
 	try {
 		if (variant === "wasm64") {
-			wasmApi = await import("./wasm64/ifc2lbd_wasm.js");
+			wasmApi = await import(/* @vite-ignore */ WASM64_URL);
 		} else {
 			wasmApi = await import("./wasm/ifc2lbd_wasm.js");
 		}
 		await wasmApi.default();
 	} catch (err) {
-		// wasm64 module may not be available (build failed, stub throws).
-		// Fall back to wasm32.
+		// wasm64 module may not be available (build failed or browser
+		// doesn't support memory64). Fall back to wasm32.
 		if (variant === "wasm64") {
 			wasmApi = await import("./wasm/ifc2lbd_wasm.js");
 			await wasmApi.default();
