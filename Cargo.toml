@@ -117,3 +117,11 @@ plugin-geometry-producer = { path = "crates/plugin-geometry-producer" }
 ifc-lite-core = { path = "vendor/geometry/core", default-features = false }
 ifc-lite-geometry = { path = "vendor/geometry/geometry", default-features = false }
 nalgebra = { version = "0.35", default-features = false, features = ["std"] }
+
+# Patch getrandom 0.4.x to support wasm64-unknown-unknown.  The upstream
+# crate only checks target_arch = "wasm32" in its backend selection; this
+# local patch adds "wasm64" so the wasm_js backend (wasm-bindgen + js-sys)
+# is used on both wasm32 and wasm64 targets.  Only affects getrandom 0.4.x
+# — versions 0.2.x and 0.3.x are not patched.
+[patch.crates-io]
+getrandom = { path = "vendor/getrandom-0.4.2" }

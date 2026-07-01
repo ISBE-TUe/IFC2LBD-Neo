@@ -12,7 +12,6 @@ structured-data = { path = "../structured-data" }
 rml-mapper-lib = { path = "../rml-mapper-lib", default-features = false }
 crossbeam = { workspace = true }
 rayon = { workspace = true }
-tempfile = "3"
 rio_api = { workspace = true }
 rio_turtle = { workspace = true }
 oxiri = "0.2"

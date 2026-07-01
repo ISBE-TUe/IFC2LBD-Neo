@@ -61,6 +61,8 @@ const GEO_MODULES = ["neo-geometry-preprocess", "neo-geometry-producer"];
 
 const TURTLE_OPTS = {
 	"neo-turtle-serializer": { grouping: "streaming", layout: "joined" },
+	"neo-file-export": { compress: "gzip" },
+	"neo-bsdd-producer": { compact: "true", dedup_properties: "true" },
 };
 
 const TEMPLATES = [
@@ -87,7 +89,7 @@ const TEMPLATES = [
 			"neo-nquads-serializer",
 			"neo-file-export",
 		],
-		options: {},
+		options: { "neo-file-export": { compress: "gzip" }, "neo-bsdd-producer": { compact: "true", dedup_properties: "true" } },
 	},
 	{
 		id: "default-ifcowl-turtle",
@@ -113,7 +115,7 @@ const TEMPLATES = [
 			"neo-nquads-serializer",
 			"neo-file-export",
 		],
-		options: {},
+		options: { "neo-file-export": { compress: "gzip" }, "neo-bsdd-producer": { compact: "true", dedup_properties: "true" } },
 	},
 	// --- Geometry (default + geometry preprocess + geometry producer) ---
 	{
@@ -140,7 +142,7 @@ const TEMPLATES = [
 			"neo-nquads-serializer",
 			"neo-file-export",
 		],
-		options: {},
+		options: { "neo-file-export": { compress: "gzip" }, "neo-bsdd-producer": { compact: "true", dedup_properties: "true" } },
 	},
 	{
 		id: "geometry-ifcowl-turtle",
@@ -168,7 +170,7 @@ const TEMPLATES = [
 			"neo-nquads-serializer",
 			"neo-file-export",
 		],
-		options: {},
+		options: { "neo-file-export": { compress: "gzip" }, "neo-bsdd-producer": { compact: "true", dedup_properties: "true" } },
 	},
 	// --- RML (structured data) ---
 	{
@@ -183,7 +185,7 @@ const TEMPLATES = [
 		label: "RML → N-Quads",
 		desc: "RML mapper with N-Quads output",
 		modules: ["neo-rml-mapper", "neo-nquads-serializer", "neo-file-export"],
-		options: {},
+		options: { "neo-file-export": { compress: "gzip" }, "neo-bsdd-producer": { compact: "true", dedup_properties: "true" } },
 	},
 	{
 		id: "ontology-turtle",
@@ -205,7 +207,7 @@ const TEMPLATES = [
 			"neo-nquads-serializer",
 			"neo-file-export",
 		],
-		options: {},
+		options: { "neo-file-export": { compress: "gzip" }, "neo-bsdd-producer": { compact: "true", dedup_properties: "true" } },
 	},
 	{
 		id: "rml-ontology-turtle",
@@ -229,7 +231,7 @@ const TEMPLATES = [
 			"neo-nquads-serializer",
 			"neo-file-export",
 		],
-		options: {},
+		options: { "neo-file-export": { compress: "gzip" }, "neo-bsdd-producer": { compact: "true", dedup_properties: "true" } },
 	},
 ];
 

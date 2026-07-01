@@ -48,3 +48,9 @@ getrandom = { version = "0.2", features = ["js"] }
 # Only enable on wasm32. On wasm64, requesting parquet format returns a
 # runtime error (see plugin-geometry-producer's cfg(not(feature)) fallback).
 plugin-geometry-producer = { workspace = true, features = ["fmt-parquet"] }
+
+[target.'cfg(target_arch = "wasm64")'.dependencies]
+# getrandom 0.4 (pulled in by uuid/tempfile) needs the wasm_js feature to use
+# wasm-bindgen for randomness on wasm64.  The local [patch.crates-io] in the
+# root Cargo.toml adds the wasm64 cfg gate; this feature enables the backend.
+getrandom = { version = "0.4", features = ["wasm_js"] }

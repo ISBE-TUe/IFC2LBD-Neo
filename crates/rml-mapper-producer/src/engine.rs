@@ -11,6 +11,8 @@
 //! 5. Convert Quads to pipeline Triple structs and forward through channel
 
 use std::io::Cursor;
+
+#[cfg(not(target_arch = "wasm"))]
 use tempfile::TempDir;
 
 use crossbeam::channel::Sender;
@@ -46,12 +48,19 @@ pub fn execute_rml_streaming(
     triple_sender: &Sender<Vec<Triple>>,
     batch_size: usize,
 ) -> Result<(), String> {
+    #[cfg(not(target_arch = "wasm"))]
     let temp_dir = TempDir::new().map_err(|e| format!("temp dir: {e}"))?;
+    #[cfg(not(target_arch = "wasm"))]
     let work_dir = temp_dir.path().to_path_buf();
+    #[cfg(target_arch = "wasm")]
+    let work_dir = std::path::PathBuf::new(); // no filesystem on WASM
 
     // Write source file to temp directory
-    let source_path = work_dir.join(source_filename);
-    std::fs::write(&source_path, source_bytes).map_err(|e| format!("write source: {e}"))?;
+    #[cfg(not(target_arch = "wasm"))]
+    {
+        let source_path = work_dir.join(source_filename);
+        std::fs::write(&source_path, source_bytes).map_err(|e| format!("write source: {e}"))?;
+    };
 
     // Replace placeholder source filenames in mapping with actual filename
     let mapping = prepare_mapping_for_source(mapping_turtle, source_filename);

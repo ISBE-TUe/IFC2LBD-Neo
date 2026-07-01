@@ -19,9 +19,12 @@ const state = {
 	moduleOptions: {
 		"neo-turtle-serializer": { grouping: "streaming", layout: "joined" },
 		"neo-bsdd-producer": {
-			compact: "false",
+			compact: "true",
 			include_standard_attrs: "true",
-			dedup_properties: "false",
+			dedup_properties: "true",
+		},
+		"neo-file-export": {
+			compress: "gzip",
 		},
 	},
 	baseUri: "https://lbd.example.com/",
