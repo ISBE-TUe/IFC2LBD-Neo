@@ -1,4 +1,5 @@
 #![allow(unused_imports)]
+#![cfg_attr(target_arch = "wasm32", feature(alloc_error_handler))]
 
 mod api;
 mod memory;
@@ -34,7 +35,14 @@ pub(crate) fn ensure_panic_hook() {}
 // Without this, OOM goes through `handle_alloc_error → intrinsics::abort()`
 // which bypasses the panic hook entirely, leaving the user with an opaque
 // "RuntimeError: unreachable executed" and zero diagnostic info.
+//
+// Requires `-C panic=abort` in `.cargo/config.toml` so that std's built-in
+// `#[alloc_error_handler]` is excluded via `no_global_oom_handling` cfg,
+// avoiding a conflict with this handler.
 // ---------------------------------------------------------------------------
+
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::prelude::wasm_bindgen;
 
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
@@ -48,7 +56,7 @@ extern "C" {
 fn alloc_error_handler(layout: std::alloc::Layout) -> ! {
     error(&format!(
         "WASM OOM: allocation of {} bytes (align {}) failed — \
-         linear memory at ~4 GB hard cap. \
+         linear memory at hard cap. \
          The file is too large for browser conversion; use the CLI instead.",
         layout.size(),
         layout.align(),
