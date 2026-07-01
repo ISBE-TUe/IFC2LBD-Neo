@@ -41,6 +41,7 @@ vendor/chijin/target/
 web/ifclite-debugviewer/
 ifc2lbd-neo-linux-x86_64
 web/wasm-prototype/src/wasm/ifc2lbd_wasm_bg.wasm
+web/wasm-prototype/src/wasm64/ifc2lbd_wasm_bg.wasm
 
 # Pi agent / lens (local tooling, not pushed)
 .pi-lens/

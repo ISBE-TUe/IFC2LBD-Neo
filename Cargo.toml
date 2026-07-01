@@ -74,7 +74,7 @@ anyhow = "1"
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-wasm-bindgen = "0.2"
+wasm-bindgen = "0.2.126"
 serde-wasm-bindgen = "0.6"
 js-sys = "0.3"
 time = { version = "0.3", features = ["formatting"] }
@@ -125,3 +125,4 @@ nalgebra = { version = "0.35", default-features = false, features = ["std"] }
 # — versions 0.2.x and 0.3.x are not patched.
 [patch.crates-io]
 getrandom = { path = "vendor/getrandom-0.4.2" }
+js-sys = { path = "vendor/js-sys-0.3.103" }

@@ -129,22 +129,10 @@ PY
 build_target "wasm32-unknown-unknown" "$OUT_DIR_32" "65535"
 
 # wasm64 (16 GiB max — for large files that exceed the 4 GiB wasm32 cap)
-# NOTE: wasm-bindgen-rayon + wasm64 threading is not yet supported —
-# wasm-bindgen's threading preparation expects __heap_base as i32, but
-# wasm64 uses i64.  The cargo build succeeds but wasm-bindgen fails at
-# the post-processing step.  Make this non-fatal so CI can ship wasm32
-# while we wait for wasm-bindgen to add wasm64 threading support.
-if build_target "wasm64-unknown-unknown" "$OUT_DIR_64" "262144"; then
-	echo "wasm64 build succeeded"
-else
-	echo "⚠ wasm64 build failed (expected: wasm-bindgen-rayon does not yet support wasm64 threading)"
-	echo "  Only wasm32 will be shipped. Large files will show 'use the CLI' message."
-	# Create a placeholder so the JS loader doesn't 404
-	mkdir -p "$OUT_DIR_64"
-	echo '{"error":"wasm64 not available"}' >"$OUT_DIR_64/.unavailable"
-fi
+# Requires wasm-bindgen >= 0.2.122 (PR #5004 added wasm64 threading support)
+build_target "wasm64-unknown-unknown" "$OUT_DIR_64" "262144"
 
 echo ""
 echo "WASM web artifacts written to:"
 echo "  wasm32: $OUT_DIR_32"
-echo "  wasm64: $OUT_DIR_64 (may be incomplete if build failed)"
+echo "  wasm64: $OUT_DIR_64"

@@ -10,24 +10,26 @@ let threadPoolInitialized = false;
 let threadPoolSize = 0;
 let wasmApi = null;
 
-// Statically-analyzable import map so Vite can bundle both variants.
-const wasmLoaders = {
-	wasm32: () => import("./wasm/ifc2lbd_wasm.js"),
-	wasm64: () => import("./wasm64/ifc2lbd_wasm.js"),
-};
-
+// Use explicit if/else with static string literals so Vite/Rollup can
+// statically analyze and rewrite each import to the correct production
+// chunk URL.  Variable-path imports (import(path)) or @vite-ignore would
+// leave the source path unresolved, failing in production where chunk
+// URLs differ from source paths.  Both modules always exist at build time
+// — wasm64 is a stub when the wasm64 build fails (see build_wasm_web.sh).
 const ensureWasm = async (variant) => {
 	if (wasmReady && wasmApi) return;
-	const loader = wasmLoaders[variant] || wasmLoaders.wasm32;
 	try {
-		wasmApi = await loader();
+		if (variant === "wasm64") {
+			wasmApi = await import("./wasm64/ifc2lbd_wasm.js");
+		} else {
+			wasmApi = await import("./wasm/ifc2lbd_wasm.js");
+		}
 		await wasmApi.default();
 	} catch (err) {
-		// wasm64 module may not be available (build failed due to
-		// wasm-bindgen-rayon not supporting wasm64 threading yet).
+		// wasm64 module may not be available (build failed, stub throws).
 		// Fall back to wasm32.
 		if (variant === "wasm64") {
-			wasmApi = await wasmLoaders.wasm32();
+			wasmApi = await import("./wasm/ifc2lbd_wasm.js");
 			await wasmApi.default();
 		} else {
 			throw err;
