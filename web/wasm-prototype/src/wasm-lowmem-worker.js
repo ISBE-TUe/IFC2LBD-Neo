@@ -6,7 +6,7 @@
 // the 4 GiB wasm32 memory cap (slower due to bounds checks, but 16 GiB cap).
 
 let wasmReady = false;
-const wasmVariantLoaded = null;
+let wasmVariantLoaded = null;
 let threadPoolInitialized = false;
 let threadPoolSize = 0;
 let wasmApi = null;
@@ -45,7 +45,10 @@ const ensureWasm = async (variant) => {
 		// wasm64 module may not be available (build failed or browser
 		// doesn't support memory64). Fall back to wasm32.
 		if (variant === "wasm64") {
-			console.error("[worker] wasm64 load failed, falling back to wasm32:", err);
+			console.error(
+				"[worker] wasm64 load failed, falling back to wasm32:",
+				err,
+			);
 			variant = "wasm32";
 			wasmApi = await import("./wasm/ifc2lbd_wasm.js");
 			await wasmApi.default();
