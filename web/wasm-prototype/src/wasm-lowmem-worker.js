@@ -6,6 +6,7 @@
 // the 4 GiB wasm32 memory cap (slower due to bounds checks, but 16 GiB cap).
 
 let wasmReady = false;
+const wasmVariantLoaded = null;
 let threadPoolInitialized = false;
 let threadPoolSize = 0;
 let wasmApi = null;
@@ -23,7 +24,16 @@ let wasmApi = null;
 const WASM64_URL = "/wasm64/ifc2lbd_wasm.js";
 
 const ensureWasm = async (variant) => {
-	if (wasmReady && wasmApi) return;
+	// Reload if variant changed (e.g. first file small → wasm32, second
+	// file large → wasm64). The thread pool must also be re-initialized
+	// for the new module.
+	if (wasmReady && wasmApi && wasmVariantLoaded === variant) return;
+	if (wasmReady && wasmVariantLoaded !== variant) {
+		// Different variant — reset state for re-initialization
+		wasmReady = false;
+		threadPoolInitialized = false;
+		wasmApi = null;
+	}
 	try {
 		if (variant === "wasm64") {
 			wasmApi = await import(/* @vite-ignore */ WASM64_URL);
@@ -35,6 +45,8 @@ const ensureWasm = async (variant) => {
 		// wasm64 module may not be available (build failed or browser
 		// doesn't support memory64). Fall back to wasm32.
 		if (variant === "wasm64") {
+			console.error("[worker] wasm64 load failed, falling back to wasm32:", err);
+			variant = "wasm32";
 			wasmApi = await import("./wasm/ifc2lbd_wasm.js");
 			await wasmApi.default();
 		} else {
@@ -42,6 +54,7 @@ const ensureWasm = async (variant) => {
 		}
 	}
 	wasmReady = true;
+	wasmVariantLoaded = variant;
 };
 
 const ensureThreadPool = async (requestedThreads) => {
