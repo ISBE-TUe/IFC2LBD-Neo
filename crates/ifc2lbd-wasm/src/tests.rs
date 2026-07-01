@@ -55,6 +55,8 @@ mod tests {
                 ifcowl_max_workers: None,
                 sink_chunk_size_bytes: None,
                 sink_max_pending_bytes: None,
+                input_format: None,
+                structured_data_files: Vec::new(),
             },
         )
         .expect("conversion should succeed");
@@ -87,6 +89,8 @@ mod tests {
                 ifcowl_max_workers: None,
                 sink_chunk_size_bytes: None,
                 sink_max_pending_bytes: None,
+                input_format: None,
+                structured_data_files: Vec::new(),
             },
         )
         .expect("conversion should succeed");
