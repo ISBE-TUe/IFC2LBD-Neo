@@ -54,3 +54,4 @@ web/wasm-prototype/src/wasm64/ifc2lbd_wasm_bg.wasm
 
 # Playwright MCP debug artifacts (screenshots, snapshots, console logs)
 .playwright-mcp/
+.docker-cargo/

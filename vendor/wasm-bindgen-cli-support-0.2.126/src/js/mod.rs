@@ -778,10 +778,16 @@ impl<'a> Context<'a> {
                 let mut init_memory = "new WebAssembly.Memory({".to_string();
                 if mem.memory64 {
                     init_memory.push_str("address:\"i64\",");
-                }
-                init_memory.push_str(&format!("initial:{}", mem.initial));
-                if let Some(max) = mem.maximum {
-                    init_memory.push_str(&format!(",maximum:{max}"));
+                    // memory64 requires BigInt for initial/maximum
+                    init_memory.push_str(&format!("initial:{}n", mem.initial));
+                    if let Some(max) = mem.maximum {
+                        init_memory.push_str(&format!(",maximum:{max}n"));
+                    }
+                } else {
+                    init_memory.push_str(&format!("initial:{}", mem.initial));
+                    if let Some(max) = mem.maximum {
+                        init_memory.push_str(&format!(",maximum:{max}"));
+                    }
                 }
                 if mem.shared {
                     init_memory.push_str(",shared:true");
