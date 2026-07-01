@@ -29,10 +29,8 @@ jobs:
         with:
           key: wasm-web
 
-      - name: Install wasm-bindgen-cli
-        uses: taiki-e/install-action@v2
-        with:
-          tool: wasm-bindgen-cli@0.2.126
+      - name: Install wasm-bindgen-cli (patched for wasm64 threading)
+        run: cargo install --path vendor/wasm-bindgen-cli-0.2.126 --force
 
       - name: Install wabt + binaryen (wasm2wat/wat2wasm for memory patch, wasm-opt for size)
         run: sudo apt-get install -y wabt binaryen

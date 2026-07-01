@@ -7,6 +7,8 @@
 # Rust
 target/
 **/*.rs.bk
+vendor/*/target/
+vendor/*/Cargo.lock
 
 # Python / venv
 .venv/

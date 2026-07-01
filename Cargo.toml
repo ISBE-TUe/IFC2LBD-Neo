@@ -126,3 +126,4 @@ nalgebra = { version = "0.35", default-features = false, features = ["std"] }
 [patch.crates-io]
 getrandom = { path = "vendor/getrandom-0.4.2" }
 js-sys = { path = "vendor/js-sys-0.3.103" }
+wasm-bindgen-cli-support = { path = "vendor/wasm-bindgen-cli-support-0.2.126" }

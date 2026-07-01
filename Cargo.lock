@@ -5014,3 +5014,7 @@ dependencies = [
  "log",
  "simd-adler32",
 ]
+
+[[patch.unused]]
+name = "wasm-bindgen-cli-support"
+version = "0.2.126"
