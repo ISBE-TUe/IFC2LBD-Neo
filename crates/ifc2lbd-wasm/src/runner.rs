@@ -7,7 +7,7 @@ use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 
 use ifc_model::build_model;
 use ifc_step::{parse_step_bytes, StepFile};
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 use js_sys::Function;
 use lbd_converter::{convert_step_and_model, stream_step_and_model, ConvertOptions};
 use lbd_pipeline::BatchKind;
@@ -54,7 +54,7 @@ use crate::memory::{
 };
 use crate::plugins::browser_registry;
 use crate::sink::CountingWriter;
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 use crate::sink::{emit_stage_event, SinkChunkWriter, SinkChunkingMode, SinkQuadChunkWriter};
 use crate::types::*;
 use crate::validation::{
@@ -152,7 +152,7 @@ fn active_producer_ids_from_settings(settings: &ExecutionSettings) -> Vec<String
 }
 
 /// WASM-safe monotonic timestamp in milliseconds.
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 fn now_ms() -> u64 {
     js_sys::Date::now() as u64
 }
@@ -160,7 +160,7 @@ fn now_ms() -> u64 {
 /// Run preprocess plugins one-by-one, emitting `running`/`success` stage events
 /// per plugin (with per-plugin durations) and returning the (id, duration_ms)
 /// pairs for `StageDurations::by_preprocess`.
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 fn run_preprocess_with_events(
     sink: &js_sys::Function,
     ids: &[String],
@@ -193,7 +193,7 @@ fn run_preprocess_with_events(
 }
 
 /// Emit an Export stage event for every active export plugin (file/log/stdout).
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 fn emit_export_events(
     sink: &js_sys::Function,
     settings: &ExecutionSettings,
@@ -208,7 +208,7 @@ fn emit_export_events(
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 fn now_ms() -> u64 {
     use std::time::Instant;
     static ORIGIN: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
@@ -216,7 +216,7 @@ fn now_ms() -> u64 {
     origin.elapsed().as_millis() as u64
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 fn effective_turtle_grouping(grouping: TurtleGrouping, options: &ConvertOptions) -> TurtleGrouping {
     if matches!(grouping, TurtleGrouping::Sorted) && options.low_memory_mode {
         TurtleGrouping::Streaming
@@ -375,7 +375,7 @@ impl PipelineRunner {
     }
 
     /// Resolve + validate + parse + convert (streaming to JS sink).
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(target_family = "wasm")]
     pub(crate) fn run_to_sink(
         &self,
         input: &[u8],
@@ -686,7 +686,7 @@ pub(crate) fn benchmark_convert_ifc_impl(
     PipelineRunner::new().run_benchmark(input, &request)
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 pub(crate) fn convert_ifc_to_sink_impl(
     input: &[u8],
     request: ConversionRequest,
@@ -987,7 +987,7 @@ impl SinkConfig {
 
 /// Streaming export to JS sink. Never collects all data into memory.
 /// Producers stream batches through channels; serializers consume incrementally.
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 fn export_browser_files_to_sink_streaming(
     step: StepFile,
     model: ifc_model::IfcModel,
@@ -1048,7 +1048,7 @@ fn export_browser_files_to_sink_streaming(
 // ---------------------------------------------------------------------------
 // Turtle streaming to sink
 // ---------------------------------------------------------------------------
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 fn turtle_to_sink(
     step: StepFile,
     model: ifc_model::IfcModel,
@@ -1094,7 +1094,7 @@ fn turtle_to_sink(
 ///
 /// Used to bridge `spawn_producers` output back to the existing serializer
 /// helpers that consume `Receiver<Vec<Triple>>`.
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 fn to_raw_receiver(
     rx: crossbeam::channel::Receiver<lbd_pipeline::TaggedBatch>,
     cap: usize,
@@ -1110,7 +1110,7 @@ fn to_raw_receiver(
     raw_rx
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 fn serialize_turtle_receiver_to_file(
     rx: crossbeam::channel::Receiver<Vec<lbd_ontology::Triple>>,
     filename: String,
@@ -1158,7 +1158,7 @@ fn serialize_turtle_receiver_to_file(
     Ok((summary, triple_count))
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 fn serialize_turtle_receiver_to_writer(
     rx: crossbeam::channel::Receiver<Vec<lbd_ontology::Triple>>,
     writer: &mut SinkChunkWriter,
@@ -1189,7 +1189,7 @@ fn serialize_turtle_receiver_to_writer(
     Ok(triple_count)
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 fn collect_turtle_receiver(
     rx: crossbeam::channel::Receiver<Vec<lbd_ontology::Triple>>,
 ) -> (Vec<lbd_ontology::Triple>, u64) {
@@ -1202,7 +1202,7 @@ fn collect_turtle_receiver(
     (all, triple_count)
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 fn turtle_to_sink_joined(
     step: StepFile,
     model: ifc_model::IfcModel,
@@ -1405,7 +1405,7 @@ fn turtle_to_sink_joined(
     Ok((summaries, peak, chunk_size, stage_durations))
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 fn turtle_to_sink_separate(
     step: StepFile,
     model: ifc_model::IfcModel,
@@ -1574,7 +1574,7 @@ fn turtle_to_sink_separate(
 
 /// Drain a triple receiver into an existing SinkChunkWriter, tagging every
 /// triple with `graph_iri`. Returns the number of triples written.
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 fn serialize_nquads_receiver_to_writer(
     rx: crossbeam::channel::Receiver<Vec<lbd_ontology::Triple>>,
     writer: &mut SinkChunkWriter,
@@ -1590,7 +1590,7 @@ fn serialize_nquads_receiver_to_writer(
 
 /// Drain a triple receiver into a SinkQuadChunkWriter, tagging every triple
 /// with `graph_iri`. Returns chunk file summaries and the triple count.
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 fn serialize_nquads_receiver_to_chunks(
     rx: crossbeam::channel::Receiver<Vec<lbd_ontology::Triple>>,
     sink: &Function,
@@ -1624,7 +1624,7 @@ fn serialize_nquads_receiver_to_chunks(
 // ---------------------------------------------------------------------------
 // N-Quads streaming to sink (per-producer named graphs, mirroring turtle_to_sink_separate)
 // ---------------------------------------------------------------------------
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 fn nquads_to_sink(
     step: StepFile,
     model: ifc_model::IfcModel,
@@ -1864,7 +1864,7 @@ fn nquads_to_sink(
 /// Emits `running`/`success` stage events through `sink` so the UI DAG shows
 /// live status and timing for both modules, matching the LBD pipeline UX.
 /// Returns the emitted sidecar file(s) with their actual binary content.
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 fn run_geometry_pipeline(
     input: &[u8],
     model: std::sync::Arc<ifc_model::IfcModel>,
@@ -2009,7 +2009,7 @@ fn run_geometry_pipeline(
 /// this, graceful producer errors are invisible to the JS side because
 /// `start_next_producer` runs on a rayon thread and the error is only
 /// recorded in the shared `PipelineLogBundle`.
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 fn emit_producer_error_events(
     sink: &js_sys::Function,
     ctx: &std::sync::Arc<PipelineContext>,
@@ -2023,7 +2023,7 @@ fn emit_producer_error_events(
 
 /// Serialize per-module log JSON sidecars from `PipelineLogBundle` in context.
 /// Writes one `{module_id}.log.json` file per module through the JS sink.
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 fn emit_log_sidecar(
     sink: &js_sys::Function,
     ctx: &std::sync::Arc<PipelineContext>,

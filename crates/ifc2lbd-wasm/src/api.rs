@@ -1,12 +1,12 @@
 #![allow(unused_imports)]
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 use js_sys::Function;
 use wasm_bindgen::prelude::*;
 
 use crate::memory::{execution_mode_str, select_execution_mode};
 use crate::plugins::{browser_registry, js_err, to_view};
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 use crate::runner::convert_ifc_to_sink_impl;
 use crate::runner::{
     benchmark_convert_ifc_impl, convert_ifc_impl, requested_settings_for_planning,
@@ -39,7 +39,7 @@ pub fn resolve_plan(
     serde_wasm_bindgen::to_value(&resolved).map_err(js_err)
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 #[wasm_bindgen(js_name = initNeoThreadPool)]
 pub fn init_neo_thread_pool(threads: usize) -> js_sys::Promise {
     crate::ensure_panic_hook();
@@ -54,7 +54,7 @@ pub fn convert_ifc(input: &[u8], request: JsValue) -> Result<JsValue, JsValue> {
     serde_wasm_bindgen::to_value(&result).map_err(js_err)
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 #[wasm_bindgen(js_name = convertIfcToSink)]
 pub fn convert_ifc_to_sink(
     input: &[u8],

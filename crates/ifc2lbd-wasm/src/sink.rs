@@ -4,9 +4,9 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use std::io::{self, Write};
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 use js_sys::{Function, Object, Reflect, Uint8Array};
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 use wasm_bindgen::JsValue;
 
 use crate::types::OutputFileSummary;
@@ -14,7 +14,7 @@ use lbd_serializer::SerializerError;
 
 /// Emit a `stageEvent` through the JS sink callback.
 /// This allows the UI DAG to update in real-time as stages start/complete.
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 pub(crate) fn emit_stage_event(
     sink: &Function,
     plugin_id: &str,
@@ -91,7 +91,7 @@ impl Write for CountingWriter {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 pub(crate) struct SinkChunkWriter<'a> {
     sink: &'a Function,
     filename: String,
@@ -118,7 +118,7 @@ pub(crate) struct SinkChunkWriter<'a> {
     encoder: Option<GzEncoder<Vec<u8>>>,
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 impl<'a> SinkChunkWriter<'a> {
     pub fn new(
         sink: &'a Function,
@@ -290,7 +290,7 @@ impl<'a> SinkChunkWriter<'a> {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 impl Write for SinkChunkWriter<'_> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.pending.extend_from_slice(buf);
@@ -314,7 +314,7 @@ impl Write for SinkChunkWriter<'_> {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 pub(crate) fn set_event_str(event: &Object, key: &str, value: &str) -> Result<(), SerializerError> {
     Reflect::set(event, &JsValue::from_str(key), &JsValue::from_str(value)).map_err(|js_err| {
         let msg = js_err
@@ -347,7 +347,7 @@ pub(crate) struct SinkChunkEntry {
     pub lines: u64,
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 pub(crate) struct SinkQuadChunkWriter<'a> {
     sink: &'a Function,
     chunk_prefix: String,
@@ -370,7 +370,7 @@ pub(crate) struct SinkQuadChunkWriter<'a> {
     compress: bool,
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 impl<'a> SinkQuadChunkWriter<'a> {
     pub fn new(
         sink: &'a Function,
@@ -539,7 +539,7 @@ impl<'a> SinkQuadChunkWriter<'a> {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 impl Write for SinkQuadChunkWriter<'_> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if buf.is_empty() {

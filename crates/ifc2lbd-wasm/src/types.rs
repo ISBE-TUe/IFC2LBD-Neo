@@ -133,7 +133,7 @@ pub struct GeometryFile {
     pub bytes: u64,
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StreamConversionBundle {

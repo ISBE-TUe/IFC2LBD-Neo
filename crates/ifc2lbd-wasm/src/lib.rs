@@ -20,12 +20,12 @@ pub use types::*;
 ///
 /// Idempotent via `Once` — safe to call from every `#[wasm_bindgen]` entry
 /// point.  No-op on non-wasm32 targets (native tests).
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 pub(crate) fn ensure_panic_hook() {
     console_error_panic_hook::set_once();
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 pub(crate) fn ensure_panic_hook() {}
 
 pub(crate) const DEFAULT_BASE_URI: &str = "https://lbd.example.com/";

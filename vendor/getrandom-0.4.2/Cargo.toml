@@ -87,7 +87,7 @@ optional = true
 version = "0.2.154"
 default-features = false
 
-[target.'cfg(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))'.dependencies.wasm-bindgen]
+[target.'cfg(all(any(target_arch = "wasm32", target_arch = "wasm64"), any(target_os = "unknown", target_os = "none")))'.dependencies.wasm-bindgen]
 version = "0.2.98"
 optional = true
 default-features = false
@@ -95,7 +95,7 @@ default-features = false
 [target.'cfg(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))'.dev-dependencies.wasm-bindgen-test]
 version = "0.3"
 
-[target.'cfg(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"), target_feature = "atomics"))'.dependencies.js-sys]
+[target.'cfg(all(any(target_arch = "wasm32", target_arch = "wasm64"), any(target_os = "unknown", target_os = "none"), target_feature = "atomics"))'.dependencies.js-sys]
 version = "0.3.77"
 optional = true
 default-features = false

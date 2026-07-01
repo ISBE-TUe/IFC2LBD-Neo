@@ -22,7 +22,8 @@ ontology-mapper-producer = { workspace = true }
 plugin-property-preprocess = { workspace = true }
 plugin-qto-preprocess = { workspace = true }
 plugin-geometry-preprocess = { workspace = true }
-# All 3 geometry output formats in WASM: fragments, parquet (Snappy = pure Rust), gltf
+# Geometry output formats: fragments + gltf on all targets.
+# Parquet is only on wasm32 (arrow-buffer has no wasm64 cfg for ALIGNMENT).
 plugin-geometry-producer = { workspace = true, features = [
   "fmt-fragments",
   "fmt-gltf",
@@ -39,18 +40,20 @@ serde-wasm-bindgen = { workspace = true }
 thiserror = { workspace = true }
 percent-encoding = { workspace = true }
 
-[target.'cfg(target_arch = "wasm32")'.dependencies]
+# Shared WASM dependencies (both wasm32 and wasm64)
+[target.'cfg(target_family = "wasm")'.dependencies]
 wasm-bindgen-rayon = "1"
 console_error_panic_hook = "0.1"
-# getrandom needs the "js" feature on wasm32 (pulled in by oxigraph → rand)
+# getrandom 0.2 (pulled in by ring) needs the "js" feature for wasm
 getrandom = { version = "0.2", features = ["js"] }
+# getrandom 0.4 (pulled in by uuid) needs the "wasm_js" feature.
+# The local [patch.crates-io] in the root Cargo.toml adds wasm64 cfg support.
+getrandom_0_4 = { package = "getrandom", version = "0.4", features = [
+  "wasm_js",
+] }
+
 # Parquet requires arrow-buffer, which has no wasm64 cfg for ALIGNMENT.
 # Only enable on wasm32. On wasm64, requesting parquet format returns a
 # runtime error (see plugin-geometry-producer's cfg(not(feature)) fallback).
+[target.'cfg(all(target_family = "wasm", target_arch = "wasm32"))'.dependencies]
 plugin-geometry-producer = { workspace = true, features = ["fmt-parquet"] }
-
-[target.'cfg(target_arch = "wasm64")'.dependencies]
-# getrandom 0.4 (pulled in by uuid/tempfile) needs the wasm_js feature to use
-# wasm-bindgen for randomness on wasm64.  The local [patch.crates-io] in the
-# root Cargo.toml adds the wasm64 cfg gate; this feature enables the backend.
-getrandom = { version = "0.4", features = ["wasm_js"] }
