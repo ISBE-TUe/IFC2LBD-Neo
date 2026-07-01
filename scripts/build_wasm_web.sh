@@ -63,7 +63,10 @@ build_target() {
 
 	# Ensure wasm-bindgen output preserves shared memory for threaded rayon runtime.
 	# In some toolchain combinations the generated *_bg.wasm memory loses `shared`.
-	if command -v wasm2wat >/dev/null 2>&1 && command -v wat2wasm >/dev/null 2>&1; then
+	# Skip for wasm64: wabt (wasm2wat/wat2wasm) doesn't support 64-bit tables
+	# ("tables may not be 64-bit" error).  wasm-bindgen 0.2.126 preserves
+	# shared memory correctly, so the patch is not needed.
+	if [[ "$target" == "wasm32-unknown-unknown" ]] && command -v wasm2wat >/dev/null 2>&1 && command -v wat2wasm >/dev/null 2>&1; then
 		local tmp_wat
 		tmp_wat="$(mktemp)"
 		wasm2wat "$bg_wasm" -o "$tmp_wat" --enable-all || rc=$?
