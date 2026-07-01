@@ -1549,7 +1549,11 @@ export const __wbg_memory: WebAssembly.Memory;
             }}
             ",
             start = if needs_manual_start && self.threads_enabled {
-                "wasm.__wbindgen_start(thread_stack_size);\n"
+                if self.memory64 {
+                    "wasm.__wbindgen_start(thread_stack_size ?? 0n);\n"
+                } else {
+                    "wasm.__wbindgen_start(thread_stack_size);\n"
+                }
             } else if needs_manual_start {
                 "wasm.__wbindgen_start();\n"
             } else {
