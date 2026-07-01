@@ -1,12 +1,3 @@
-# When building std from source via `-Z build-std=std,panic_abort`,
-# the `panic = "abort"` profile setting causes std to set the
-# `no_global_oom_handling` cfg, which excludes std's built-in
-# `#[alloc_error_handler]`.  This lets our custom handler in
-# `ifc2lbd-wasm/src/lib.rs` take over without a conflict.
-# Applies to release builds (used by `scripts/build_wasm_web.sh --release`).
-[profile.release]
-panic = "abort"
-
 [workspace]
 resolver = "2"
 members = [

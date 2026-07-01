@@ -105,9 +105,17 @@ pub(crate) struct SinkChunkWriter<'a> {
     /// the writer flushes immediately regardless of chunk_size. Zero means "no limit"
     /// (backward compatible — behaves like before).
     max_pending_bytes: usize,
-    /// When true, suppress intermediate chunk flushes and gzip-compress all accumulated
-    /// bytes in `finish()` before sending to JS.
+    /// When true, gzip-compress chunks via a persistent `GzEncoder`.
+    /// Compressed chunks are flushed at the same boundaries as uncompressed
+    /// chunks — the encoder is sync-flushed, not closed, so the deflate
+    /// dictionary persists and the compression ratio is essentially identical
+    /// to buffering the whole file.
     compress: bool,
+    /// Persistent gzip encoder for the compressed path. `None` when
+    /// `compress` is false. The encoder wraps a `Vec<u8>` inner buffer;
+    /// after each sync flush, the compressed bytes are drained and sent
+    /// to JS as a chunk.
+    encoder: Option<GzEncoder<Vec<u8>>>,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -132,23 +140,41 @@ impl<'a> SinkChunkWriter<'a> {
             max_pending: 0,
             max_pending_bytes,
             compress,
+            encoder: if compress {
+                Some(GzEncoder::new(Vec::new(), Compression::fast()))
+            } else {
+                None
+            },
         };
         writer.emit_start()?;
         Ok(writer)
     }
 
     pub fn finish(mut self) -> Result<(OutputFileSummary, usize, usize), SerializerError> {
-        if self.compress && !self.pending.is_empty() {
-            let uncompressed = std::mem::take(&mut self.pending);
-            let mut enc = GzEncoder::new(Vec::new(), Compression::fast());
-            enc.write_all(&uncompressed).map_err(|e| {
-                SerializerError::Io(io::Error::new(io::ErrorKind::Other, e.to_string()))
-            })?;
-            self.pending = enc.finish().map_err(|e| {
-                SerializerError::Io(io::Error::new(io::ErrorKind::Other, e.to_string()))
-            })?;
+        // Flush any remaining uncompressed data through the encoder.
+        if !self.pending.is_empty() {
+            if self.compress {
+                let encoder = self
+                    .encoder
+                    .get_or_insert_with(|| GzEncoder::new(Vec::new(), Compression::fast()));
+                encoder.write_all(&self.pending).map_err(|e| {
+                    SerializerError::Io(io::Error::new(io::ErrorKind::Other, e.to_string()))
+                })?;
+            } else {
+                self.flush_pending()?;
+            }
         }
-        self.flush_pending()?;
+
+        // Finalize the gzip stream — writes the CRC32 + ISIZE trailer.
+        if let Some(encoder) = self.encoder.take() {
+            let compressed = encoder.finish().map_err(|e| {
+                SerializerError::Io(io::Error::new(io::ErrorKind::Other, e.to_string()))
+            })?;
+            if !compressed.is_empty() {
+                self.emit_chunk(&compressed)?;
+            }
+        }
+
         self.emit_end()?;
         Ok((
             OutputFileSummary {
@@ -162,18 +188,16 @@ impl<'a> SinkChunkWriter<'a> {
         ))
     }
 
-    fn flush_pending(&mut self) -> Result<(), SerializerError> {
-        if self.pending.is_empty() {
-            return Ok(());
-        }
+    /// Send a chunk of bytes to the JS sink as a `fileChunk` event.
+    fn emit_chunk(&self, data: &[u8]) -> Result<(), SerializerError> {
         let event = Object::new();
         set_event_str(&event, "type", "fileChunk")?;
         set_event_str(&event, "filename", &self.filename)?;
-        let chunk = Uint8Array::from(self.pending.as_slice());
+        let chunk = Uint8Array::from(data);
         Reflect::set(&event, &JsValue::from_str("chunk"), &chunk).map_err(|js_err| {
             let msg = js_err
                 .as_string()
-                .unwrap_or_else(|| "unknown JS error in flush_pending".to_string());
+                .unwrap_or_else(|| "unknown JS error in emit_chunk".to_string());
             SerializerError::Io(io::Error::new(io::ErrorKind::Other, msg))
         })?;
         self.sink.call1(&JsValue::NULL, &event).map_err(|js_err| {
@@ -182,6 +206,34 @@ impl<'a> SinkChunkWriter<'a> {
                 .unwrap_or_else(|| "unknown JS error in sink.call1".to_string());
             SerializerError::Io(io::Error::new(io::ErrorKind::Other, msg))
         })?;
+        Ok(())
+    }
+
+    fn flush_pending(&mut self) -> Result<(), SerializerError> {
+        if self.pending.is_empty() {
+            return Ok(());
+        }
+        if self.compress {
+            // Write uncompressed data through the persistent GzEncoder, then
+            // sync-flush to push all compressed bytes to the inner buffer.
+            let compressed = {
+                let encoder = self
+                    .encoder
+                    .get_or_insert_with(|| GzEncoder::new(Vec::new(), Compression::fast()));
+                encoder.write_all(&self.pending).map_err(|e| {
+                    SerializerError::Io(io::Error::new(io::ErrorKind::Other, e.to_string()))
+                })?;
+                encoder.flush().map_err(|e| {
+                    SerializerError::Io(io::Error::new(io::ErrorKind::Other, e.to_string()))
+                })?;
+                std::mem::take(encoder.get_mut())
+            };
+            if !compressed.is_empty() {
+                self.emit_chunk(&compressed)?;
+            }
+        } else {
+            self.emit_chunk(&self.pending)?;
+        }
         self.pending.clear();
         Ok(())
     }
@@ -246,9 +298,10 @@ impl Write for SinkChunkWriter<'_> {
             self.max_pending = self.pending.len();
         }
         self.bytes += buf.len() as u64;
-        // When compressing, accumulate everything — gzip requires a single contiguous
-        // stream finalized in finish(). Intermediate flushes would produce invalid chunks.
-        if !self.compress && self.should_flush() {
+        // Flush at chunk boundaries for both compressed and uncompressed paths.
+        // For gzip, the persistent GzEncoder is sync-flushed and the compressed
+        // output is streamed — no need to buffer the entire file.
+        if self.should_flush() {
             self.flush_pending()
                 .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
         }

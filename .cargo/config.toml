@@ -3,7 +3,6 @@ rustflags = ["-C", "link-arg=-Wl,-rpath,/Library/Developer/CommandLineTools/Libr
 
 [target.wasm32-unknown-unknown]
 rustflags = [
-  "-C", "panic=abort",
   "-C", "opt-level=z",
   "-C", "strip=symbols",
   "-C", "target-feature=+atomics,+bulk-memory,+mutable-globals",
@@ -20,7 +19,6 @@ rustflags = [
 
 [target.wasm64-unknown-unknown]
 rustflags = [
-  "-C", "panic=abort",
   "-C", "opt-level=z",
   "-C", "strip=symbols",
   "-C", "target-feature=+atomics,+bulk-memory,+mutable-globals",
