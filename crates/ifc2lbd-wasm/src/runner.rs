@@ -50,7 +50,7 @@ fn base64_encode(data: &[u8]) -> String {
 
 use crate::memory::{
     effective_ifcowl_workers, effective_stream_batch_size, execution_mode_str,
-    select_execution_mode,
+    select_execution_mode, WASM_MEMORY_HARD_CAP_MB,
 };
 use crate::plugins::browser_registry;
 use crate::sink::CountingWriter;
@@ -398,6 +398,17 @@ impl PipelineRunner {
             feasibility_check_mb,
             reason
         ));
+
+        // Pre-flight: if the estimated peak exceeds the WASM hard cap,
+        // abort early with a clear message instead of OOM-trapping later.
+        if estimated_peak_mb > WASM_MEMORY_HARD_CAP_MB {
+            return Err(WasmApiError::Message(format!(
+                "Estimated peak memory ({estimated_peak_mb} MB) exceeds the \
+                 browser WASM limit (~{WASM_MEMORY_HARD_CAP_MB} MB). This file \
+                 is too large for in-browser conversion. Please use the CLI \
+                 (ifc2lbd-neo) for files this size."
+            )));
+        }
 
         // Parse stage
         emit_stage_event(sink, "parse", "Preprocess", "running", 0, 0, 0, None)
@@ -1377,6 +1388,7 @@ fn turtle_to_sink_joined(
     let export_ms = now_ms() - export_t0;
 
     let mut summaries = vec![summary];
+    emit_producer_error_events(sink, &ctx)?;
     if settings.has(LOG_EXPORT_ID) {
         emit_log_sidecar(sink, &ctx, sink_config, &mut summaries)?;
     }
@@ -1538,6 +1550,7 @@ fn turtle_to_sink_separate(
     let chunk_size = sink_config.chunk_size;
     let export_ms = now_ms() - export_t0;
 
+    emit_producer_error_events(sink, &ctx)?;
     if settings.has(LOG_EXPORT_ID) {
         emit_log_sidecar(sink, &ctx, sink_config, &mut summaries)?;
     }
@@ -1755,6 +1768,7 @@ fn nquads_to_sink(
         let export_t0 = now_ms();
         let export_ms = now_ms() - export_t0;
 
+        emit_producer_error_events(sink, &ctx)?;
         if settings.has(LOG_EXPORT_ID) {
             emit_log_sidecar(sink, &ctx, sink_config, &mut summaries)?;
         }
@@ -1829,6 +1843,7 @@ fn nquads_to_sink(
         let export_ms = now_ms() - export_t0;
         summaries.push(summary);
 
+        emit_producer_error_events(sink, &ctx)?;
         if settings.has(LOG_EXPORT_ID) {
             emit_log_sidecar(sink, &ctx, sink_config, &mut summaries)?;
         }
@@ -1987,6 +2002,23 @@ fn run_geometry_pipeline(
     );
 
     sidecars
+}
+
+/// Emit `failed` stage events for any producers whose `produce()` returned
+/// `Err`.  Called after all producer receivers have been drained.  Without
+/// this, graceful producer errors are invisible to the JS side because
+/// `start_next_producer` runs on a rayon thread and the error is only
+/// recorded in the shared `PipelineLogBundle`.
+#[cfg(target_arch = "wasm32")]
+fn emit_producer_error_events(
+    sink: &js_sys::Function,
+    ctx: &std::sync::Arc<PipelineContext>,
+) -> Result<(), lbd_serializer::SerializerError> {
+    let bundle = ctx.read_log_bundle();
+    for (id, error) in &bundle.producer_errors {
+        emit_stage_event(sink, id, "Produce", "failed", 0, 0, 0, Some(error))?;
+    }
+    Ok(())
 }
 
 /// Serialize per-module log JSON sidecars from `PipelineLogBundle` in context.

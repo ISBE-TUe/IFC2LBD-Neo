@@ -150,6 +150,16 @@ impl PipelineContext {
         }
     }
 
+    /// Record a producer error. Called from `start_next_producer` when
+    /// `ProducerPlugin::produce()` returns `Err`.
+    pub fn record_producer_error(&self, plugin_id: &str, error: &str) {
+        if let Ok(mut guard) = self.log_bundle.lock() {
+            guard
+                .producer_errors
+                .push((plugin_id.to_string(), error.to_string()));
+        }
+    }
+
     /// Snapshot of the accumulated log bundle. Called by log exporters after
     /// all stages complete.
     pub fn read_log_bundle(&self) -> PipelineLogBundle {
@@ -207,6 +217,12 @@ pub const ONTOLOGY_MAPPER_ID: &str = "neo-ontology-mapper";
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct PipelineLogBundle {
     pub modules: HashMap<String, serde_json::Value>,
+    /// Errors returned by producers via `ProducerPlugin::produce()`.
+    /// Populated by `start_next_producer` — each entry is
+    /// `(plugin_id, error_message)`.
+    /// Callers should check this after draining all producer receivers.
+    #[serde(default)]
+    pub producer_errors: Vec<(String, String)>,
 }
 
 impl PipelineLogBundle {
@@ -761,7 +777,10 @@ fn start_next_producer(queue: ProducerQueue, ctx: Arc<PipelineContext>) {
     let item = queue.lock().unwrap().pop_front();
     if let Some((plugin, tx)) = item {
         rayon::spawn(move || {
-            let _ = plugin.produce(&ctx, &tx);
+            let plugin_id = plugin.manifest().id;
+            if let Err(e) = plugin.produce(&ctx, &tx) {
+                ctx.record_producer_error(plugin_id, &e.to_string());
+            }
             drop(tx); // signal receiver that this producer is done
             start_next_producer(queue, ctx);
         });

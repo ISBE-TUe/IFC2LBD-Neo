@@ -769,6 +769,12 @@ async function runConversion() {
 			`Mode=${executionPlan.selectedMode} est=${executionPlan.estimatedPeakMb}MB`,
 		);
 
+		if (executionPlan.estimatedPeakMb > 4096) {
+			throw new Error(
+				`Estimated peak memory (${executionPlan.estimatedPeakMb} MB) exceeds the browser limit (4096 MB). Use the CLI for files this large.`,
+			);
+		}
+
 		const requestedThreads = Math.max(
 			2,
 			Number(navigator.hardwareConcurrency || 4),

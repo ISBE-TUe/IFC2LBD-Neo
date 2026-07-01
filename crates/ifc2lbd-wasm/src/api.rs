@@ -90,4 +90,3 @@ pub fn plan_execution(input_size_bytes: f64, request: JsValue) -> Result<JsValue
     };
     serde_wasm_bindgen::to_value(&plan).map_err(js_err)
 }
-

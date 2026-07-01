@@ -47,6 +47,13 @@ pub(crate) fn effective_ifcowl_workers(mode: ExecutionMode, request: &Conversion
 /// buffers).
 const WASM_MEMORY_CEILING_MB: u64 = 3200;
 
+/// Hard cap on WASM linear memory set via `--max-memory=4294901760`
+/// (≈ 4096 MB) in `.cargo/config.toml`.  When the estimated peak
+/// exceeds this, the conversion will OOM-trap — abort early with a
+/// clear message instead of letting the user hit an opaque
+/// `RuntimeError: unreachable executed`.
+pub(crate) const WASM_MEMORY_HARD_CAP_MB: u64 = 4096;
+
 /// Safety multiplier applied to the estimated peak before comparing
 /// against the ceiling. The `96 + MB × multiplier` estimate is a
 /// linear heuristic that does not account for geometry tessellation,

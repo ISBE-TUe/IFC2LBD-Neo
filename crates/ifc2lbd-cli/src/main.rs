@@ -640,6 +640,23 @@ fn main() -> anyhow::Result<()> {
             .join()
             .map_err(|_| anyhow::anyhow!("producer routing thread panicked"))?;
     }
+
+    // Check for producer errors recorded by `start_next_producer`.
+    let producer_errors = ctx.read_log_bundle().producer_errors;
+    if !producer_errors.is_empty() {
+        for (id, err) in &producer_errors {
+            tracing::error!("producer {id} failed: {err}");
+        }
+        return Err(anyhow::anyhow!(
+            "producer plugin(s) failed: {}",
+            producer_errors
+                .iter()
+                .map(|(id, e)| format!("{id}: {e}"))
+                .collect::<Vec<_>>()
+                .join("; ")
+        ));
+    }
+
     tracing::info!(
         "phase triple_production completed in {:.3}s",
         producer_start.elapsed().as_secs_f64()
