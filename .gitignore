@@ -48,3 +48,6 @@ web/wasm-prototype/src/wasm/ifc2lbd_wasm_bg.wasm
 
 # npm package tarballs (build artifacts)
 *.tgz
+
+# Playwright MCP debug artifacts (screenshots, snapshots, console logs)
+.playwright-mcp/

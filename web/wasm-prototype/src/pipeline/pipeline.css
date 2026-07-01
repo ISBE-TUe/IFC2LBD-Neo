@@ -692,6 +692,12 @@ body {
 .rail-bottom {
 	margin-top: auto;
 	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.rail-btn-row {
+	display: flex;
 	gap: 6px;
 }
 

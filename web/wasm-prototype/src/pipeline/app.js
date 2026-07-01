@@ -658,6 +658,13 @@ async function init() {
 	document
 		.querySelector("#btn-cli-cmd")
 		?.addEventListener("click", showCliCommand);
+	document.querySelector("#btn-viewer")?.addEventListener("click", () => {
+		window.open(
+			"https://viewer-ifc2lbd-neo.pages.dev/",
+			"_blank",
+			"noopener,noreferrer",
+		);
+	});
 	document.querySelector("#btn-run")?.addEventListener("click", runConversion);
 	initMusic();
 	setupOutputDirectoryUiSupport();
