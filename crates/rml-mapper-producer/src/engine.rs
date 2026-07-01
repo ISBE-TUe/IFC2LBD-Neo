@@ -12,7 +12,7 @@
 
 use std::io::Cursor;
 
-#[cfg(not(target_arch = "wasm"))]
+#[cfg(not(target_family = "wasm"))]
 use tempfile::TempDir;
 
 use crossbeam::channel::Sender;
@@ -48,15 +48,15 @@ pub fn execute_rml_streaming(
     triple_sender: &Sender<Vec<Triple>>,
     batch_size: usize,
 ) -> Result<(), String> {
-    #[cfg(not(target_arch = "wasm"))]
+    #[cfg(not(target_family = "wasm"))]
     let temp_dir = TempDir::new().map_err(|e| format!("temp dir: {e}"))?;
-    #[cfg(not(target_arch = "wasm"))]
+    #[cfg(not(target_family = "wasm"))]
     let work_dir = temp_dir.path().to_path_buf();
-    #[cfg(target_arch = "wasm")]
+    #[cfg(target_family = "wasm")]
     let work_dir = std::path::PathBuf::new(); // no filesystem on WASM
 
     // Write source file to temp directory
-    #[cfg(not(target_arch = "wasm"))]
+    #[cfg(not(target_family = "wasm"))]
     {
         let source_path = work_dir.join(source_filename);
         std::fs::write(&source_path, source_bytes).map_err(|e| format!("write source: {e}"))?;

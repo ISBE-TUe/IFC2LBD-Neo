@@ -19,8 +19,20 @@ const wasmLoaders = {
 const ensureWasm = async (variant) => {
 	if (wasmReady && wasmApi) return;
 	const loader = wasmLoaders[variant] || wasmLoaders.wasm32;
-	wasmApi = await loader();
-	await wasmApi.default();
+	try {
+		wasmApi = await loader();
+		await wasmApi.default();
+	} catch (err) {
+		// wasm64 module may not be available (build failed due to
+		// wasm-bindgen-rayon not supporting wasm64 threading yet).
+		// Fall back to wasm32.
+		if (variant === "wasm64") {
+			wasmApi = await wasmLoaders.wasm32();
+			await wasmApi.default();
+		} else {
+			throw err;
+		}
+	}
 	wasmReady = true;
 };
 

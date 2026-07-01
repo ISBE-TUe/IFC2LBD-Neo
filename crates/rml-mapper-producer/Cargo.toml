@@ -14,6 +14,6 @@ rayon = { workspace = true }
 rml-mapper-lib = { path = "../rml-mapper-lib", default-features = false }
 
 # tempfile uses getrandom 0.4 which doesn't support wasm64.  On WASM there
-# is no filesystem anyway, so the code path is gated with cfg(not(target_arch = "wasm")).
-[target.'cfg(not(target_arch = "wasm"))'.dependencies]
+# is no filesystem anyway, so the code path is gated with cfg(not(target_family = "wasm")).
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
 tempfile = "3"
