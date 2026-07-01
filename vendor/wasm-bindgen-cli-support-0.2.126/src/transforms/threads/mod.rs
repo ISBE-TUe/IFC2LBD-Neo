@@ -10,13 +10,14 @@ use walrus::{
 
 pub const PAGE_SIZE: u32 = 1 << 16;
 const DEFAULT_THREAD_STACK_SIZE: u32 = 1 << 21; // 2MB
-const ATOMIC_MEM_ARG: MemArg = MemArg {
+
+/// MemArg for i32 atomic operations (thread counter, lock).  Natural
+/// alignment for i32 atomics is 4.
+const ATOMIC_MEM_ARG_I32: MemArg = MemArg {
     align: 4,
     offset: 0,
 };
 
-/// Pointer type for the module — determined from `__heap_base`.
-/// On wasm32 this is `I32`, on wasm64 this is `I64`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PtrType {
     I32,
@@ -24,7 +25,6 @@ enum PtrType {
 }
 
 impl PtrType {
-    /// The walrus `ValType` for this pointer type.
     fn val_type(self) -> ValType {
         match self {
             PtrType::I32 => ValType::I32,
@@ -32,7 +32,6 @@ impl PtrType {
         }
     }
 
-    /// Create a zero-valued `ConstExpr` for this pointer type.
     fn zero_const(self) -> ConstExpr {
         match self {
             PtrType::I32 => ConstExpr::Value(Value::I32(0)),
@@ -40,7 +39,6 @@ impl PtrType {
         }
     }
 
-    /// Whether this is a 64-bit pointer (wasm64).
     fn is_64(self) -> bool {
         matches!(self, PtrType::I64)
     }
@@ -49,7 +47,6 @@ impl PtrType {
 #[derive(Clone, Copy)]
 pub struct ThreadCount(walrus::LocalId);
 
-/// Is threaded Wasm enabled?
 pub fn is_enabled(module: &Module) -> bool {
     match wasm_conventions::get_memory(module) {
         Ok(memory) => module.memories.get(memory).shared,
@@ -63,14 +60,12 @@ pub fn run(module: &mut Module) -> Result<Option<ThreadCount>, Error> {
     }
 
     let memory = wasm_conventions::get_memory(module)?;
-
-    // Detect pointer width from `__heap_base` global type.
-    // On wasm32 it's `i32`, on wasm64 it's `i64`.
     let ptr = detect_ptr_type(module)?;
 
     let static_data_align = 4;
     let static_data_pages = 1;
-    let (base, addr) = allocate_static_data(module, memory, static_data_pages, static_data_align, ptr)?;
+    let (base, addr) =
+        allocate_static_data(module, memory, static_data_pages, static_data_align, ptr)?;
 
     let mem = module.memories.get(memory);
     assert!(mem.shared);
@@ -87,12 +82,12 @@ pub fn run(module: &mut Module) -> Result<Option<ThreadCount>, Error> {
 
     let thread_counter_addr: i64 = addr as i64;
 
-    let stack_alloc =
-        module
-            .globals
-            .add_local(ptr.val_type(), true, false, ptr.zero_const());
+    let stack_alloc = module
+        .globals
+        .add_local(ptr.val_type(), true, false, ptr.zero_const());
 
-    let temp_stack = (base + static_data_pages as u64 * PAGE_SIZE as u64) & !(static_data_align as u64 - 1);
+    let temp_stack =
+        (base + static_data_pages as u64 * PAGE_SIZE as u64) & !(static_data_align as u64 - 1);
 
     const _: () = assert!(DEFAULT_THREAD_STACK_SIZE % PAGE_SIZE == 0);
 
@@ -108,25 +103,20 @@ pub fn run(module: &mut Module) -> Result<Option<ThreadCount>, Error> {
         temp: temp_stack as i64,
         temp_lock: thread_counter_addr + 4,
         alloc: stack_alloc,
-        size: module.globals.add_local(
-            ptr.val_type(),
-            true,
-            false,
-            stack_size_init,
-        ),
+        size: module
+            .globals
+            .add_local(ptr.val_type(), true, false, stack_size_init),
         ptr,
     };
 
     let _ = module.exports.add("__stack_alloc", stack.alloc);
 
     let thread_count = inject_start(module, &tls, &stack, thread_counter_addr, memory, ptr)?;
-
     inject_destroy(module, &tls, &stack, memory, ptr)?;
 
     Ok(Some(thread_count))
 }
 
-/// Detect the pointer type (i32 vs i64) from the `__heap_base` global.
 fn detect_ptr_type(module: &Module) -> Result<PtrType, Error> {
     let heap_base = module
         .exports
@@ -195,9 +185,6 @@ fn delete_synthetic_export(module: &mut Module, name: &str) -> Result<ExportItem
     Ok(ret)
 }
 
-/// Allocates extra space for static data. Returns `(base, addr)`, where:
-/// - `base` is the starting address of the extra `pages`.
-/// - `addr` is the _first_ address in that chunk that is aligned to `align`.
 fn allocate_static_data(
     module: &mut Module,
     memory: MemoryId,
@@ -283,6 +270,34 @@ macro_rules! ptr_const {
     };
 }
 
+/// Convert a pointer-sized value to f64 for calling malloc/free on wasm64.
+/// On wasm64, __wbindgen_malloc/__wbindgen_free use f64 ABI for pointers.
+macro_rules! ptr_to_f64 {
+    ($body:expr, $ptr:expr) => {
+        if $ptr.is_64() {
+            $body.unop(walrus::ir::UnaryOp::F64ConvertSI64);
+        }
+    };
+}
+
+/// Convert an f64 return from malloc/free back to pointer-sized int.
+macro_rules! f64_to_ptr {
+    ($body:expr, $ptr:expr) => {
+        if $ptr.is_64() {
+            $body.unop(walrus::ir::UnaryOp::I64TruncSF64);
+        }
+    };
+}
+
+/// Convert a pointer-sized value to i32 (for if conditions, select).
+macro_rules! ptr_to_i32 {
+    ($body:expr, $ptr:expr) => {
+        if $ptr.is_64() {
+            $body.unop(walrus::ir::UnaryOp::I32WrapI64);
+        }
+    };
+}
+
 fn inject_start(
     module: &mut Module,
     tls: &Tls,
@@ -309,25 +324,32 @@ fn inject_start(
 
     let mut body = builder.func_body();
 
-    let atomic_width = if ptr.is_64() {
-        AtomicWidth::I64
-    } else {
-        AtomicWidth::I32
-    };
     let add_op = if ptr.is_64() {
         BinaryOp::I64Add
     } else {
         BinaryOp::I32Add
     };
 
+    // Thread counter is an i32 value in memory.  The address is
+    // pointer-sized (i64 on wasm64), but the value is i32.
+    // atomic_rmw I32 returns i32; convert to pointer-sized for local_tee.
     ptr_const!(body, ptr, thread_counter_addr);
-    ptr_const!(body, ptr, 1);
-    body.atomic_rmw(memory, AtomicOp::Add, atomic_width, ATOMIC_MEM_ARG)
-        .local_tee(thread_count)
-        .if_else(
+    body.i32_const(1);
+    body.atomic_rmw(memory, AtomicOp::Add, AtomicWidth::I32, ATOMIC_MEM_ARG_I32);
+    // Extend i32 → i64 on wasm64 for the local
+    if ptr.is_64() {
+        body.unop(walrus::ir::UnaryOp::I64ExtendSI32);
+    }
+    body.local_tee(thread_count);
+    // if needs i32 condition
+    ptr_to_i32!(body, ptr);
+    body.if_else(
             None,
             |body| {
-                body.local_get(stack_size).if_else(
+                // if stack_size != 0 (nonzero test needs i32 condition)
+                body.local_get(stack_size);
+                ptr_to_i32!(body, ptr);
+                body.if_else(
                     None,
                     |body| {
                         body.local_get(stack_size).global_set(stack.size);
@@ -335,14 +357,21 @@ fn inject_start(
                     |_| (),
                 );
 
+                // local = malloc(stack.size, 16)
+                // On wasm64, malloc takes (f64, f64) and returns f64.
                 with_temp_stack(body, memory, stack, |body| {
                     body.global_get(stack.size);
+                    ptr_to_f64!(body, ptr);
                     ptr_const!(body, ptr, 16);
-                    body.call(malloc).local_tee(local);
+                    ptr_to_f64!(body, ptr);
+                    body.call(malloc);
+                    f64_to_ptr!(body, ptr);
+                    body.local_tee(local);
                 });
 
                 body.global_set(stack.alloc);
 
+                // stack_pointer = base + stack.size
                 body.global_get(stack.alloc)
                     .global_get(stack.size)
                     .binop(add_op)
@@ -351,12 +380,16 @@ fn inject_start(
             |_| {},
         );
 
+    // TLS init: malloc(tls.size, tls.align)
     ptr_const!(body, ptr, tls.size as i64);
+    ptr_to_f64!(body, ptr);
     ptr_const!(body, ptr, tls.align as i64);
-    body.call(malloc)
-        .global_set(tls.base)
-        .global_get(tls.base)
-        .call(tls.init);
+    ptr_to_f64!(body, ptr);
+    body.call(malloc);
+    f64_to_ptr!(body, ptr);
+    body.global_set(tls.base);
+    body.global_get(tls.base);
+    body.call(tls.init);
 
     let id = builder.finish(vec![stack_size], &mut module.funcs);
     module.start = Some(id);
@@ -371,6 +404,8 @@ fn inject_destroy(
     memory: MemoryId,
     ptr: PtrType,
 ) -> Result<(), Error> {
+    use walrus::ir::*;
+
     let free = find_function(module, "__wbindgen_free")?;
 
     let vt = ptr.val_type();
@@ -383,18 +418,28 @@ fn inject_destroy(
     let stack_alloc = module.locals.add(vt);
     let stack_size = module.locals.add(vt);
 
-    body.local_get(tls_base).if_else(
+    // if (tls_base) { free(tls_base, tls.size, tls.align) }
+    // else { free(tls.base, tls.size, tls.align); tls.base = MIN }
+    body.local_get(tls_base);
+    ptr_to_i32!(body, ptr);
+    body.if_else(
         None,
         |body| {
             body.local_get(tls_base);
+            ptr_to_f64!(body, ptr);
             ptr_const!(body, ptr, tls.size as i64);
+            ptr_to_f64!(body, ptr);
             ptr_const!(body, ptr, tls.align as i64);
+            ptr_to_f64!(body, ptr);
             body.call(free);
         },
         |body| {
             body.global_get(tls.base);
+            ptr_to_f64!(body, ptr);
             ptr_const!(body, ptr, tls.size as i64);
+            ptr_to_f64!(body, ptr);
             ptr_const!(body, ptr, tls.align as i64);
+            ptr_to_f64!(body, ptr);
             body.call(free);
 
             // set tls.base = MIN to trigger invalid memory
@@ -407,22 +452,41 @@ fn inject_destroy(
         },
     );
 
-    body.local_get(stack_alloc).if_else(
+    // if (stack_alloc) { free(stack_alloc, select(stack_size, DEFAULT), 16) }
+    // else { with_temp_stack(free(stack.alloc, stack.size, 16)); stack.alloc = 0 }
+    body.local_get(stack_alloc);
+    ptr_to_i32!(body, ptr);
+    body.if_else(
         None,
         |body| {
-            body.local_get(stack_alloc)
-                .local_get(stack_size);
-            ptr_const!(body, ptr, DEFAULT_THREAD_STACK_SIZE as i64);
-            body.local_get(stack_size)
-                .select(None);
+            // free(stack_alloc, select(stack_size, DEFAULT_STACK_SIZE), 16)
+            // select: val1 = stack_size, val2 = DEFAULT, cond = stack_size (i32)
+            body.local_get(stack_alloc);
+            ptr_to_f64!(body, ptr);
+
+            body.local_get(stack_size); // val1 for select (i64 on wasm64)
+            if ptr.is_64() {
+                body.i64_const(DEFAULT_THREAD_STACK_SIZE as i64); // val2
+            } else {
+                body.i32_const(DEFAULT_THREAD_STACK_SIZE as i32); // val2
+            }
+            body.local_get(stack_size); // cond — needs i32
+            ptr_to_i32!(body, ptr);
+            body.select(None);
+            ptr_to_f64!(body, ptr);
+
             ptr_const!(body, ptr, 16);
+            ptr_to_f64!(body, ptr);
             body.call(free);
         },
         |body| {
             with_temp_stack(body, memory, stack, |body| {
-                body.global_get(stack.alloc)
-                    .global_get(stack.size);
+                body.global_get(stack.alloc);
+                ptr_to_f64!(body, ptr);
+                body.global_get(stack.size);
+                ptr_to_f64!(body, ptr);
                 ptr_const!(body, ptr, 16);
+                ptr_to_f64!(body, ptr);
                 body.call(free);
             });
 
@@ -458,16 +522,9 @@ fn with_temp_stack(
     use walrus::ir::*;
 
     let ptr = stack.ptr;
-    let atomic_width = if ptr.is_64() {
-        AtomicWidth::I64
-    } else {
-        AtomicWidth::I32
-    };
-    let store_kind = if ptr.is_64() {
-        StoreKind::I64 { atomic: true }
-    } else {
-        StoreKind::I32 { atomic: true }
-    };
+
+    // All atomics operate on i32 values in memory (lock, counter).
+    // Only the address is pointer-sized (i64 on wasm64).
 
     ptr_const!(body, ptr, stack.temp);
     body.global_set(stack.pointer);
@@ -476,34 +533,38 @@ fn with_temp_stack(
         let loop_id = loop_.id();
 
         if ptr.is_64() {
-            loop_.i64_const(stack.temp_lock)
-                .i64_const(0)
-                .i64_const(1)
-                .cmpxchg(memory, atomic_width, ATOMIC_MEM_ARG)
+            // cmpxchg i32: [i64 addr, i32 expected, i32 replacement] -> i32
+            loop_
+                .i64_const(stack.temp_lock) // addr
+                .i32_const(0) // expected
+                .i32_const(1) // replacement
+                .cmpxchg(memory, AtomicWidth::I32, ATOMIC_MEM_ARG_I32)
                 .if_else(
                     None,
                     |body| {
-                        body.i64_const(stack.temp_lock)
-                            .i64_const(1)
-                            .i64_const(-1)
-                            .atomic_wait(memory, ATOMIC_MEM_ARG, false)
+                        // memory.atomic.wait32: [i64 addr, i32 expected, i64 timeout] -> i32
+                        body.i64_const(stack.temp_lock) // addr
+                            .i32_const(1) // expected value
+                            .i64_const(-1) // timeout (infinite)
+                            .atomic_wait(memory, ATOMIC_MEM_ARG_I32, false)
                             .drop()
                             .br(loop_id);
                     },
                     |_| {},
                 );
         } else {
-            loop_.i32_const(stack.temp_lock as i32)
+            loop_
+                .i32_const(stack.temp_lock as i32)
                 .i32_const(0)
                 .i32_const(1)
-                .cmpxchg(memory, atomic_width, ATOMIC_MEM_ARG)
+                .cmpxchg(memory, AtomicWidth::I32, ATOMIC_MEM_ARG_I32)
                 .if_else(
                     None,
                     |body| {
                         body.i32_const(stack.temp_lock as i32)
                             .i32_const(1)
                             .i64_const(-1)
-                            .atomic_wait(memory, ATOMIC_MEM_ARG, false)
+                            .atomic_wait(memory, ATOMIC_MEM_ARG_I32, false)
                             .drop()
                             .br(loop_id);
                     },
@@ -514,13 +575,15 @@ fn with_temp_stack(
 
     block(body);
 
+    // Store 0 to unlock: [i64 addr, i32 value] -> store i32 atomic
     ptr_const!(body, ptr, stack.temp_lock);
-    ptr_const!(body, ptr, 0);
-    body.store(memory, store_kind, ATOMIC_MEM_ARG);
+    body.i32_const(0);
+    body.store(memory, StoreKind::I32 { atomic: true }, ATOMIC_MEM_ARG_I32);
 
+    // Notify: [i64 addr, i32 count] -> i32
     ptr_const!(body, ptr, stack.temp_lock);
-    ptr_const!(body, ptr, 1);
-    body.atomic_notify(memory, ATOMIC_MEM_ARG)
+    body.i32_const(1);
+    body.atomic_notify(memory, ATOMIC_MEM_ARG_I32)
         .drop();
 }
 
