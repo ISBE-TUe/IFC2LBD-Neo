@@ -25,7 +25,6 @@ plugin-geometry-preprocess = { workspace = true }
 # All 3 geometry output formats in WASM: fragments, parquet (Snappy = pure Rust), gltf
 plugin-geometry-producer = { workspace = true, features = [
   "fmt-fragments",
-  "fmt-parquet",
   "fmt-gltf",
 ] }
 tessellated-model = { workspace = true }
@@ -45,3 +44,7 @@ wasm-bindgen-rayon = "1"
 console_error_panic_hook = "0.1"
 # getrandom needs the "js" feature on wasm32 (pulled in by oxigraph → rand)
 getrandom = { version = "0.2", features = ["js"] }
+# Parquet requires arrow-buffer, which has no wasm64 cfg for ALIGNMENT.
+# Only enable on wasm32. On wasm64, requesting parquet format returns a
+# runtime error (see plugin-geometry-producer's cfg(not(feature)) fallback).
+plugin-geometry-producer = { workspace = true, features = ["fmt-parquet"] }
