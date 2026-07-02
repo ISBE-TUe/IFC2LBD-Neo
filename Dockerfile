@@ -4,7 +4,7 @@
 #   • Rust nightly  (required for -Z build-std)
 #   • wasm32-unknown-unknown target
 #   • rust-src component  (required for -Z build-std=std,panic_abort)
-#   • wasm-bindgen-cli pinned to the same version used in Cargo.lock (0.2.118)
+#   • wasm-bindgen-cli from patched vendor/ (0.2.126 with wasm64 + ABI fixes)
 #
 # Usage (via docker compose — see docker-compose.yml):
 #   docker compose run --rm check          # fast type-check, no output files
@@ -33,8 +33,12 @@ RUN rustup toolchain install nightly \
     && rustup target add wasm32-unknown-unknown --toolchain nightly \
     && rustup component add rust-src --toolchain nightly
 
-# Pin wasm-bindgen-cli to match Cargo.lock — mismatch causes a hard error
-RUN cargo +nightly install wasm-bindgen-cli --version 0.2.118 --locked
+# Install wasm-bindgen-cli from the patched vendor copy (0.2.126 with
+# wasm64 threading + f64/BigInt ABI fixes).  Mismatch with the wasm-bindgen
+# runtime version in Cargo.lock causes a hard error.
+COPY vendor/wasm-bindgen-cli-0.2.126 /vendor/wasm-bindgen-cli-0.2.126
+COPY vendor/wasm-bindgen-cli-support-0.2.126 /vendor/wasm-bindgen-cli-support-0.2.126
+RUN cargo +nightly install --path /vendor/wasm-bindgen-cli-0.2.126 --force
 
 # Make nightly the active toolchain inside the container so callers don't need +nightly
 ENV RUSTUP_TOOLCHAIN=nightly
