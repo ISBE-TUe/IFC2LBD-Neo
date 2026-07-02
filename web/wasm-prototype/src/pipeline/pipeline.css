@@ -1206,6 +1206,7 @@ body {
 }
 
 /* ---- Memory Warning Modal (large file, wasm64 disabled) ---- */
+/* Mirrors the CLI modal structure: header + body + footer. */
 
 #memory-warning {
 	display: none;
@@ -1230,47 +1231,74 @@ body {
 	position: relative;
 	background: var(--surface-raised);
 	border: 1px solid var(--border);
-	border-radius: 8px;
-	width: min(440px, 90vw);
-	padding: 24px 20px 16px;
+	border-radius: 6px;
+	width: min(520px, 90vw);
+	max-height: 80vh;
 	display: flex;
 	flex-direction: column;
-	align-items: center;
-	gap: 14px;
-	box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+	overflow: hidden;
 }
 
-.mem-warn-icon {
+.mem-warn-header {
 	display: flex;
 	align-items: center;
-	justify-content: center;
+	justify-content: space-between;
+	padding: 10px 14px;
+	border-bottom: 1px solid var(--border);
 }
 
-.mem-warn-text {
+.mem-warn-title {
+	font-size: 11px;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--text-bright);
+}
+
+.mem-warn-close {
+	background: none;
+	border: none;
+	color: var(--text-dim);
+	cursor: pointer;
+	font-size: 14px;
+	padding: 2px 6px;
+	line-height: 1;
+}
+
+.mem-warn-close:hover {
+	color: var(--text-bright);
+}
+
+.mem-warn-body {
+	padding: 14px 16px;
+	flex: 1;
+	overflow: auto;
+}
+
+.mem-warn-body p {
 	margin: 0;
-	font-family: var(--body-font, "Roboto, sans-serif");
-	font-size: 13px;
-	line-height: 1.5;
-	color: var(--text-bright, #2a2a2a);
-	text-align: center;
+	font-size: 12px;
+	line-height: 1.6;
+	color: var(--text);
 }
 
-.mem-warn-buttons {
+.mem-warn-footer {
 	display: flex;
+	align-items: center;
+	justify-content: flex-end;
 	gap: 10px;
-	width: 100%;
-	margin-top: 4px;
+	padding: 10px 14px;
+	border-top: 1px solid var(--border);
 }
 
 .mem-warn-btn {
-	flex: 1;
 	border: 1px solid var(--border);
 	border-radius: 4px;
-	padding: 8px 14px;
-	font-family: var(--mono, "JetBrains Mono", monospace);
-	font-size: 12px;
+	padding: 5px 16px;
+	font-size: 11px;
 	font-weight: 600;
 	cursor: pointer;
+	letter-spacing: 0.05em;
 	transition:
 		border-color 0.15s,
 		background 0.15s,
@@ -1288,9 +1316,9 @@ body {
 }
 
 .mem-warn-continue {
-	background: #e8c872;
-	border-color: #d4b85a;
-	color: #2a2a2a;
+	background: var(--status-success);
+	border-color: var(--status-success);
+	color: #111;
 }
 
 .mem-warn-continue:hover {

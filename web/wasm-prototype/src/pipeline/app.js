@@ -1066,6 +1066,9 @@ function wireMemoryWarning() {
 		.querySelector(".mem-warn-backdrop")
 		?.addEventListener("click", () => resolveMemoryWarning(false));
 	modal
+		.querySelector("#mem-warn-close")
+		?.addEventListener("click", () => resolveMemoryWarning(false));
+	modal
 		.querySelector("#mem-warn-abort")
 		?.addEventListener("click", () => resolveMemoryWarning(false));
 	modal
