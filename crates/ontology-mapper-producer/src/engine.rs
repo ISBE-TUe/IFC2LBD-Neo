@@ -62,10 +62,12 @@ pub fn build_mapping_tables(
 }
 
 /// Parse RDF (Turtle or N-Triples) and extract property + class mappings:
-/// - `owl:equivalentProperty` (bidirectional)
-/// - `owl:equivalentClass` (bidirectional)
-/// - `rdfs:subPropertyOf` (bidirectional)
-/// - `rdfs:subClassOf` (bidirectional)
+/// - `owl:equivalentProperty` (always bidirectional — true equivalence)
+/// - `owl:equivalentClass` (always bidirectional — true equivalence)
+/// - `rdfs:subPropertyOf` (forward always; reverse only if the parent has
+///   exactly one child — avoids ambiguous many-to-one reverse mappings)
+/// - `rdfs:subClassOf` (forward always; reverse only if the parent has
+///   exactly one child — avoids ambiguous many-to-one reverse mappings)
 /// - `align:entity1` / `align:entity2` pairs (bidirectional)
 ///
 /// Returns separate lists for property mappings and class mappings.
@@ -74,6 +76,10 @@ pub fn parse_rdf_mappings(turtle: &str) -> Result<RdfMappings, String> {
     let mut class_maps: Vec<(String, String)> = Vec::new();
     let mut entity1_map: HashMap<String, String> = HashMap::new();
     let mut entity2_map: HashMap<String, String> = HashMap::new();
+    // Track children per parent for subPropertyOf / subClassOf so we can
+    // add reverse mappings ONLY when unambiguous (exactly one child).
+    let mut sub_prop_children: HashMap<String, Vec<String>> = HashMap::new();
+    let mut sub_class_children: HashMap<String, Vec<String>> = HashMap::new();
 
     let reader = BufReader::new(Cursor::new(turtle.as_bytes()));
     let base = oxiri::Iri::parse("http://ontology-mapper/base".to_string())
@@ -84,7 +90,7 @@ pub fn parse_rdf_mappings(turtle: &str) -> Result<RdfMappings, String> {
         .parse_all(&mut |triple| {
             let pred = triple.predicate.iri;
 
-            // owl:equivalentProperty (bidirectional)
+            // owl:equivalentProperty (always bidirectional — true equivalence)
             if pred == "http://www.w3.org/2002/07/owl#equivalentProperty" {
                 if let (RioSubject::NamedNode(s), RioTerm::NamedNode(o)) =
                     (triple.subject, triple.object)
@@ -94,17 +100,19 @@ pub fn parse_rdf_mappings(turtle: &str) -> Result<RdfMappings, String> {
                 }
             }
 
-            // rdfs:subPropertyOf (bidirectional)
+            // rdfs:subPropertyOf (forward always; reverse only if unambiguous)
             if pred == "http://www.w3.org/2000/01/rdf-schema#subPropertyOf" {
                 if let (RioSubject::NamedNode(s), RioTerm::NamedNode(o)) =
                     (triple.subject, triple.object)
                 {
-                    property_maps.push((s.iri.to_string(), o.iri.to_string()));
-                    property_maps.push((o.iri.to_string(), s.iri.to_string()));
+                    let child = s.iri.to_string();
+                    let parent = o.iri.to_string();
+                    property_maps.push((child.clone(), parent.clone()));
+                    sub_prop_children.entry(parent).or_default().push(child);
                 }
             }
 
-            // owl:equivalentClass (bidirectional)
+            // owl:equivalentClass (always bidirectional — true equivalence)
             if pred == "http://www.w3.org/2002/07/owl#equivalentClass" {
                 if let (RioSubject::NamedNode(s), RioTerm::NamedNode(o)) =
                     (triple.subject, triple.object)
@@ -114,13 +122,15 @@ pub fn parse_rdf_mappings(turtle: &str) -> Result<RdfMappings, String> {
                 }
             }
 
-            // rdfs:subClassOf (bidirectional)
+            // rdfs:subClassOf (forward always; reverse only if unambiguous)
             if pred == "http://www.w3.org/2000/01/rdf-schema#subClassOf" {
                 if let (RioSubject::NamedNode(s), RioTerm::NamedNode(o)) =
                     (triple.subject, triple.object)
                 {
-                    class_maps.push((s.iri.to_string(), o.iri.to_string()));
-                    class_maps.push((o.iri.to_string(), s.iri.to_string()));
+                    let child = s.iri.to_string();
+                    let parent = o.iri.to_string();
+                    class_maps.push((child.clone(), parent.clone()));
+                    sub_class_children.entry(parent).or_default().push(child);
                 }
             }
 
@@ -153,6 +163,22 @@ pub fn parse_rdf_mappings(turtle: &str) -> Result<RdfMappings, String> {
         if let Some(e2) = entity2_map.get(subj) {
             property_maps.push((e1.clone(), e2.clone()));
             property_maps.push((e2.clone(), e1.clone()));
+        }
+    }
+
+    // Add reverse mappings for subPropertyOf / subClassOf ONLY when the
+    // parent has exactly one child (unambiguous).  When multiple children
+    // share a parent (e.g. Sensor, Actuator, PhysicalObject are all
+    // subClassOf bot:Element) the reverse direction is ambiguous and would
+    // arbitrarily pick one child — so we skip it.
+    for (parent, children) in sub_prop_children {
+        if children.len() == 1 {
+            property_maps.push((parent, children.into_iter().next().unwrap()));
+        }
+    }
+    for (parent, children) in sub_class_children {
+        if children.len() == 1 {
+            class_maps.push((parent, children.into_iter().next().unwrap()));
         }
     }
 
@@ -292,25 +318,60 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_sub_class_bidirectional() {
+    fn test_parse_sub_class_unambiguous_reverse() {
         let alignment = r#"@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
 @prefix bot: <https://w3id.org/bot#> .
 @prefix saref: <https://saref.etsi.org/saref4bldg/> .
 saref:Building rdfs:subClassOf bot:Building .
 "#;
         let mappings = parse_rdf_mappings(alignment).unwrap();
-        // saref:Building → bot:Building
+        // saref:Building → bot:Building (forward)
         assert!(mappings
             .class_maps
             .iter()
             .any(|(s, t)| s == "https://saref.etsi.org/saref4bldg/Building"
                 && t == "https://w3id.org/bot#Building"));
-        // bot:Building → saref:Building (bidirectional)
+        // bot:Building → saref:Building (reverse — unambiguous, only one child)
         assert!(mappings
             .class_maps
             .iter()
             .any(|(s, t)| s == "https://w3id.org/bot#Building"
                 && t == "https://saref.etsi.org/saref4bldg/Building"));
+    }
+
+    #[test]
+    fn test_parse_sub_class_ambiguous_no_reverse() {
+        // Multiple children share the same parent → reverse is ambiguous.
+        let alignment = r#"@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix bot: <https://w3id.org/bot#> .
+@prefix saref: <https://saref.etsi.org/saref4bldg/> .
+saref:PhysicalObject rdfs:subClassOf bot:Element .
+saref:Sensor rdfs:subClassOf bot:Element .
+saref:Actuator rdfs:subClassOf bot:Element .
+"#;
+        let mappings = parse_rdf_mappings(alignment).unwrap();
+        // Forward: each child → parent
+        for child in [
+            "https://saref.etsi.org/saref4bldg/PhysicalObject",
+            "https://saref.etsi.org/saref4bldg/Sensor",
+            "https://saref.etsi.org/saref4bldg/Actuator",
+        ] {
+            assert!(mappings
+                .class_maps
+                .iter()
+                .any(|(s, t)| s == child && t == "https://w3id.org/bot#Element"),
+                "forward mapping {child} → bot:Element missing");
+        }
+        // Reverse: bot:Element should NOT map to any single child (ambiguous)
+        let reverse = mappings
+            .class_maps
+            .iter()
+            .filter(|(s, _)| s == "https://w3id.org/bot#Element");
+        assert_eq!(
+            reverse.count(),
+            0,
+            "bot:Element should not have a reverse mapping (3 children = ambiguous)"
+        );
     }
 
     #[test]
