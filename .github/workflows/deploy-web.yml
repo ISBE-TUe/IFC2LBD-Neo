@@ -43,6 +43,10 @@ jobs:
       - name: Install wabt + binaryen (wasm2wat/wat2wasm for memory patch, wasm-opt for size)
         run: sudo apt-get install -y wabt binaryen
 
+      # To enable wasm64 builds (~3-4 min extra), set VITE_ENABLE_WASM64=true
+      # as an environment variable here and on the Vite build step below.
+      # Default: only wasm32 is built; the UI shows a warning popup for files
+      # that exceed the 4 GiB wasm32 memory cap.
       - name: Build WASM
         run: bash scripts/build_wasm_web.sh
 

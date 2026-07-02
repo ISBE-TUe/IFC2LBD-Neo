@@ -1204,3 +1204,95 @@ body {
 .cite-btn svg {
 	flex-shrink: 0;
 }
+
+/* ---- Memory Warning Modal (large file, wasm64 disabled) ---- */
+
+#memory-warning {
+	display: none;
+	position: fixed;
+	inset: 0;
+	z-index: 1000;
+	align-items: center;
+	justify-content: center;
+}
+
+#memory-warning.open {
+	display: flex;
+}
+
+.mem-warn-backdrop {
+	position: absolute;
+	inset: 0;
+	background: rgba(0, 0, 0, 0.6);
+}
+
+.mem-warn-box {
+	position: relative;
+	background: var(--surface-raised);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	width: min(440px, 90vw);
+	padding: 24px 20px 16px;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 14px;
+	box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+}
+
+.mem-warn-icon {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}
+
+.mem-warn-text {
+	margin: 0;
+	font-family: var(--body-font, "Roboto, sans-serif");
+	font-size: 13px;
+	line-height: 1.5;
+	color: var(--text-bright, #2a2a2a);
+	text-align: center;
+}
+
+.mem-warn-buttons {
+	display: flex;
+	gap: 10px;
+	width: 100%;
+	margin-top: 4px;
+}
+
+.mem-warn-btn {
+	flex: 1;
+	border: 1px solid var(--border);
+	border-radius: 4px;
+	padding: 8px 14px;
+	font-family: var(--mono, "JetBrains Mono", monospace);
+	font-size: 12px;
+	font-weight: 600;
+	cursor: pointer;
+	transition:
+		border-color 0.15s,
+		background 0.15s,
+		filter 0.15s;
+}
+
+.mem-warn-abort {
+	background: var(--surface);
+	color: var(--text);
+}
+
+.mem-warn-abort:hover {
+	border-color: var(--accent);
+	background: var(--surface-hover);
+}
+
+.mem-warn-continue {
+	background: #e8c872;
+	border-color: #d4b85a;
+	color: #2a2a2a;
+}
+
+.mem-warn-continue:hover {
+	filter: brightness(1.1);
+}

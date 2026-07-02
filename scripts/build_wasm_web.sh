@@ -133,7 +133,7 @@ PY
 }
 
 # ---------------------------------------------------------------------------
-# Build both targets
+# Build targets
 # ---------------------------------------------------------------------------
 
 # wasm32 (4 GiB max — fast, no bounds checks on 64-bit systems)
@@ -143,11 +143,21 @@ build_target "wasm32-unknown-unknown" "$OUT_DIR_32" "65535"
 # Requires wasm-bindgen >= 0.2.122 (PR #5004 added wasm64 threading support)
 # Output goes to public/wasm64/ so Vite deploys it as a static asset
 # (Vite can't statically resolve dynamic imports from src/wasm64/).
-OUT_DIR_64="$ROOT_DIR/web/wasm-prototype/public/wasm64"
-mkdir -p "$OUT_DIR_64"
-build_target "wasm64-unknown-unknown" "$OUT_DIR_64" "262144"
-
-echo ""
-echo "WASM web artifacts written to:"
-echo "  wasm32: $OUT_DIR_32"
-echo "  wasm64: $OUT_DIR_64"
+#
+# Gated on VITE_ENABLE_WASM64: only build when the env var is "true".
+# Default (unset) = skip — saves ~3-4 min of CI time.  The UI shows a warning
+# popup for large files instead of using wasm64.
+if [[ "${VITE_ENABLE_WASM64:-}" == "true" ]]; then
+	OUT_DIR_64="$ROOT_DIR/web/wasm-prototype/public/wasm64"
+	mkdir -p "$OUT_DIR_64"
+	build_target "wasm64-unknown-unknown" "$OUT_DIR_64" "262144"
+	echo ""
+	echo "WASM web artifacts written to:"
+	echo "  wasm32: $OUT_DIR_32"
+	echo "  wasm64: $OUT_DIR_64"
+else
+	echo ""
+	echo "WASM web artifacts written to:"
+	echo "  wasm32: $OUT_DIR_32"
+	echo "  wasm64: SKIPPED (VITE_ENABLE_WASM64 not set)"
+fi

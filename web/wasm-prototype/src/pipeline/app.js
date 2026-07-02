@@ -43,6 +43,12 @@ const detectWasm64Support = () => {
 };
 
 const WASM64_SUPPORTED = detectWasm64Support();
+// Env-var gate: VITE_ENABLE_WASM64=true opts into the wasm64 build.
+// Default (unset / anything other than "true") = wasm64 disabled — the build
+// script skips the slow wasm64 compilation and the UI shows a warning popup
+// for large files instead of silently using wasm64.
+const WASM64_ENABLED = import.meta.env.VITE_ENABLE_WASM64 === "true";
+const WASM64_AVAILABLE = WASM64_ENABLED && WASM64_SUPPORTED;
 const WASM32_HARD_CAP_MB = 4096;
 const WASM64_HARD_CAP_MB = 14336; // 14 GiB, leaving ~2 GiB headroom under the 16 GiB browser limit
 
@@ -89,7 +95,10 @@ const TEMPLATES = [
 			"neo-nquads-serializer",
 			"neo-file-export",
 		],
-		options: { "neo-file-export": { compress: "gzip" }, "neo-bsdd-producer": { compact: "true", dedup_properties: "true" } },
+		options: {
+			"neo-file-export": { compress: "gzip" },
+			"neo-bsdd-producer": { compact: "true", dedup_properties: "true" },
+		},
 	},
 	{
 		id: "default-ifcowl-turtle",
@@ -115,7 +124,10 @@ const TEMPLATES = [
 			"neo-nquads-serializer",
 			"neo-file-export",
 		],
-		options: { "neo-file-export": { compress: "gzip" }, "neo-bsdd-producer": { compact: "true", dedup_properties: "true" } },
+		options: {
+			"neo-file-export": { compress: "gzip" },
+			"neo-bsdd-producer": { compact: "true", dedup_properties: "true" },
+		},
 	},
 	// --- Geometry (default + geometry preprocess + geometry producer) ---
 	{
@@ -142,7 +154,10 @@ const TEMPLATES = [
 			"neo-nquads-serializer",
 			"neo-file-export",
 		],
-		options: { "neo-file-export": { compress: "gzip" }, "neo-bsdd-producer": { compact: "true", dedup_properties: "true" } },
+		options: {
+			"neo-file-export": { compress: "gzip" },
+			"neo-bsdd-producer": { compact: "true", dedup_properties: "true" },
+		},
 	},
 	{
 		id: "geometry-ifcowl-turtle",
@@ -170,7 +185,10 @@ const TEMPLATES = [
 			"neo-nquads-serializer",
 			"neo-file-export",
 		],
-		options: { "neo-file-export": { compress: "gzip" }, "neo-bsdd-producer": { compact: "true", dedup_properties: "true" } },
+		options: {
+			"neo-file-export": { compress: "gzip" },
+			"neo-bsdd-producer": { compact: "true", dedup_properties: "true" },
+		},
 	},
 	// --- RML (structured data) ---
 	{
@@ -185,7 +203,10 @@ const TEMPLATES = [
 		label: "RML → N-Quads",
 		desc: "RML mapper with N-Quads output",
 		modules: ["neo-rml-mapper", "neo-nquads-serializer", "neo-file-export"],
-		options: { "neo-file-export": { compress: "gzip" }, "neo-bsdd-producer": { compact: "true", dedup_properties: "true" } },
+		options: {
+			"neo-file-export": { compress: "gzip" },
+			"neo-bsdd-producer": { compact: "true", dedup_properties: "true" },
+		},
 	},
 	{
 		id: "ontology-turtle",
@@ -207,7 +228,10 @@ const TEMPLATES = [
 			"neo-nquads-serializer",
 			"neo-file-export",
 		],
-		options: { "neo-file-export": { compress: "gzip" }, "neo-bsdd-producer": { compact: "true", dedup_properties: "true" } },
+		options: {
+			"neo-file-export": { compress: "gzip" },
+			"neo-bsdd-producer": { compact: "true", dedup_properties: "true" },
+		},
 	},
 	{
 		id: "rml-ontology-turtle",
@@ -231,7 +255,10 @@ const TEMPLATES = [
 			"neo-nquads-serializer",
 			"neo-file-export",
 		],
-		options: { "neo-file-export": { compress: "gzip" }, "neo-bsdd-producer": { compact: "true", dedup_properties: "true" } },
+		options: {
+			"neo-file-export": { compress: "gzip" },
+			"neo-bsdd-producer": { compact: "true", dedup_properties: "true" },
+		},
 	},
 ];
 
@@ -699,7 +726,7 @@ async function init() {
 	log(`WASM ready. Pipeline dashboard.`);
 	log(`Build: ${RUNTIME_BUILD}`);
 	log(
-		`WASM: ${WASM64_SUPPORTED ? "wasm64 (16 GiB limit) + wasm32 (4 GiB limit)" : "wasm32 (4 GiB limit)"}${WASM64_SUPPORTED ? "" : " — wasm64 not supported in this browser"}`,
+		`WASM: ${WASM64_AVAILABLE ? "wasm64 (16 GiB limit) + wasm32 (4 GiB limit)" : "wasm32 (4 GiB limit)"}${WASM64_AVAILABLE ? "" : WASM64_ENABLED ? " — wasm64 not supported in this browser" : " — wasm64 disabled (VITE_ENABLE_WASM64 not set)"}`,
 	);
 }
 
@@ -800,21 +827,37 @@ async function runConversion() {
 
 		// Pre-flight memory check: choose wasm32 (fast) or wasm64 (large files).
 		const needsWasm64 = executionPlan.estimatedPeakMb > WASM32_HARD_CAP_MB;
-		const useWasm64 = needsWasm64 && WASM64_SUPPORTED;
+		const useWasm64 = needsWasm64 && WASM64_AVAILABLE;
 
-		if (needsWasm64 && !WASM64_SUPPORTED) {
-			throw new Error(
-				`Estimated peak memory (${executionPlan.estimatedPeakMb} MB) exceeds the wasm32 limit (${WASM32_HARD_CAP_MB} MB). This browser does not support wasm64 (memory64). Use the CLI for files this large.`,
-			);
-		}
-		if (executionPlan.estimatedPeakMb > WASM64_HARD_CAP_MB) {
-			throw new Error(
-				`Estimated peak memory (${executionPlan.estimatedPeakMb} MB) exceeds even the wasm64 limit (${WASM64_HARD_CAP_MB} MB). Use the CLI for files this large.`,
-			);
+		if (needsWasm64) {
+			if (!WASM64_ENABLED) {
+				// wasm64 is disabled (env var not set) — warn the user that the
+				// browser may crash and let them choose to abort or proceed.
+				log(
+					`Estimated peak memory (${executionPlan.estimatedPeakMb} MB) exceeds the wasm32 limit (${WASM32_HARD_CAP_MB} MB). wasm64 is disabled — showing warning.`,
+				);
+				const proceed = await showMemoryWarning();
+				if (!proceed) {
+					log("Conversion aborted by user (large file warning).");
+					return;
+				}
+				// User chose "Continue anyway" — proceed with wasm32 (may crash).
+				log("User chose to continue with wasm32 despite memory risk.");
+			} else if (!WASM64_SUPPORTED) {
+				throw new Error(
+					`Estimated peak memory (${executionPlan.estimatedPeakMb} MB) exceeds the wasm32 limit (${WASM32_HARD_CAP_MB} MB). This browser does not support wasm64 (memory64). Use the CLI for files this large.`,
+				);
+			} else if (executionPlan.estimatedPeakMb > WASM64_HARD_CAP_MB) {
+				throw new Error(
+					`Estimated peak memory (${executionPlan.estimatedPeakMb} MB) exceeds even the wasm64 limit (${WASM64_HARD_CAP_MB} MB). Use the CLI for files this large.`,
+				);
+			}
 		}
 
 		if (useWasm64) {
-			log(`Using wasm64 (memory64) for large file: ${executionPlan.estimatedPeakMb} MB estimated peak`);
+			log(
+				`Using wasm64 (memory64) for large file: ${executionPlan.estimatedPeakMb} MB estimated peak`,
+			);
 		}
 
 		const requestedThreads = Math.max(
@@ -1004,6 +1047,56 @@ async function runConversion() {
 			runBtn.classList.remove("running");
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Memory warning modal — shown when a large file exceeds the wasm32 memory
+// cap and wasm64 is disabled (VITE_ENABLE_WASM64 not set).  Lets the user
+// abort or proceed with wasm32 despite the crash risk.
+// ---------------------------------------------------------------------------
+
+let memoryWarningWired = false;
+
+function wireMemoryWarning() {
+	if (memoryWarningWired) return;
+	memoryWarningWired = true;
+	const modal = document.querySelector("#memory-warning");
+	if (!modal) return;
+	modal
+		.querySelector(".mem-warn-backdrop")
+		?.addEventListener("click", () => resolveMemoryWarning(false));
+	modal
+		.querySelector("#mem-warn-abort")
+		?.addEventListener("click", () => resolveMemoryWarning(false));
+	modal
+		.querySelector("#mem-warn-continue")
+		?.addEventListener("click", () => resolveMemoryWarning(true));
+}
+
+let memoryWarningResolver = null;
+
+function resolveMemoryWarning(result) {
+	const modal = document.querySelector("#memory-warning");
+	modal?.classList.remove("open");
+	if (memoryWarningResolver) {
+		const resolve = memoryWarningResolver;
+		memoryWarningResolver = null;
+		resolve(result);
+	}
+}
+
+function showMemoryWarning() {
+	wireMemoryWarning();
+	const modal = document.querySelector("#memory-warning");
+	if (!modal) {
+		// Fallback: if the modal markup is missing, default to abort (safe).
+		console.warn("Memory warning modal not found in DOM.");
+		return Promise.resolve(false);
+	}
+	return new Promise((resolve) => {
+		memoryWarningResolver = resolve;
+		modal.classList.add("open");
+	});
 }
 
 // ---------------------------------------------------------------------------

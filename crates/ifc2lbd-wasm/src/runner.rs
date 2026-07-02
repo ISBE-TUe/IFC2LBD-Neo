@@ -132,6 +132,12 @@ fn make_pipeline_context(
 /// handled by the existing bespoke code paths that precompute geometry.
 fn active_producer_ids_from_settings(settings: &ExecutionSettings) -> Vec<String> {
     let mut ids = Vec::new();
+    // NOTE: GEOMETRY_PRODUCER_ID is intentionally excluded — the geometry
+    // pipeline runs separately via run_geometry_pipeline() with its own context
+    // (which has TessellatedModel).  If it were included here, the LBD pipeline
+    // would spawn the geometry producer a second time in a context that lacks
+    // TessellatedModel, causing a spurious ProducerError that overwrites the
+    // real "success" stage event with "failed" in the UI.
     for id in [
         BOT_PRODUCER_ID,
         BEO_PRODUCER_ID,
@@ -141,8 +147,6 @@ fn active_producer_ids_from_settings(settings: &ExecutionSettings) -> Vec<String
         IFCOWL_PRODUCER_ID,
         RML_MAPPER_ID,
         ONTOLOGY_MAPPER_ID,
-        ONTOLOGY_MAPPER_ID,
-        GEOMETRY_PRODUCER_ID,
     ] {
         if settings.has(id) {
             ids.push(id.to_string());
