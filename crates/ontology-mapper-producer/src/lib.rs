@@ -74,23 +74,19 @@ impl PostprocessPlugin for OntologyMapperProducerPlugin {
         ctx: &PipelineContext,
         batches: &mut Vec<TaggedBatch>,
     ) -> Result<(), PostprocessError> {
-        let config = ctx
-            .get::<OntologyMappingConfig>()
-            .ok_or_else(|| {
-                PostprocessError::Postprocessing(
-                    "No ontology mapping config in context".to_string(),
-                )
-            })?;
+        let config = ctx.get::<OntologyMappingConfig>().ok_or_else(|| {
+            PostprocessError::Postprocessing("No ontology mapping config in context".to_string())
+        })?;
 
         let options = ctx.get::<ConvertOptions>().ok_or_else(|| {
             PostprocessError::Postprocessing("No ConvertOptions in context".to_string())
         })?;
 
         // Build the predicate mapping table from alignment + ontology files.
-        let alignment_maps =
-            engine::parse_rdf_mappings(&config.alignment_turtle).map_err(PostprocessError::Postprocessing)?;
-        let ontology_maps =
-            engine::parse_rdf_mappings(&config.ontology_turtle).map_err(PostprocessError::Postprocessing)?;
+        let alignment_maps = engine::parse_rdf_mappings(&config.alignment_turtle)
+            .map_err(PostprocessError::Postprocessing)?;
+        let ontology_maps = engine::parse_rdf_mappings(&config.ontology_turtle)
+            .map_err(PostprocessError::Postprocessing)?;
 
         let mut predicate_map: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();

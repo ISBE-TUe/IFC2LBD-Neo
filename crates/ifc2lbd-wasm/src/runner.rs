@@ -1082,10 +1082,8 @@ fn postprocess_to_sink(
     _stage_rx: &crossbeam::channel::Receiver<StageDoneEvent>,
     is_chunked: bool,
     chunk_mode: SinkChunkingMode,
-) -> Result<
-    (Vec<OutputFileSummary>, usize, usize, StageDurations),
-    lbd_serializer::SerializerError,
-> {
+) -> Result<(Vec<OutputFileSummary>, usize, usize, StageDurations), lbd_serializer::SerializerError>
+{
     use std::io::Write as _;
 
     let normalized_base = normalize_base_for_graph_iri(base_uri);
@@ -2561,8 +2559,13 @@ fn export_browser_files(
                 // Apply predicate mappings to all collected triples.
                 let mut mapped = Vec::new();
                 for triples in [
-                    &bot_triples, &beo_triples, &bsdd_triples, &props_triples,
-                    &omg_triples, &ifcowl_triples, &rml_triples,
+                    &bot_triples,
+                    &beo_triples,
+                    &bsdd_triples,
+                    &props_triples,
+                    &omg_triples,
+                    &ifcowl_triples,
+                    &rml_triples,
                 ] {
                     for triple in triples {
                         if let Some(mapped_pred) = predicate_map.get(&triple.predicate) {

@@ -33,9 +33,7 @@ const PRODUCE_ORDER = [
 	"neo-bbox-enricher",
 	"neo-rml-mapper",
 ];
-const POSTPROCESS_ORDER = [
-	"neo-ontology-mapper",
-];
+const POSTPROCESS_ORDER = ["neo-ontology-mapper"];
 const SERIALIZE_ORDER = [
 	"neo-turtle-serializer",
 	"neo-nquads-serializer",

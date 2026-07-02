@@ -397,10 +397,12 @@ fn main() -> anyhow::Result<()> {
             onto_entries.get("alignment_file"),
             onto_entries.get("ontology_file"),
         ) {
-            ctx.insert(std::sync::Arc::new(structured_data::OntologyMappingConfig {
-                alignment_turtle: alignment.clone(),
-                ontology_turtle: ontology.clone(),
-            }));
+            ctx.insert(std::sync::Arc::new(
+                structured_data::OntologyMappingConfig {
+                    alignment_turtle: alignment.clone(),
+                    ontology_turtle: ontology.clone(),
+                },
+            ));
         }
     }
 
@@ -649,8 +651,13 @@ fn main() -> anyhow::Result<()> {
         .collect();
     if !postprocess_ids.is_empty() {
         let postprocess_start = Instant::now();
-        lbd_pipeline::spawn_postprocessors(&postprocess_ids, &built_in_registry, &ctx, &mut all_batches)
-            .map_err(|e| anyhow::anyhow!("postprocess stage failed: {:?}", e))?;
+        lbd_pipeline::spawn_postprocessors(
+            &postprocess_ids,
+            &built_in_registry,
+            &ctx,
+            &mut all_batches,
+        )
+        .map_err(|e| anyhow::anyhow!("postprocess stage failed: {:?}", e))?;
         tracing::info!(
             "phase postprocess completed in {:.3}s",
             postprocess_start.elapsed().as_secs_f64()
