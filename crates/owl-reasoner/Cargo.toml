@@ -1,15 +1,11 @@
 [package]
-name = "ontology-mapper-producer"
+name = "owl-reasoner"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-lbd-pipeline = { workspace = true }
 lbd-ontology = { workspace = true }
-lbd-converter = { workspace = true }
-structured-data = { path = "../structured-data" }
-owl-reasoner = { workspace = true }
 rio_api = { workspace = true }
 rio_turtle = { workspace = true }
 oxiri = { workspace = true }

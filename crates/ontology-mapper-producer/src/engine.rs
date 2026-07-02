@@ -356,11 +356,13 @@ saref:Actuator rdfs:subClassOf bot:Element .
             "https://saref.etsi.org/saref4bldg/Sensor",
             "https://saref.etsi.org/saref4bldg/Actuator",
         ] {
-            assert!(mappings
-                .class_maps
-                .iter()
-                .any(|(s, t)| s == child && t == "https://w3id.org/bot#Element"),
-                "forward mapping {child} → bot:Element missing");
+            assert!(
+                mappings
+                    .class_maps
+                    .iter()
+                    .any(|(s, t)| s == child && t == "https://w3id.org/bot#Element"),
+                "forward mapping {child} → bot:Element missing"
+            );
         }
         // Reverse: bot:Element should NOT map to any single child (ambiguous)
         let reverse = mappings

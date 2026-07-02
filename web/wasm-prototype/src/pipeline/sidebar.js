@@ -368,7 +368,7 @@ function optionControl(pluginId, key) {
         <span class="detail-label">compress</span>
         <select data-option-key="compress" class="detail-select">
           <option value="none" ${compressVal === "none" ? "selected" : ""}>None — plain file</option>
-          <option value="gzip" ${compressVal === "gzip" ? "selected" : ""}>gzip — smaller file, Blazegraph-compatible</option>
+          <option value="gzip" ${compressVal === "gzip" ? "selected" : ""}>gzip — smaller file</option>
         </select>
       </div>`;
 	}

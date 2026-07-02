@@ -2634,18 +2634,15 @@ fn export_browser_files(
             Vec::new()
         };
 
-        // Ontology mapper: run as postprocess on collected triples.
+        // Ontology mapper: apply simple mapping + OWL reasoning via the shared
+        // function in ontology-mapper-producer. This replaces the previous
+        // inline mapping code (W9 — DRY violation eliminated).
         let ontology_triples: Vec<lbd_ontology::Triple> = if settings.has(ONTOLOGY_MAPPER_ID) {
-            // Build mapping tables from alignment + ontology module options.
             let alignment = settings.module_option(ONTOLOGY_MAPPER_ID, "alignment_file");
             let ontology = settings.module_option(ONTOLOGY_MAPPER_ID, "ontology_file");
             if let (Some(alignment_turtle), Some(ontology_turtle)) = (alignment, ontology) {
-                use ontology_mapper_producer::build_mapping_tables;
-                let tables = build_mapping_tables(&alignment_turtle, &ontology_turtle)
-                    .map_err(|e| lbd_serializer::SerializerError::Io(std::io::Error::other(e)))?;
-                let rdf_type = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
-                // Apply mappings to all collected triples.
-                let mut mapped = Vec::new();
+                // Collect all producer triples for mapping + reasoning.
+                let mut all_triples: Vec<lbd_ontology::Triple> = Vec::new();
                 for triples in [
                     &bot_triples,
                     &beo_triples,
@@ -2655,34 +2652,13 @@ fn export_browser_files(
                     &ifcowl_triples,
                     &rml_triples,
                 ] {
-                    for triple in triples {
-                        let mapped_pred = tables
-                            .property_map
-                            .get(&triple.predicate)
-                            .cloned()
-                            .unwrap_or_else(|| triple.predicate.clone());
-                        let mapped_obj = if triple.predicate == rdf_type {
-                            match &triple.object {
-                                lbd_ontology::Object::Iri(iri) => tables
-                                    .class_map
-                                    .get(iri)
-                                    .map(|c| lbd_ontology::Object::Iri(c.clone()))
-                                    .unwrap_or_else(|| triple.object.clone()),
-                                _ => triple.object.clone(),
-                            }
-                        } else {
-                            triple.object.clone()
-                        };
-                        if mapped_pred != triple.predicate || mapped_obj != triple.object {
-                            mapped.push(lbd_ontology::Triple {
-                                subject: triple.subject.clone(),
-                                predicate: mapped_pred,
-                                object: mapped_obj,
-                            });
-                        }
-                    }
+                    all_triples.extend(triples.iter().cloned());
                 }
-                mapped
+                ontology_mapper_producer::apply_ontology_mapping(
+                    &alignment_turtle,
+                    &ontology_turtle,
+                    &all_triples,
+                )
             } else {
                 Vec::new()
             }
