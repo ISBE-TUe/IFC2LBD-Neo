@@ -63,11 +63,12 @@ use crate::validation::{
 };
 use crate::DEFAULT_BASE_URI;
 use lbd_pipeline::{
-    spawn_preprocessors_with, spawn_producers, PipelineContext, PipelineLogBundle, PipelineStage,
-    PluginRegistry, ResourceLimits, BEO_PRODUCER_ID, BOT_PRODUCER_ID, BSDD_PRODUCER_ID,
-    FILE_EXPORT_ID, IFCOWL_PRODUCER_ID, LOG_EXPORT_ID, NQUADS_CHUNKED_SERIALIZER_ID,
-    NQUADS_SERIALIZER_ID, OMG_FOG_PRODUCER_ID, ONTOLOGY_MAPPER_ID, PROPS_OPM_PRODUCER_ID,
-    QTO_PREPROCESS_ID, RML_MAPPER_ID, STDOUT_EXPORT_ID, TURTLE_SERIALIZER_ID,
+    spawn_preprocessors_with, spawn_producers, PipelineContext, PipelineLogBundle,
+    PipelineStage, PluginRegistry, ResourceLimits, TaggedBatch, BEO_PRODUCER_ID,
+    BOT_PRODUCER_ID, BSDD_PRODUCER_ID, FILE_EXPORT_ID, IFCOWL_PRODUCER_ID, LOG_EXPORT_ID,
+    NQUADS_CHUNKED_SERIALIZER_ID, NQUADS_SERIALIZER_ID, OMG_FOG_PRODUCER_ID,
+    ONTOLOGY_MAPPER_ID, PROPS_OPM_PRODUCER_ID, QTO_PREPROCESS_ID, RML_MAPPER_ID,
+    STDOUT_EXPORT_ID, TURTLE_SERIALIZER_ID,
 };
 use structured_data::{OntologyMappingConfig, RmlMappingConfig, StructuredDataInput};
 
@@ -1377,7 +1378,7 @@ fn id_leak(s: &str) -> &'static str {
 /// Build a StageDurations from the collected timing data.
 #[cfg(target_family = "wasm")]
 fn build_stage_durations(
-    preprocess_durations: &HashMap<&'static str, u64>,
+    preprocess_durations: &[(String, u64)],
     produce_durations: &HashMap<&'static str, u64>,
     produce_triples: &HashMap<&'static str, u64>,
     serialize_ms: u64,
@@ -1387,7 +1388,7 @@ fn build_stage_durations(
     sd.serialize_ms = serialize_ms;
     sd.export_ms = export_ms;
     for (id, ms) in preprocess_durations {
-        sd.by_preprocess.push((id.to_string(), *ms));
+        sd.by_preprocess.push((id.clone(), *ms));
     }
     for (id, ms) in produce_durations {
         let triples = produce_triples.get(id).copied().unwrap_or(0);
