@@ -83,8 +83,9 @@ impl PostprocessPlugin for OntologyMapperProducerPlugin {
         })?;
 
         // Build mapping tables from alignment + ontology files.
-        let tables = engine::build_mapping_tables(&config.alignment_turtle, &config.ontology_turtle)
-            .map_err(PostprocessError::Postprocessing)?;
+        let tables =
+            engine::build_mapping_tables(&config.alignment_turtle, &config.ontology_turtle)
+                .map_err(PostprocessError::Postprocessing)?;
 
         if tables.property_map.is_empty() && tables.class_map.is_empty() {
             // No mappings found — nothing to do.
@@ -112,13 +113,11 @@ impl PostprocessPlugin for OntologyMapperProducerPlugin {
                 // For rdf:type triples, also map the object (class).
                 let mapped_object = if triple.predicate == rdf_type {
                     match &triple.object {
-                        lbd_ontology::Object::Iri(iri) => {
-                            tables
-                                .class_map
-                                .get(iri)
-                                .map(|c| lbd_ontology::Object::Iri(c.clone()))
-                                .unwrap_or_else(|| triple.object.clone())
-                        }
+                        lbd_ontology::Object::Iri(iri) => tables
+                            .class_map
+                            .get(iri)
+                            .map(|c| lbd_ontology::Object::Iri(c.clone()))
+                            .unwrap_or_else(|| triple.object.clone()),
                         _ => triple.object.clone(),
                     }
                 } else {

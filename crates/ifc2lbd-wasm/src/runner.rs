@@ -63,12 +63,12 @@ use crate::validation::{
 };
 use crate::DEFAULT_BASE_URI;
 use lbd_pipeline::{
-    spawn_preprocessors_with, spawn_producers, PipelineContext, PipelineLogBundle,
-    PipelineStage, PluginRegistry, ResourceLimits, TaggedBatch, BEO_PRODUCER_ID,
-    BOT_PRODUCER_ID, BSDD_PRODUCER_ID, FILE_EXPORT_ID, IFCOWL_PRODUCER_ID, LOG_EXPORT_ID,
-    NQUADS_CHUNKED_SERIALIZER_ID, NQUADS_SERIALIZER_ID, OMG_FOG_PRODUCER_ID,
-    ONTOLOGY_MAPPER_ID, PROPS_OPM_PRODUCER_ID, QTO_PREPROCESS_ID, RML_MAPPER_ID,
-    STDOUT_EXPORT_ID, TURTLE_SERIALIZER_ID,
+    spawn_preprocessors_with, spawn_producers, PipelineContext, PipelineLogBundle, PipelineStage,
+    PluginRegistry, ResourceLimits, TaggedBatch, BEO_PRODUCER_ID, BOT_PRODUCER_ID,
+    BSDD_PRODUCER_ID, FILE_EXPORT_ID, IFCOWL_PRODUCER_ID, LOG_EXPORT_ID,
+    NQUADS_CHUNKED_SERIALIZER_ID, NQUADS_SERIALIZER_ID, OMG_FOG_PRODUCER_ID, ONTOLOGY_MAPPER_ID,
+    PROPS_OPM_PRODUCER_ID, QTO_PREPROCESS_ID, RML_MAPPER_ID, STDOUT_EXPORT_ID,
+    TURTLE_SERIALIZER_ID,
 };
 use structured_data::{OntologyMappingConfig, RmlMappingConfig, StructuredDataInput};
 
@@ -1254,15 +1254,16 @@ fn postprocess_to_sink(
                     sink_config.max_pending_bytes,
                     compress,
                 )?;
-                if !options.low_memory_mode
-                    && !matches!(effective_grouping, TurtleGrouping::Sorted)
+                if !options.low_memory_mode && !matches!(effective_grouping, TurtleGrouping::Sorted)
                 {
                     write_turtle_prefixes_for_stream(&mut writer, Some(&instance_base))?;
                 }
                 if matches!(effective_grouping, TurtleGrouping::Sorted) {
                     let mut sorted = batch.triples.clone();
                     sorted.sort_unstable_by(|a, b| {
-                        a.subject.cmp(&b.subject).then_with(|| a.predicate.cmp(&b.predicate))
+                        a.subject
+                            .cmp(&b.subject)
+                            .then_with(|| a.predicate.cmp(&b.predicate))
                     });
                     serialize_turtle_grouped_to_writer(&sorted, &mut writer, Some(&instance_base))?;
                 } else {
@@ -1282,9 +1283,7 @@ fn postprocess_to_sink(
                 sink_config.max_pending_bytes,
                 compress,
             )?;
-            if !options.low_memory_mode
-                && !matches!(effective_grouping, TurtleGrouping::Sorted)
-            {
+            if !options.low_memory_mode && !matches!(effective_grouping, TurtleGrouping::Sorted) {
                 write_turtle_prefixes_for_stream(&mut writer, Some(&instance_base))?;
             }
             if matches!(effective_grouping, TurtleGrouping::Sorted) {
@@ -1293,9 +1292,15 @@ fn postprocess_to_sink(
                     all_triples.extend_from_slice(&batch.triples);
                 }
                 all_triples.sort_unstable_by(|a, b| {
-                    a.subject.cmp(&b.subject).then_with(|| a.predicate.cmp(&b.predicate))
+                    a.subject
+                        .cmp(&b.subject)
+                        .then_with(|| a.predicate.cmp(&b.predicate))
                 });
-                serialize_turtle_grouped_to_writer(&all_triples, &mut writer, Some(&instance_base))?;
+                serialize_turtle_grouped_to_writer(
+                    &all_triples,
+                    &mut writer,
+                    Some(&instance_base),
+                )?;
             } else {
                 for batch in &batches {
                     serialize_turtle_batch_raw_to_writer(&batch.triples, &mut writer)?;
@@ -2658,13 +2663,11 @@ fn export_browser_files(
                             .unwrap_or_else(|| triple.predicate.clone());
                         let mapped_obj = if triple.predicate == rdf_type {
                             match &triple.object {
-                                lbd_ontology::Object::Iri(iri) => {
-                                    tables
-                                        .class_map
-                                        .get(iri)
-                                        .map(|c| lbd_ontology::Object::Iri(c.clone()))
-                                        .unwrap_or_else(|| triple.object.clone())
-                                }
+                                lbd_ontology::Object::Iri(iri) => tables
+                                    .class_map
+                                    .get(iri)
+                                    .map(|c| lbd_ontology::Object::Iri(c.clone()))
+                                    .unwrap_or_else(|| triple.object.clone()),
                                 _ => triple.object.clone(),
                             }
                         } else {

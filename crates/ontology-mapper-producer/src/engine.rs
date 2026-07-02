@@ -325,7 +325,9 @@ saref:Building rdfs:subClassOf bot:Building .
         let tables = build_mapping_tables(alignment, ontology).unwrap();
         // Property map: both directions
         assert_eq!(
-            tables.property_map.get("https://saref.etsi.org/saref4bldg/hasSpace"),
+            tables
+                .property_map
+                .get("https://saref.etsi.org/saref4bldg/hasSpace"),
             Some(&"https://w3id.org/bot#containsZone".to_string())
         );
         assert_eq!(
@@ -334,7 +336,9 @@ saref:Building rdfs:subClassOf bot:Building .
         );
         // Class map: both directions
         assert_eq!(
-            tables.class_map.get("https://saref.etsi.org/saref4bldg/Building"),
+            tables
+                .class_map
+                .get("https://saref.etsi.org/saref4bldg/Building"),
             Some(&"https://w3id.org/bot#Building".to_string())
         );
         assert_eq!(
