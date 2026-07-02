@@ -42,7 +42,7 @@ impl PipelinePlugin for OntologyMapperProducerPlugin {
             description: "Maps structured data to a target ontology using an alignment file.",
             inputs: vec!["structured-data", "ontology-file", "alignment-file"],
             outputs: vec!["ontology-triples"],
-            requires: vec!["structured-data"],
+            requires: vec![],
             conflicts_with: vec![],
             failure_policy: FailurePolicy::Optional,
             parallelism: ParallelismMode::ParallelByBatch,

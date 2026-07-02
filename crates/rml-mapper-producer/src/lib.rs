@@ -52,7 +52,7 @@ impl PipelinePlugin for RmlMapperProducerPlugin {
                 "Transforms structured data (JSON/CSV/XML) into RDF triples using RML mappings.",
             inputs: vec!["structured-data", "rml-mapping"],
             outputs: vec!["rml-triples"],
-            requires: vec!["structured-data"],
+            requires: vec![],
             conflicts_with: vec![],
             failure_policy: FailurePolicy::Required,
             parallelism: ParallelismMode::ParallelByBatch,
