@@ -1252,19 +1252,19 @@ fn postprocess_to_sink(
         let (summary, peak, chunk_size) = writer.finish()?;
         let export_ms = now_ms() - export_t0;
         summaries.push(summary);
-        finish_postprocess_sink(
-            sink,
-            &ctx,
-            settings,
-            sink_config,
-            &mut summaries,
-            preprocess_durations,
-            produce_durations,
-            produce_triples,
+
+        emit_producer_error_events(sink, &ctx)?;
+        if settings.has(LOG_EXPORT_ID) {
+            emit_log_sidecar(sink, &ctx, sink_config, &mut summaries)?;
+        }
+        let sd = build_stage_durations(
+            &preprocess_durations,
+            &produce_durations,
+            &produce_triples,
             serialize_ms,
             export_ms,
-        )?;
-        return Ok((summaries, peak, chunk_size, StageDurations::default()));
+        );
+        return Ok((summaries, peak, chunk_size, sd));
     }
 
     if settings.output_formats.has_any_nquads() {
@@ -1297,6 +1297,23 @@ fn postprocess_to_sink(
                 )?;
                 summaries.extend(file_summaries);
             }
+            let serialize_ms = now_ms() - serialize_t0;
+            emit_export_events(sink, settings, "running", 0)?;
+            let export_t0 = now_ms();
+            let export_ms = now_ms() - export_t0;
+
+            emit_producer_error_events(sink, &ctx)?;
+            if settings.has(LOG_EXPORT_ID) {
+                emit_log_sidecar(sink, &ctx, sink_config, &mut summaries)?;
+            }
+            let sd = build_stage_durations(
+                &preprocess_durations,
+                &produce_durations,
+                &produce_triples,
+                serialize_ms,
+                export_ms,
+            );
+            return Ok((summaries, 0, sink_config.chunk_size, sd));
         } else {
             // Merged N-Quads: all batches → one .nq file.
             let mut writer = SinkChunkWriter::new(
@@ -1309,7 +1326,7 @@ fn postprocess_to_sink(
                 compress,
             )?;
             for batch in &batches {
-                write_nquads_batch(&mut writer, &batch.triples, batch.kind.iri())?;
+                lbd_serializer::write_nquads_batch(&mut writer, &batch.triples, batch.kind.iri())?;
             }
             let serialize_ms = now_ms() - serialize_t0;
             emit_export_events(sink, settings, "running", 0)?;
@@ -1317,19 +1334,19 @@ fn postprocess_to_sink(
             let (summary, peak, chunk_size) = writer.finish()?;
             let export_ms = now_ms() - export_t0;
             summaries.push(summary);
-            finish_postprocess_sink(
-                sink,
-                &ctx,
-                settings,
-                sink_config,
-                &mut summaries,
-                preprocess_durations,
-                produce_durations,
-                produce_triples,
+
+            emit_producer_error_events(sink, &ctx)?;
+            if settings.has(LOG_EXPORT_ID) {
+                emit_log_sidecar(sink, &ctx, sink_config, &mut summaries)?;
+            }
+            let sd = build_stage_durations(
+                &preprocess_durations,
+                &produce_durations,
+                &produce_triples,
                 serialize_ms,
                 export_ms,
-            )?;
-            return Ok((summaries, peak, chunk_size, StageDurations::default()));
+            );
+            return Ok((summaries, peak, chunk_size, sd));
         }
     }
 
@@ -1357,25 +1374,26 @@ fn id_leak(s: &str) -> &'static str {
     }
 }
 
-/// Finalize postprocess sink: emit error events, log sidecars, build stage durations.
+/// Build a StageDurations from the collected timing data.
 #[cfg(target_family = "wasm")]
-fn finish_postprocess_sink(
-    sink: &js_sys::Function,
-    ctx: &std::sync::Arc<PipelineContext>,
-    settings: &ExecutionSettings,
-    sink_config: &SinkConfig,
-    summaries: &mut Vec<OutputFileSummary>,
-    preprocess_durations: HashMap<&'static str, u64>,
-    produce_durations: HashMap<&'static str, u64>,
-    produce_triples: HashMap<&'static str, u64>,
+fn build_stage_durations(
+    preprocess_durations: &HashMap<&'static str, u64>,
+    produce_durations: &HashMap<&'static str, u64>,
+    produce_triples: &HashMap<&'static str, u64>,
     serialize_ms: u64,
     export_ms: u64,
-) -> Result<(), lbd_serializer::SerializerError> {
-    emit_producer_error_events(sink, ctx)?;
-    if settings.has(LOG_EXPORT_ID) {
-        emit_log_sidecar(sink, ctx, sink_config, summaries)?;
+) -> StageDurations {
+    let mut sd = StageDurations::new();
+    sd.serialize_ms = serialize_ms;
+    sd.export_ms = export_ms;
+    for (id, ms) in preprocess_durations {
+        sd.by_preprocess.push((id.to_string(), *ms));
     }
-    Ok(())
+    for (id, ms) in produce_durations {
+        let triples = produce_triples.get(id).copied().unwrap_or(0);
+        sd.by_producer.insert(id.to_string(), (*ms, triples));
+    }
+    sd
 }
 
 // ---------------------------------------------------------------------------

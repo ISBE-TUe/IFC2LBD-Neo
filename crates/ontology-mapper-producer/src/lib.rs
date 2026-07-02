@@ -23,7 +23,7 @@
 //! ```
 
 use lbd_converter::ConvertOptions;
-use lbd_ontology::{Object, Triple};
+use lbd_ontology::Triple;
 use lbd_pipeline::{
     BatchKind, FailurePolicy, ParallelismMode, PipelineContext, PipelinePlugin, PipelineStage,
     PluginManifest, PostprocessError, PostprocessPlugin, TaggedBatch,
