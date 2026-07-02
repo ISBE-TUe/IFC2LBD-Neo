@@ -19,56 +19,59 @@ pub struct OntologyMappingConfig {
     pub ontology_turtle: String,
 }
 
-/// Execute ontology mapping and return triples.
-pub fn execute_ontology_mapping(
-    alignment_turtle: &str,
-    ontology_turtle: &str,
-    source_filename: &str,
-    source_bytes: &[u8],
-) -> Result<Vec<Triple>, String> {
-    // 1. Parse alignment file for explicit mappings
-    let alignment_maps = parse_rdf_mappings(alignment_turtle)?;
-
-    // 2. Parse ontology file for owl:equivalentProperty and rdfs:subPropertyOf
-    let ontology_maps = parse_rdf_mappings(ontology_turtle)?;
-
-    // Merge all predicate mappings
-    let mut predicate_map: HashMap<String, String> = HashMap::new();
-    for (src, tgt) in alignment_maps {
-        predicate_map.insert(src, tgt);
-    }
-    for (src, tgt) in ontology_maps {
-        predicate_map.entry(src).or_insert(tgt);
-    }
-
-    // 3. Parse the source data as RDF
-    let source_triples = parse_source_as_rdf(source_filename, source_bytes)?;
-
-    // 4. Apply predicate mappings
-    let mapped_triples = source_triples
-        .iter()
-        .map(|triple| {
-            let mapped_predicate = predicate_map
-                .get(&triple.predicate)
-                .cloned()
-                .unwrap_or_else(|| triple.predicate.clone());
-            Triple {
-                subject: triple.subject.clone(),
-                predicate: mapped_predicate,
-                object: triple.object.clone(),
-            }
-        })
-        .collect();
-
-    Ok(mapped_triples)
+/// Bidirectional mapping tables extracted from alignment + ontology files.
+///
+/// `property_map` maps predicates: if a triple has predicate X and X is in
+/// the map, it is rewritten to property_map[X].
+///
+/// `class_map` maps classes for `rdf:type` triples: if a triple is
+/// `<s> rdf:type <O>` and O is in the map, the object is rewritten to
+/// class_map[O].
+#[derive(Clone, Debug, Default)]
+pub struct MappingTables {
+    /// Predicate IRI → replacement predicate IRI (bidirectional)
+    pub property_map: HashMap<String, String>,
+    /// Class IRI → replacement class IRI (bidirectional, applied to rdf:type objects)
+    pub class_map: HashMap<String, String>,
 }
 
-/// Parse RDF (Turtle or N-Triples) and extract predicate mappings:
+/// Build merged mapping tables from alignment + ontology file contents.
+///
+/// Parses both files and merges their mappings. Alignment entries take
+/// priority (inserted first); ontology entries fill gaps (insert_or_insert_with).
+pub fn build_mapping_tables(
+    alignment_turtle: &str,
+    ontology_turtle: &str,
+) -> Result<MappingTables, String> {
+    let alignment = parse_rdf_mappings(alignment_turtle)?;
+    let ontology = parse_rdf_mappings(ontology_turtle)?;
+    let mut tables = MappingTables::default();
+    for (src, tgt) in alignment.property_maps {
+        tables.property_map.insert(src, tgt);
+    }
+    for (src, tgt) in alignment.class_maps {
+        tables.class_map.insert(src, tgt);
+    }
+    for (src, tgt) in ontology.property_maps {
+        tables.property_map.entry(src).or_insert(tgt);
+    }
+    for (src, tgt) in ontology.class_maps {
+        tables.class_map.entry(src).or_insert(tgt);
+    }
+    Ok(tables)
+}
+
+/// Parse RDF (Turtle or N-Triples) and extract property + class mappings:
 /// - `owl:equivalentProperty` (bidirectional)
-/// - `rdfs:subPropertyOf` (child → parent)
+/// - `owl:equivalentClass` (bidirectional)
+/// - `rdfs:subPropertyOf` (bidirectional)
+/// - `rdfs:subClassOf` (bidirectional)
 /// - `align:entity1` / `align:entity2` pairs (bidirectional)
-pub fn parse_rdf_mappings(turtle: &str) -> Result<Vec<(String, String)>, String> {
-    let mut mappings = Vec::new();
+///
+/// Returns separate lists for property mappings and class mappings.
+pub fn parse_rdf_mappings(turtle: &str) -> Result<RdfMappings, String> {
+    let mut property_maps: Vec<(String, String)> = Vec::new();
+    let mut class_maps: Vec<(String, String)> = Vec::new();
     let mut entity1_map: HashMap<String, String> = HashMap::new();
     let mut entity2_map: HashMap<String, String> = HashMap::new();
 
@@ -86,17 +89,38 @@ pub fn parse_rdf_mappings(turtle: &str) -> Result<Vec<(String, String)>, String>
                 if let (RioSubject::NamedNode(s), RioTerm::NamedNode(o)) =
                     (triple.subject, triple.object)
                 {
-                    mappings.push((s.iri.to_string(), o.iri.to_string()));
-                    mappings.push((o.iri.to_string(), s.iri.to_string()));
+                    property_maps.push((s.iri.to_string(), o.iri.to_string()));
+                    property_maps.push((o.iri.to_string(), s.iri.to_string()));
                 }
             }
 
-            // rdfs:subPropertyOf (child → parent)
+            // rdfs:subPropertyOf (bidirectional)
             if pred == "http://www.w3.org/2000/01/rdf-schema#subPropertyOf" {
                 if let (RioSubject::NamedNode(s), RioTerm::NamedNode(o)) =
                     (triple.subject, triple.object)
                 {
-                    mappings.push((s.iri.to_string(), o.iri.to_string()));
+                    property_maps.push((s.iri.to_string(), o.iri.to_string()));
+                    property_maps.push((o.iri.to_string(), s.iri.to_string()));
+                }
+            }
+
+            // owl:equivalentClass (bidirectional)
+            if pred == "http://www.w3.org/2002/07/owl#equivalentClass" {
+                if let (RioSubject::NamedNode(s), RioTerm::NamedNode(o)) =
+                    (triple.subject, triple.object)
+                {
+                    class_maps.push((s.iri.to_string(), o.iri.to_string()));
+                    class_maps.push((o.iri.to_string(), s.iri.to_string()));
+                }
+            }
+
+            // rdfs:subClassOf (bidirectional)
+            if pred == "http://www.w3.org/2000/01/rdf-schema#subClassOf" {
+                if let (RioSubject::NamedNode(s), RioTerm::NamedNode(o)) =
+                    (triple.subject, triple.object)
+                {
+                    class_maps.push((s.iri.to_string(), o.iri.to_string()));
+                    class_maps.push((o.iri.to_string(), s.iri.to_string()));
                 }
             }
 
@@ -121,15 +145,27 @@ pub fn parse_rdf_mappings(turtle: &str) -> Result<Vec<(String, String)>, String>
         })
         .map_err(|e| format!("RDF parse error: {e}"))?;
 
-    // Pair entity1→entity2 by blank node subject
+    // Pair entity1→entity2 by blank node subject (bidirectional).
+    // Alignment entities are typically properties, so we put them in
+    // property_maps. If the entities are classes, the user should use
+    // owl:equivalentClass or rdfs:subClassOf directly in the alignment file.
     for (subj, e1) in &entity1_map {
         if let Some(e2) = entity2_map.get(subj) {
-            mappings.push((e1.clone(), e2.clone()));
-            mappings.push((e2.clone(), e1.clone()));
+            property_maps.push((e1.clone(), e2.clone()));
+            property_maps.push((e2.clone(), e1.clone()));
         }
     }
 
-    Ok(mappings)
+    Ok(RdfMappings {
+        property_maps,
+        class_maps,
+    })
+}
+
+/// Intermediate result from parsing one RDF file.
+struct RdfMappings {
+    property_maps: Vec<(String, String)>,
+    class_maps: Vec<(String, String)>,
 }
 
 /// Parse source data as RDF (N-Triples or Turtle).
@@ -221,48 +257,90 @@ mod tests {
 <http://example.org/source/hasName> owl:equivalentProperty <http://example.org/target/name> .
 "#;
         let mappings = parse_rdf_mappings(alignment).unwrap();
-        assert!(mappings.len() >= 2);
+        assert!(mappings.property_maps.len() >= 2);
         assert!(mappings
+            .property_maps
             .iter()
             .any(|(s, t)| s == "http://example.org/source/hasName"
                 && t == "http://example.org/target/name"));
+        // Bidirectional: reverse direction also present
+        assert!(mappings
+            .property_maps
+            .iter()
+            .any(|(s, t)| s == "http://example.org/target/name"
+                && t == "http://example.org/source/hasName"));
     }
 
     #[test]
-    fn test_parse_sub_property() {
+    fn test_parse_sub_property_bidirectional() {
         let ontology = r#"@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
 <http://example.org/source/hasFirstName> rdfs:subPropertyOf <http://example.org/target/name> .
 "#;
         let mappings = parse_rdf_mappings(ontology).unwrap();
+        // child → parent
         assert!(mappings
+            .property_maps
             .iter()
             .any(|(s, t)| s == "http://example.org/source/hasFirstName"
                 && t == "http://example.org/target/name"));
+        // parent → child (bidirectional)
+        assert!(mappings
+            .property_maps
+            .iter()
+            .any(|(s, t)| s == "http://example.org/target/name"
+                && t == "http://example.org/source/hasFirstName"));
     }
 
     #[test]
-    fn test_apply_mapping() {
-        let alignment = r#"@prefix owl: <http://www.w3.org/2002/07/owl#> .
-<http://schema.org/name> owl:equivalentProperty <http://xmlns.com/foaf/0.1/name> .
+    fn test_parse_sub_class_bidirectional() {
+        let alignment = r#"@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix bot: <https://w3id.org/bot#> .
+@prefix saref: <https://saref.etsi.org/saref4bldg/> .
+saref:Building rdfs:subClassOf bot:Building .
+"#;
+        let mappings = parse_rdf_mappings(alignment).unwrap();
+        // saref:Building → bot:Building
+        assert!(mappings
+            .class_maps
+            .iter()
+            .any(|(s, t)| s == "https://saref.etsi.org/saref4bldg/Building"
+                && t == "https://w3id.org/bot#Building"));
+        // bot:Building → saref:Building (bidirectional)
+        assert!(mappings
+            .class_maps
+            .iter()
+            .any(|(s, t)| s == "https://w3id.org/bot#Building"
+                && t == "https://saref.etsi.org/saref4bldg/Building"));
+    }
+
+    #[test]
+    fn test_build_mapping_tables() {
+        let alignment = r#"@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix bot: <https://w3id.org/bot#> .
+@prefix saref: <https://saref.etsi.org/saref4bldg/> .
+saref:hasSpace rdfs:subPropertyOf bot:containsZone .
+saref:Building rdfs:subClassOf bot:Building .
 "#;
         let ontology = "";
-
-        let source = b"<http://example.org/person/1> <http://schema.org/name> \"Alice\" .\n<http://example.org/person/1> <http://schema.org/age> \"30\" .\n";
-
-        let triples = execute_ontology_mapping(alignment, ontology, "source.nt", source).unwrap();
-
-        assert_eq!(triples.len(), 2);
-        let name_triple = triples
-            .iter()
-            .find(|t| t.object == Object::Literal("Alice".to_string()))
-            .unwrap();
-        assert_eq!(name_triple.predicate, "http://xmlns.com/foaf/0.1/name");
-
-        let age_triple = triples
-            .iter()
-            .find(|t| t.object == Object::Literal("30".to_string()))
-            .unwrap();
-        assert_eq!(age_triple.predicate, "http://schema.org/age");
+        let tables = build_mapping_tables(alignment, ontology).unwrap();
+        // Property map: both directions
+        assert_eq!(
+            tables.property_map.get("https://saref.etsi.org/saref4bldg/hasSpace"),
+            Some(&"https://w3id.org/bot#containsZone".to_string())
+        );
+        assert_eq!(
+            tables.property_map.get("https://w3id.org/bot#containsZone"),
+            Some(&"https://saref.etsi.org/saref4bldg/hasSpace".to_string())
+        );
+        // Class map: both directions
+        assert_eq!(
+            tables.class_map.get("https://saref.etsi.org/saref4bldg/Building"),
+            Some(&"https://w3id.org/bot#Building".to_string())
+        );
+        assert_eq!(
+            tables.class_map.get("https://w3id.org/bot#Building"),
+            Some(&"https://saref.etsi.org/saref4bldg/Building".to_string())
+        );
     }
 
     #[test]
@@ -271,8 +349,8 @@ mod tests {
 ex:thing a ex:Class .
 "#;
         let ontology = "";
-        let source = b"<http://example.org/s> <http://example.org/p> \"o\" .\n";
-        let triples = execute_ontology_mapping(alignment, ontology, "source.nt", source).unwrap();
-        assert_eq!(triples.len(), 1);
+        let tables = build_mapping_tables(alignment, ontology).unwrap();
+        assert!(tables.property_map.is_empty());
+        assert!(tables.class_map.is_empty());
     }
 }

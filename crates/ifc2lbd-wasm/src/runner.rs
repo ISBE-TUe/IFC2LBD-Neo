@@ -1232,27 +1232,100 @@ fn postprocess_to_sink(
     let serialize_t0 = now_ms();
 
     if settings.output_formats.turtle {
-        // Turtle: write all triples to a single .ttl file.
-        let mut writer = SinkChunkWriter::new(
-            sink,
-            format!("{}.ttl{gz}", settings.output_stem),
-            "text/turtle;charset=utf-8",
-            "joined",
-            sink_config.chunk_size,
-            sink_config.max_pending_bytes,
-            compress,
-        )?;
         let instance_base = lbd_converter::normalize_base_uri(base_uri);
-        write_turtle_prefixes_for_stream(&mut writer, Some(&instance_base))?;
-        for batch in &batches {
-            serialize_turtle_batch_raw_to_writer(&batch.triples, &mut writer)?;
+        let effective_grouping = effective_turtle_grouping(settings.turtle_grouping, &options);
+
+        if settings.turtle_layout == TurtleLayout::Separate {
+            // Separate: each named graph → its own .ttl file
+            for batch in &batches {
+                let slug = batch
+                    .kind
+                    .iri()
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or("other")
+                    .to_string();
+                let mut writer = SinkChunkWriter::new(
+                    sink,
+                    format!("{}_{}.ttl{gz}", settings.output_stem, slug),
+                    "text/turtle;charset=utf-8",
+                    &slug,
+                    sink_config.chunk_size,
+                    sink_config.max_pending_bytes,
+                    compress,
+                )?;
+                if !options.low_memory_mode
+                    && !matches!(effective_grouping, TurtleGrouping::Sorted)
+                {
+                    write_turtle_prefixes_for_stream(&mut writer, Some(&instance_base))?;
+                }
+                if matches!(effective_grouping, TurtleGrouping::Sorted) {
+                    let mut sorted = batch.triples.clone();
+                    sorted.sort_unstable_by(|a, b| {
+                        a.subject.cmp(&b.subject).then_with(|| a.predicate.cmp(&b.predicate))
+                    });
+                    serialize_turtle_grouped_to_writer(&sorted, &mut writer, Some(&instance_base))?;
+                } else {
+                    serialize_turtle_batch_raw_to_writer(&batch.triples, &mut writer)?;
+                }
+                let (summary, _, _) = writer.finish()?;
+                summaries.push(summary);
+            }
+        } else {
+            // Joined: all triples → single .ttl file
+            let mut writer = SinkChunkWriter::new(
+                sink,
+                format!("{}.ttl{gz}", settings.output_stem),
+                "text/turtle;charset=utf-8",
+                "joined",
+                sink_config.chunk_size,
+                sink_config.max_pending_bytes,
+                compress,
+            )?;
+            if !options.low_memory_mode
+                && !matches!(effective_grouping, TurtleGrouping::Sorted)
+            {
+                write_turtle_prefixes_for_stream(&mut writer, Some(&instance_base))?;
+            }
+            if matches!(effective_grouping, TurtleGrouping::Sorted) {
+                let mut all_triples: Vec<lbd_ontology::Triple> = Vec::new();
+                for batch in &batches {
+                    all_triples.extend_from_slice(&batch.triples);
+                }
+                all_triples.sort_unstable_by(|a, b| {
+                    a.subject.cmp(&b.subject).then_with(|| a.predicate.cmp(&b.predicate))
+                });
+                serialize_turtle_grouped_to_writer(&all_triples, &mut writer, Some(&instance_base))?;
+            } else {
+                for batch in &batches {
+                    serialize_turtle_batch_raw_to_writer(&batch.triples, &mut writer)?;
+                }
+            }
+            let (summary, peak, chunk_size) = writer.finish()?;
+            summaries.push(summary);
+
+            emit_producer_error_events(sink, &ctx)?;
+            if settings.has(LOG_EXPORT_ID) {
+                emit_log_sidecar(sink, &ctx, sink_config, &mut summaries)?;
+            }
+            let serialize_ms = now_ms() - serialize_t0;
+            emit_export_events(sink, settings, "running", 0)?;
+            let export_t0 = now_ms();
+            let export_ms = now_ms() - export_t0;
+            let sd = build_stage_durations(
+                &preprocess_durations,
+                &produce_durations,
+                &produce_triples,
+                serialize_ms,
+                export_ms,
+            );
+            return Ok((summaries, peak, chunk_size, sd));
         }
+
         let serialize_ms = now_ms() - serialize_t0;
         emit_export_events(sink, settings, "running", 0)?;
         let export_t0 = now_ms();
-        let (summary, peak, chunk_size) = writer.finish()?;
         let export_ms = now_ms() - export_t0;
-        summaries.push(summary);
 
         emit_producer_error_events(sink, &ctx)?;
         if settings.has(LOG_EXPORT_ID) {
@@ -1265,7 +1338,7 @@ fn postprocess_to_sink(
             serialize_ms,
             export_ms,
         );
-        return Ok((summaries, peak, chunk_size, sd));
+        return Ok((summaries, 0, sink_config.chunk_size, sd));
     }
 
     if settings.output_formats.has_any_nquads() {
@@ -2558,24 +2631,15 @@ fn export_browser_files(
 
         // Ontology mapper: run as postprocess on collected triples.
         let ontology_triples: Vec<lbd_ontology::Triple> = if settings.has(ONTOLOGY_MAPPER_ID) {
-            // Build predicate map from alignment + ontology module options.
+            // Build mapping tables from alignment + ontology module options.
             let alignment = settings.module_option(ONTOLOGY_MAPPER_ID, "alignment_file");
             let ontology = settings.module_option(ONTOLOGY_MAPPER_ID, "ontology_file");
             if let (Some(alignment_turtle), Some(ontology_turtle)) = (alignment, ontology) {
-                use ontology_mapper_producer::parse_rdf_mappings;
-                let alignment_maps = parse_rdf_mappings(&alignment_turtle)
+                use ontology_mapper_producer::build_mapping_tables;
+                let tables = build_mapping_tables(&alignment_turtle, &ontology_turtle)
                     .map_err(|e| lbd_serializer::SerializerError::Io(std::io::Error::other(e)))?;
-                let ontology_maps = parse_rdf_mappings(&ontology_turtle)
-                    .map_err(|e| lbd_serializer::SerializerError::Io(std::io::Error::other(e)))?;
-                let mut predicate_map: std::collections::HashMap<String, String> =
-                    std::collections::HashMap::new();
-                for (src, tgt) in alignment_maps {
-                    predicate_map.insert(src, tgt);
-                }
-                for (src, tgt) in ontology_maps {
-                    predicate_map.entry(src).or_insert(tgt);
-                }
-                // Apply predicate mappings to all collected triples.
+                let rdf_type = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
+                // Apply mappings to all collected triples.
                 let mut mapped = Vec::new();
                 for triples in [
                     &bot_triples,
@@ -2587,11 +2651,30 @@ fn export_browser_files(
                     &rml_triples,
                 ] {
                     for triple in triples {
-                        if let Some(mapped_pred) = predicate_map.get(&triple.predicate) {
+                        let mapped_pred = tables
+                            .property_map
+                            .get(&triple.predicate)
+                            .cloned()
+                            .unwrap_or_else(|| triple.predicate.clone());
+                        let mapped_obj = if triple.predicate == rdf_type {
+                            match &triple.object {
+                                lbd_ontology::Object::Iri(iri) => {
+                                    tables
+                                        .class_map
+                                        .get(iri)
+                                        .map(|c| lbd_ontology::Object::Iri(c.clone()))
+                                        .unwrap_or_else(|| triple.object.clone())
+                                }
+                                _ => triple.object.clone(),
+                            }
+                        } else {
+                            triple.object.clone()
+                        };
+                        if mapped_pred != triple.predicate || mapped_obj != triple.object {
                             mapped.push(lbd_ontology::Triple {
                                 subject: triple.subject.clone(),
-                                predicate: mapped_pred.clone(),
-                                object: triple.object.clone(),
+                                predicate: mapped_pred,
+                                object: mapped_obj,
                             });
                         }
                     }

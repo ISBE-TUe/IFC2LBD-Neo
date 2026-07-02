@@ -32,7 +32,7 @@ use structured_data::OntologyMappingConfig;
 
 mod engine;
 
-pub use engine::parse_rdf_mappings;
+pub use engine::{build_mapping_tables, parse_rdf_mappings, MappingTables};
 
 /// Plugin ID — must be unique across all registered modules.
 pub const ONTOLOGY_MAPPER_ID: &str = "neo-ontology-mapper";
@@ -82,27 +82,18 @@ impl PostprocessPlugin for OntologyMapperProducerPlugin {
             PostprocessError::Postprocessing("No ConvertOptions in context".to_string())
         })?;
 
-        // Build the predicate mapping table from alignment + ontology files.
-        let alignment_maps = engine::parse_rdf_mappings(&config.alignment_turtle)
-            .map_err(PostprocessError::Postprocessing)?;
-        let ontology_maps = engine::parse_rdf_mappings(&config.ontology_turtle)
+        // Build mapping tables from alignment + ontology files.
+        let tables = engine::build_mapping_tables(&config.alignment_turtle, &config.ontology_turtle)
             .map_err(PostprocessError::Postprocessing)?;
 
-        let mut predicate_map: std::collections::HashMap<String, String> =
-            std::collections::HashMap::new();
-        for (src, tgt) in alignment_maps {
-            predicate_map.insert(src, tgt);
-        }
-        for (src, tgt) in ontology_maps {
-            predicate_map.entry(src).or_insert(tgt);
-        }
-
-        if predicate_map.is_empty() {
+        if tables.property_map.is_empty() && tables.class_map.is_empty() {
             // No mappings found — nothing to do.
             return Ok(());
         }
 
-        // Apply predicate mappings to all triples from all producers.
+        let rdf_type = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
+
+        // Apply mappings to all triples from all producers.
         let graph_iri = BatchKind::new(format!(
             "{}/{}",
             options.base_uri.trim_end_matches('/'),
@@ -112,11 +103,33 @@ impl PostprocessPlugin for OntologyMapperProducerPlugin {
         let mut mapped_triples: Vec<Triple> = Vec::new();
         for batch in batches.iter() {
             for triple in &batch.triples {
-                if let Some(mapped_predicate) = predicate_map.get(&triple.predicate) {
+                let mapped_predicate = tables
+                    .property_map
+                    .get(&triple.predicate)
+                    .cloned()
+                    .unwrap_or_else(|| triple.predicate.clone());
+
+                // For rdf:type triples, also map the object (class).
+                let mapped_object = if triple.predicate == rdf_type {
+                    match &triple.object {
+                        lbd_ontology::Object::Iri(iri) => {
+                            tables
+                                .class_map
+                                .get(iri)
+                                .map(|c| lbd_ontology::Object::Iri(c.clone()))
+                                .unwrap_or_else(|| triple.object.clone())
+                        }
+                        _ => triple.object.clone(),
+                    }
+                } else {
+                    triple.object.clone()
+                };
+
+                if mapped_predicate != triple.predicate || mapped_object != triple.object {
                     mapped_triples.push(Triple {
                         subject: triple.subject.clone(),
-                        predicate: mapped_predicate.clone(),
-                        object: triple.object.clone(),
+                        predicate: mapped_predicate,
+                        object: mapped_object,
                     });
                 }
             }
