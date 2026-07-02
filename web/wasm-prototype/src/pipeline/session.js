@@ -16,8 +16,8 @@ const ALL_STAGES = [
 	{ key: "Import", label: "IMPORT" },
 	{ key: "Preprocess", label: "PREPROCESS" },
 	{ key: "Produce", label: "PRODUCE" },
-	{ key: "Serialize", label: "SERIALIZE" },
 	{ key: "Postprocess", label: "POSTPROCESS" },
+	{ key: "Serialize", label: "SERIALIZE" },
 	{ key: "Export", label: "EXPORT" },
 ];
 
@@ -32,6 +32,8 @@ const PRODUCE_ORDER = [
 	"neo-ifc-topology-producer",
 	"neo-bbox-enricher",
 	"neo-rml-mapper",
+];
+const POSTPROCESS_ORDER = [
 	"neo-ontology-mapper",
 ];
 const SERIALIZE_ORDER = [
@@ -83,7 +85,9 @@ function sortModules(mods, stage) {
 			? PRODUCE_ORDER
 			: stage === "Serialize"
 				? SERIALIZE_ORDER
-				: [];
+				: stage === "Postprocess"
+					? POSTPROCESS_ORDER
+					: [];
 	return [...mods].sort((a, b) => {
 		const ai = order.indexOf(a.id);
 		const bi = order.indexOf(b.id);

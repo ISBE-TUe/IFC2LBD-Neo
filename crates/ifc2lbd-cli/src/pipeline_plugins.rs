@@ -123,7 +123,7 @@ pub fn built_in_registry() -> PluginRegistry {
     registry.register_producer(IfcowlProducerPlugin).unwrap();
     registry.register_producer(RmlMapperProducerPlugin).unwrap();
     registry
-        .register_producer(OntologyMapperProducerPlugin)
+        .register_postprocess(OntologyMapperProducerPlugin)
         .unwrap();
     registry
         .register_preprocess(GeometryPreprocessPlugin)
@@ -841,10 +841,17 @@ mod tests {
     #[test]
     fn built_in_registry_exposes_expected_stage_counts() {
         let registry = built_in_registry();
-        // Bot, Beo, Bsdd, PropsOpm, OmgFog, Ifcowl, GeometryProducer
+        // Bot, Beo, Bsdd, PropsOpm, OmgFog, Ifcowl, RmlMapper, GeometryProducer
         assert_eq!(
             registry.manifests_for_stage(PipelineStage::Produce).len(),
-            7
+            8
+        );
+        // OntologyMapper
+        assert_eq!(
+            registry
+                .manifests_for_stage(PipelineStage::Postprocess)
+                .len(),
+            1
         );
         // Turtle, NQuads, NQuadsChunked
         assert_eq!(

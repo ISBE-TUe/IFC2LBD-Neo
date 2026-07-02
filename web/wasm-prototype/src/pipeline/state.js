@@ -46,7 +46,7 @@ const state = {
 	selectedPluginId: null,
 	detailOpen: false,
 	showPreprocess: true,
-	showPostprocess: false,
+	showPostprocess: true,
 };
 
 export function getState() {

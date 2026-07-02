@@ -110,8 +110,9 @@ pub(crate) fn browser_registry() -> PluginRegistry {
     // Other producers
     registry.register_producer(IfcowlProducerPlugin).unwrap();
     registry.register_producer(RmlMapperProducerPlugin).unwrap();
+    // Postprocess
     registry
-        .register_producer(OntologyMapperProducerPlugin)
+        .register_postprocess(OntologyMapperProducerPlugin)
         .unwrap();
     // Serializers (registration only; serialization happens in runner.rs)
     registry

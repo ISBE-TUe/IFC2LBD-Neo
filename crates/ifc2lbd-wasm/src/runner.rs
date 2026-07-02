@@ -76,15 +76,13 @@ fn is_ifcowl_graph(iri: &str) -> bool {
     iri.ends_with("/ifcowl") || iri.ends_with("/alignment")
 }
 
-// Thread-local storage for structured data + RML/ontology configs.
+// Thread-local storage for structured data + RML config.
 // Set in run_to_sink() when input_format == "structured-data",
-// read in make_pipeline_context() to insert into PipelineContext.
+// read by the RML mapper producer via PipelineContext.
 thread_local! {
     static CURRENT_STRUCTURED_DATA: std::cell::RefCell<Option<std::sync::Arc<StructuredDataInput>>> =
         const { std::cell::RefCell::new(None) };
     static CURRENT_RML_CONFIG: std::cell::RefCell<Option<std::sync::Arc<RmlMappingConfig>>> =
-        const { std::cell::RefCell::new(None) };
-    static CURRENT_ONTOLOGY_CONFIG: std::cell::RefCell<Option<std::sync::Arc<OntologyMappingConfig>>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -146,7 +144,6 @@ fn active_producer_ids_from_settings(settings: &ExecutionSettings) -> Vec<String
         OMG_FOG_PRODUCER_ID,
         IFCOWL_PRODUCER_ID,
         RML_MAPPER_ID,
-        ONTOLOGY_MAPPER_ID,
     ] {
         if settings.has(id) {
             ids.push(id.to_string());
@@ -1006,6 +1003,26 @@ fn export_browser_files_to_sink_streaming(
         NquadsChunkingMode::Bytes => SinkChunkingMode::Bytes,
     };
 
+    // --- POSTPROCESS PATH (ontology mapper) ---
+    // When the ontology mapper (postprocess) is active, we must collect ALL
+    // producer batches before serialization so postprocess can see the full
+    // triple set.  This breaks streaming but is inherent to needs_full_graph.
+    if settings.has(ONTOLOGY_MAPPER_ID) {
+        return postprocess_to_sink(
+            step,
+            model,
+            options,
+            base_uri,
+            settings,
+            sink,
+            sink_config,
+            &stage_tx,
+            &stage_rx,
+            is_chunked,
+            chunk_mode,
+        );
+    }
+
     // --- TURTLE PATH ---
     if settings.output_formats.turtle {
         return turtle_to_sink(
@@ -1041,6 +1058,326 @@ fn export_browser_files_to_sink_streaming(
         io::ErrorKind::InvalidInput,
         "no serializer active",
     )))
+}
+
+// ---------------------------------------------------------------------------
+// Postprocess path (ontology mapper) — collect all, postprocess, serialize
+// ---------------------------------------------------------------------------
+
+/// Collect all producer batches, run postprocess plugins, then serialize.
+///
+/// This path is used when the ontology mapper (or any `needs_full_graph`
+/// postprocess plugin) is active.  It trades streaming for full-graph visibility.
+#[cfg(target_family = "wasm")]
+#[allow(clippy::too_many_arguments)]
+fn postprocess_to_sink(
+    step: StepFile,
+    model: ifc_model::IfcModel,
+    options: ConvertOptions,
+    base_uri: &str,
+    settings: &ExecutionSettings,
+    sink: &js_sys::Function,
+    sink_config: &SinkConfig,
+    _stage_tx: &crossbeam::channel::Sender<StageDoneEvent>,
+    _stage_rx: &crossbeam::channel::Receiver<StageDoneEvent>,
+    is_chunked: bool,
+    chunk_mode: SinkChunkingMode,
+) -> Result<
+    (Vec<OutputFileSummary>, usize, usize, StageDurations),
+    lbd_serializer::SerializerError,
+> {
+    use std::io::Write as _;
+
+    let normalized_base = normalize_base_for_graph_iri(base_uri);
+    let chan_cap = if options.low_memory_mode { 4 } else { 16 };
+    let model = std::sync::Arc::new(model);
+    let mut produce_durations: HashMap<&'static str, u64> = HashMap::new();
+    let mut produce_triples: HashMap<&'static str, u64> = HashMap::new();
+    let mut summaries = Vec::new();
+
+    // --- Context setup ---
+    let options_arc = std::sync::Arc::new(options.clone());
+    let step_arc = std::sync::Arc::new(step);
+    let registry = crate::plugins::browser_registry();
+    let mut ctx = make_pipeline_context(
+        model.clone(),
+        options_arc.clone(),
+        step_arc.clone(),
+        chan_cap,
+    );
+    if settings.has(QTO_PREPROCESS_ID) {
+        ctx.insert(std::sync::Arc::new(
+            plugin_qto_preprocess::QtoOptions::default(),
+        ));
+    }
+    if settings
+        .module_option(FILE_EXPORT_ID, "compress")
+        .as_deref()
+        == Some("gzip")
+    {
+        ctx.insert(std::sync::Arc::new(CompressOutput(true)));
+    }
+
+    // Insert OntologyMappingConfig from module options.
+    if let (Some(alignment), Some(ontology)) = (
+        settings.module_option(ONTOLOGY_MAPPER_ID, "alignment_file"),
+        settings.module_option(ONTOLOGY_MAPPER_ID, "ontology_file"),
+    ) {
+        ctx.insert(std::sync::Arc::new(OntologyMappingConfig {
+            alignment_turtle: alignment,
+            ontology_turtle: ontology,
+        }));
+    }
+
+    // --- Preprocess ---
+    let preprocess_ids: Vec<String> = registry
+        .manifests_for_stage(PipelineStage::Preprocess)
+        .into_iter()
+        .filter(|m| settings.has(m.id) && m.id != GEOMETRY_PREPROCESS_ID)
+        .map(|m| m.id.to_string())
+        .collect();
+    let preprocess_durations =
+        run_preprocess_with_events(sink, &preprocess_ids, &registry, &mut ctx)?;
+    let ctx = std::sync::Arc::new(ctx);
+
+    // --- Spawn producers (keep TaggedBatch receivers — don't strip graph IRIs) ---
+    let producer_ids = active_producer_ids_from_settings(settings);
+    let receivers = lbd_pipeline::spawn_producers(&producer_ids, &registry, &ctx, chan_cap);
+
+    // --- Drain all receivers into Vec<TaggedBatch> ---
+    // Map producer IDs to slugs for graph IRI construction.
+    let slug_for_id = |id: &str| -> &'static str {
+        match id {
+            BOT_PRODUCER_ID => "bot",
+            BEO_PRODUCER_ID => "beo",
+            BSDD_PRODUCER_ID => "bsdd",
+            PROPS_OPM_PRODUCER_ID => "props",
+            OMG_FOG_PRODUCER_ID => "omg",
+            IFCOWL_PRODUCER_ID => "ifcowl",
+            RML_MAPPER_ID => "rml",
+            _ => "other",
+        }
+    };
+
+    let mut batches: Vec<TaggedBatch> = Vec::new();
+    for (id, rx) in receivers {
+        let slug = slug_for_id(&id);
+        let graph_iri = resolve_nquads_graph_iri(
+            &normalized_base,
+            &settings.output_stem,
+            slug,
+            settings.nquads.graph_naming,
+        );
+        let t0 = now_ms();
+        let mut count: u64 = 0;
+        for batch in rx {
+            count += batch.triples.len() as u64;
+            batches.push(TaggedBatch {
+                kind: BatchKind::new(graph_iri.clone()),
+                triples: batch.triples,
+            });
+        }
+        let ms = now_ms() - t0;
+        produce_durations.insert(id_leak(&id), ms);
+        produce_triples.insert(id_leak(&id), count);
+        emit_stage_event(sink, id_leak(&id), "Produce", "success", ms, 0, count, None)?;
+    }
+
+    // --- Run postprocess (ontology mapper) ---
+    let postprocess_ids: Vec<String> = registry
+        .manifests_for_stage(PipelineStage::Postprocess)
+        .into_iter()
+        .filter(|m| settings.has(m.id))
+        .map(|m| m.id.to_string())
+        .collect();
+
+    let post_t0 = now_ms();
+    lbd_pipeline::spawn_postprocessors(&postprocess_ids, &registry, &ctx, &mut batches)
+        .map_err(|e| lbd_serializer::SerializerError::Io(std::io::Error::other(e.to_string())))?;
+    let post_ms = now_ms() - post_t0;
+
+    // Emit postprocess stage events.
+    for pid in &postprocess_ids {
+        let triples: usize = batches
+            .iter()
+            .filter(|b| b.kind.iri().ends_with("/ontology"))
+            .map(|b| b.triples.len())
+            .sum();
+        emit_stage_event(
+            sink,
+            id_leak(pid),
+            "Postprocess",
+            "success",
+            post_ms,
+            0,
+            triples as u64,
+            None,
+        )?;
+    }
+
+    // --- Serialize from collected batches ---
+    let compress = settings
+        .module_option(FILE_EXPORT_ID, "compress")
+        .as_deref()
+        == Some("gzip");
+    let gz = if compress { ".gz" } else { "" };
+
+    let serializer_id = if settings.output_formats.turtle {
+        TURTLE_SERIALIZER_ID
+    } else if settings.output_formats.nquads_chunked {
+        NQUADS_CHUNKED_SERIALIZER_ID
+    } else {
+        NQUADS_SERIALIZER_ID
+    };
+    emit_stage_event(sink, serializer_id, "Serialize", "running", 0, 0, 0, None)?;
+    let serialize_t0 = now_ms();
+
+    if settings.output_formats.turtle {
+        // Turtle: write all triples to a single .ttl file.
+        let mut writer = SinkChunkWriter::new(
+            sink,
+            format!("{}.ttl{gz}", settings.output_stem),
+            "text/turtle;charset=utf-8",
+            "joined",
+            sink_config.chunk_size,
+            sink_config.max_pending_bytes,
+            compress,
+        )?;
+        let instance_base = lbd_converter::normalize_base_uri(base_uri);
+        write_turtle_prefixes_for_stream(&mut writer, Some(&instance_base))?;
+        for batch in &batches {
+            serialize_turtle_batch_raw_to_writer(&batch.triples, &mut writer)?;
+        }
+        let serialize_ms = now_ms() - serialize_t0;
+        emit_export_events(sink, settings, "running", 0)?;
+        let export_t0 = now_ms();
+        let (summary, peak, chunk_size) = writer.finish()?;
+        let export_ms = now_ms() - export_t0;
+        summaries.push(summary);
+        finish_postprocess_sink(
+            sink,
+            &ctx,
+            settings,
+            sink_config,
+            &mut summaries,
+            preprocess_durations,
+            produce_durations,
+            produce_triples,
+            serialize_ms,
+            export_ms,
+        )?;
+        return Ok((summaries, peak, chunk_size, StageDurations::default()));
+    }
+
+    if settings.output_formats.has_any_nquads() {
+        if is_chunked {
+            // Chunked N-Quads: each batch → its own chunk files.
+            for batch in &batches {
+                let slug = batch
+                    .kind
+                    .iri()
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or("other")
+                    .to_string();
+                let (file_summaries, triples) = serialize_nquads_receiver_to_chunks(
+                    // Wrap batch.triples in a channel so we can reuse the existing helper.
+                    {
+                        let (tx, rx) = crossbeam::channel::bounded(1);
+                        let _ = tx.send(batch.triples.clone());
+                        drop(tx);
+                        rx
+                    },
+                    sink,
+                    format!("{}-{}", settings.nquads.chunk_prefix, slug),
+                    batch.kind.iri(),
+                    chunk_mode,
+                    settings.nquads.chunk_size_lines,
+                    settings.nquads.chunk_size_bytes,
+                    sink_config,
+                    compress,
+                )?;
+                summaries.extend(file_summaries);
+            }
+        } else {
+            // Merged N-Quads: all batches → one .nq file.
+            let mut writer = SinkChunkWriter::new(
+                sink,
+                format!("{}.nq{gz}", settings.output_stem),
+                "application/n-quads",
+                "merged",
+                sink_config.chunk_size,
+                sink_config.max_pending_bytes,
+                compress,
+            )?;
+            for batch in &batches {
+                write_nquads_batch(&mut writer, &batch.triples, batch.kind.iri())?;
+            }
+            let serialize_ms = now_ms() - serialize_t0;
+            emit_export_events(sink, settings, "running", 0)?;
+            let export_t0 = now_ms();
+            let (summary, peak, chunk_size) = writer.finish()?;
+            let export_ms = now_ms() - export_t0;
+            summaries.push(summary);
+            finish_postprocess_sink(
+                sink,
+                &ctx,
+                settings,
+                sink_config,
+                &mut summaries,
+                preprocess_durations,
+                produce_durations,
+                produce_triples,
+                serialize_ms,
+                export_ms,
+            )?;
+            return Ok((summaries, peak, chunk_size, StageDurations::default()));
+        }
+    }
+
+    Err(lbd_serializer::SerializerError::Io(std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        "no serializer active",
+    )))
+}
+
+/// Helper to leak a `String` id to `&'static str` for the duration maps.
+/// Safe because the IDs are plugin constants that live for the program lifetime.
+#[cfg(target_family = "wasm")]
+fn id_leak(s: &str) -> &'static str {
+    // Plugin IDs are &'static str constants; match against known IDs.
+    match s {
+        BOT_PRODUCER_ID => BOT_PRODUCER_ID,
+        BEO_PRODUCER_ID => BEO_PRODUCER_ID,
+        BSDD_PRODUCER_ID => BSDD_PRODUCER_ID,
+        PROPS_OPM_PRODUCER_ID => PROPS_OPM_PRODUCER_ID,
+        OMG_FOG_PRODUCER_ID => OMG_FOG_PRODUCER_ID,
+        IFCOWL_PRODUCER_ID => IFCOWL_PRODUCER_ID,
+        RML_MAPPER_ID => RML_MAPPER_ID,
+        ONTOLOGY_MAPPER_ID => ONTOLOGY_MAPPER_ID,
+        _ => "unknown",
+    }
+}
+
+/// Finalize postprocess sink: emit error events, log sidecars, build stage durations.
+#[cfg(target_family = "wasm")]
+fn finish_postprocess_sink(
+    sink: &js_sys::Function,
+    ctx: &std::sync::Arc<PipelineContext>,
+    settings: &ExecutionSettings,
+    sink_config: &SinkConfig,
+    summaries: &mut Vec<OutputFileSummary>,
+    preprocess_durations: HashMap<&'static str, u64>,
+    produce_durations: HashMap<&'static str, u64>,
+    produce_triples: HashMap<&'static str, u64>,
+    serialize_ms: u64,
+    export_ms: u64,
+) -> Result<(), lbd_serializer::SerializerError> {
+    emit_producer_error_events(sink, ctx)?;
+    if settings.has(LOG_EXPORT_ID) {
+        emit_log_sidecar(sink, ctx, sink_config, summaries)?;
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1272,8 +1609,6 @@ fn turtle_to_sink_joined(
     let omg_receiver = raw_receivers.remove(OMG_FOG_PRODUCER_ID);
     let ifcowl_receiver = raw_receivers.remove(IFCOWL_PRODUCER_ID);
     let rml_receiver = raw_receivers.remove(RML_MAPPER_ID);
-    let ontology_receiver = raw_receivers.remove(ONTOLOGY_MAPPER_ID);
-
     let compress = settings
         .module_option(FILE_EXPORT_ID, "compress")
         .as_deref()
@@ -1324,7 +1659,6 @@ fn turtle_to_sink_joined(
         collect_and_emit!(props_receiver, PROPS_OPM_PRODUCER_ID);
         collect_and_emit!(omg_receiver, OMG_FOG_PRODUCER_ID);
         collect_and_emit!(rml_receiver, RML_MAPPER_ID);
-        collect_and_emit!(ontology_receiver, ONTOLOGY_MAPPER_ID);
         // Write sorted LBD triples first (BOT/BEO/PROPS/OMG — bounded in size).
         serialize_turtle_grouped_to_writer(&all_triples, &mut writer, Some(&instance_base))?;
         drop(all_triples);
@@ -1376,7 +1710,6 @@ fn turtle_to_sink_joined(
         drain_and_emit!(omg_receiver, OMG_FOG_PRODUCER_ID);
         drain_and_emit!(ifcowl_receiver, IFCOWL_PRODUCER_ID);
         drain_and_emit!(rml_receiver, RML_MAPPER_ID);
-        drain_and_emit!(ontology_receiver, ONTOLOGY_MAPPER_ID);
     }
     let serialize_ms = now_ms() - serialize_t0;
 
@@ -1473,8 +1806,6 @@ fn turtle_to_sink_separate(
     let omg_receiver = raw_receivers.remove(OMG_FOG_PRODUCER_ID);
     let ifcowl_receiver = raw_receivers.remove(IFCOWL_PRODUCER_ID);
     let rml_receiver = raw_receivers.remove(RML_MAPPER_ID);
-    let ontology_receiver = raw_receivers.remove(ONTOLOGY_MAPPER_ID);
-
     emit_stage_event(
         sink,
         TURTLE_SERIALIZER_ID,
@@ -1534,12 +1865,7 @@ fn turtle_to_sink_separate(
         TurtleGrouping::Streaming
     );
     drain_sep_and_emit!(rml_receiver, "rml", RML_MAPPER_ID, effective_grouping);
-    drain_sep_and_emit!(
-        ontology_receiver,
-        "ontology",
-        ONTOLOGY_MAPPER_ID,
-        effective_grouping
-    );
+
     let serialize_ms = now_ms() - serialize_t0;
 
     emit_export_events(sink, settings, "running", 0)?;
@@ -1699,8 +2025,6 @@ fn nquads_to_sink(
     let omg_receiver = raw_receivers.remove(OMG_FOG_PRODUCER_ID);
     let ifcowl_receiver = raw_receivers.remove(IFCOWL_PRODUCER_ID);
     let rml_receiver = raw_receivers.remove(RML_MAPPER_ID);
-    let ontology_receiver = raw_receivers.remove(ONTOLOGY_MAPPER_ID);
-
     let serializer_id = if settings.output_formats.nquads_chunked {
         NQUADS_CHUNKED_SERIALIZER_ID
     } else {
@@ -1759,7 +2083,6 @@ fn nquads_to_sink(
         drain_chunked!(omg_receiver, "omg", OMG_FOG_PRODUCER_ID);
         drain_chunked!(ifcowl_receiver, "ifcowl", IFCOWL_PRODUCER_ID);
         drain_chunked!(rml_receiver, "rml", RML_MAPPER_ID);
-        drain_chunked!(ontology_receiver, "ontology", ONTOLOGY_MAPPER_ID);
         let serialize_ms = now_ms() - serialize_t0;
 
         emit_export_events(sink, settings, "running", 0)?;
@@ -1832,7 +2155,6 @@ fn nquads_to_sink(
         drain_merged!(omg_receiver, "omg", OMG_FOG_PRODUCER_ID);
         drain_merged!(ifcowl_receiver, "ifcowl", IFCOWL_PRODUCER_ID);
         drain_merged!(rml_receiver, "rml", RML_MAPPER_ID);
-        drain_merged!(ontology_receiver, "ontology", ONTOLOGY_MAPPER_ID);
         let serialize_ms = now_ms() - serialize_t0;
 
         emit_export_events(sink, settings, "running", 0)?;
@@ -2182,29 +2504,30 @@ fn export_browser_files(
             Vec::new()
         };
 
-        let ontology_triples: Vec<lbd_ontology::Triple> = if settings.has(ONTOLOGY_MAPPER_ID) {
+        // RML mapper: run via spawn_producers (needs context, not IfcModel)
+        let rml_triples: Vec<lbd_ontology::Triple> = if settings.has(RML_MAPPER_ID) {
             let registry = crate::plugins::browser_registry();
-            let producer_ids = vec![ONTOLOGY_MAPPER_ID.to_string()];
+            let producer_ids = vec![RML_MAPPER_ID.to_string()];
             let limits = lbd_pipeline::ResourceLimits {
                 memory_budget_bytes: 0,
                 thread_count: rayon::current_num_threads().max(1),
                 channel_capacity: 16,
                 batch_size: options.stream_batch_size,
             };
-            let mut onto_ctx = lbd_pipeline::PipelineContext::new(limits);
-            onto_ctx.insert(std::sync::Arc::new(options.clone()));
+            let mut rml_ctx = lbd_pipeline::PipelineContext::new(limits);
+            rml_ctx.insert(std::sync::Arc::new(options.clone()));
             CURRENT_STRUCTURED_DATA.with(|cell| {
                 if let Some(sd) = cell.borrow().clone() {
-                    onto_ctx.insert(sd);
+                    rml_ctx.insert(sd);
                 }
             });
-            CURRENT_ONTOLOGY_CONFIG.with(|cell| {
+            CURRENT_RML_CONFIG.with(|cell| {
                 if let Some(cfg) = cell.borrow().clone() {
-                    onto_ctx.insert(cfg);
+                    rml_ctx.insert(cfg);
                 }
             });
-            let onto_ctx = std::sync::Arc::new(onto_ctx);
-            let receivers = lbd_pipeline::spawn_producers(&producer_ids, &registry, &onto_ctx, 16);
+            let rml_ctx = std::sync::Arc::new(rml_ctx);
+            let receivers = lbd_pipeline::spawn_producers(&producer_ids, &registry, &rml_ctx, 16);
             let mut all = Vec::new();
             for (_, rx) in receivers {
                 for batch in rx {
@@ -2212,6 +2535,49 @@ fn export_browser_files(
                 }
             }
             all
+        } else {
+            Vec::new()
+        };
+
+        // Ontology mapper: run as postprocess on collected triples.
+        let ontology_triples: Vec<lbd_ontology::Triple> = if settings.has(ONTOLOGY_MAPPER_ID) {
+            // Build predicate map from alignment + ontology module options.
+            let alignment = settings.module_option(ONTOLOGY_MAPPER_ID, "alignment_file");
+            let ontology = settings.module_option(ONTOLOGY_MAPPER_ID, "ontology_file");
+            if let (Some(alignment_turtle), Some(ontology_turtle)) = (alignment, ontology) {
+                use ontology_mapper_producer::parse_rdf_mappings;
+                let alignment_maps = parse_rdf_mappings(&alignment_turtle)
+                    .map_err(|e| lbd_serializer::SerializerError::Io(std::io::Error::other(e)))?;
+                let ontology_maps = parse_rdf_mappings(&ontology_turtle)
+                    .map_err(|e| lbd_serializer::SerializerError::Io(std::io::Error::other(e)))?;
+                let mut predicate_map: std::collections::HashMap<String, String> =
+                    std::collections::HashMap::new();
+                for (src, tgt) in alignment_maps {
+                    predicate_map.insert(src, tgt);
+                }
+                for (src, tgt) in ontology_maps {
+                    predicate_map.entry(src).or_insert(tgt);
+                }
+                // Apply predicate mappings to all collected triples.
+                let mut mapped = Vec::new();
+                for triples in [
+                    &bot_triples, &beo_triples, &bsdd_triples, &props_triples,
+                    &omg_triples, &ifcowl_triples, &rml_triples,
+                ] {
+                    for triple in triples {
+                        if let Some(mapped_pred) = predicate_map.get(&triple.predicate) {
+                            mapped.push(lbd_ontology::Triple {
+                                subject: triple.subject.clone(),
+                                predicate: mapped_pred.clone(),
+                                object: triple.object.clone(),
+                            });
+                        }
+                    }
+                }
+                mapped
+            } else {
+                Vec::new()
+            }
         } else {
             Vec::new()
         };

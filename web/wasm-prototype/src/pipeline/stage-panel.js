@@ -44,7 +44,7 @@ function renderToggles() {
   container.innerHTML = "";
 
   // Group by stage
-  const stages = ["Produce", "Serialize", "Export"];
+  const stages = ["Produce", "Postprocess", "Serialize", "Export"];
   for (const stage of stages) {
     const stageMods = modules.filter((m) => m.stage === stage);
     if (stageMods.length === 0) continue;

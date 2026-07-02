@@ -4,7 +4,7 @@
 
 import { getState, subscribe } from "./state.js";
 
-const STAGE_ORDER = ["Preprocess", "Produce", "Serialize", "Export"];
+const STAGE_ORDER = ["Preprocess", "Produce", "Postprocess", "Serialize", "Export"];
 const STAGE_COLORS = {
   idle: "#C8C8C8",
   running: "#7EC8E3",
@@ -37,6 +37,7 @@ export function initDAG(container) {
 function getStageForModule(mod, activeModules) {
   // Map the module stage to the display stage
   if (mod.stage === "Produce") return "Produce";
+  if (mod.stage === "Postprocess") return "Postprocess";
   if (mod.stage === "Serialize") return "Serialize";
   if (mod.stage === "Export") return "Export";
   return mod.stage;

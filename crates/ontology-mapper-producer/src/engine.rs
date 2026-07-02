@@ -67,7 +67,7 @@ pub fn execute_ontology_mapping(
 /// - `owl:equivalentProperty` (bidirectional)
 /// - `rdfs:subPropertyOf` (child → parent)
 /// - `align:entity1` / `align:entity2` pairs (bidirectional)
-fn parse_rdf_mappings(turtle: &str) -> Result<Vec<(String, String)>, String> {
+pub fn parse_rdf_mappings(turtle: &str) -> Result<Vec<(String, String)>, String> {
     let mut mappings = Vec::new();
     let mut entity1_map: HashMap<String, String> = HashMap::new();
     let mut entity2_map: HashMap<String, String> = HashMap::new();

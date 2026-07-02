@@ -391,6 +391,19 @@ fn main() -> anyhow::Result<()> {
         ctx.insert(cfg.clone());
     }
 
+    // Insert ontology mapping config from module options (alignment + ontology files)
+    if let Some(onto_entries) = module_configs.get(lbd_pipeline::ONTOLOGY_MAPPER_ID) {
+        if let (Some(alignment), Some(ontology)) = (
+            onto_entries.get("alignment_file"),
+            onto_entries.get("ontology_file"),
+        ) {
+            ctx.insert(std::sync::Arc::new(structured_data::OntologyMappingConfig {
+                alignment_turtle: alignment.clone(),
+                ontology_turtle: ontology.clone(),
+            }));
+        }
+    }
+
     let preprocess_start = Instant::now();
     lbd_pipeline::spawn_preprocessors(&preprocess_ids, &built_in_registry, &mut ctx)
         .map_err(|e| anyhow::anyhow!("preprocess stage failed: {:?}", e))?;
@@ -614,32 +627,54 @@ fn main() -> anyhow::Result<()> {
         &ctx,
         SERIALIZER_CHANNEL_CAPACITY,
     );
-    let routing_handles: Vec<_> = producer_receivers
-        .into_iter()
-        .map(|(_id, rx)| {
-            let lbd_tx = converter_lbd_sender.clone();
-            let owl_tx = ifcowl_sender.clone();
-            thread::spawn(move || {
-                for batch in rx {
-                    let iri = batch.kind.iri();
-                    if iri.ends_with("/ifcowl") || iri.ends_with("/alignment") {
-                        if let Some(ref tx) = owl_tx {
-                            if tx.send(batch.triples).is_err() {
-                                break;
-                            }
-                        }
-                    } else if lbd_tx.send(batch.triples).is_err() {
-                        break;
-                    }
-                }
-            })
-        })
-        .collect();
-    for handle in routing_handles {
-        handle
-            .join()
-            .map_err(|_| anyhow::anyhow!("producer routing thread panicked"))?;
+
+    // Collect all producer batches (needed for postprocess — ontology mapper
+    // requires the full triple set before mapping).  When no postprocess is
+    // active, we could stream directly, but collecting is simpler and the
+    // CLI has no memory constraints like WASM.
+    let mut all_batches: Vec<lbd_pipeline::TaggedBatch> = Vec::new();
+    for (_id, rx) in producer_receivers {
+        for batch in rx {
+            all_batches.push(batch);
+        }
     }
+
+    // Run postprocess plugins (e.g. ontology mapper) on the collected batches.
+    let postprocess_ids: Vec<String> = activation_plan
+        .enabled_ids
+        .iter()
+        .filter_map(|id| built_in_registry.plugin(id).map(|p| p.manifest()))
+        .filter(|m| m.stage == lbd_pipeline::PipelineStage::Postprocess)
+        .map(|m| m.id.to_string())
+        .collect();
+    if !postprocess_ids.is_empty() {
+        let postprocess_start = Instant::now();
+        lbd_pipeline::spawn_postprocessors(&postprocess_ids, &built_in_registry, &ctx, &mut all_batches)
+            .map_err(|e| anyhow::anyhow!("postprocess stage failed: {:?}", e))?;
+        tracing::info!(
+            "phase postprocess completed in {:.3}s",
+            postprocess_start.elapsed().as_secs_f64()
+        );
+    }
+
+    // Route batches to the appropriate serializer channel:
+    //   IfcOWL/alignment graph IRIs → ifcowl_sender (separate bounded channel, OOM safety)
+    //   All other graphs            → converter_lbd_sender
+    let owl_sender = ifcowl_sender.clone();
+    for batch in all_batches {
+        let iri = batch.kind.iri();
+        if iri.ends_with("/ifcowl") || iri.ends_with("/alignment") {
+            if let Some(ref tx) = owl_sender {
+                let _ = tx.send(batch.triples);
+            }
+        } else {
+            let _ = converter_lbd_sender.send(batch.triples);
+        }
+    }
+    // Drop senders so serializer threads see EOF
+    drop(owl_sender);
+    drop(converter_lbd_sender);
+    drop(ifcowl_sender);
 
     // Check for producer errors recorded by `start_next_producer`.
     let producer_errors = ctx.read_log_bundle().producer_errors;
@@ -674,9 +709,6 @@ fn main() -> anyhow::Result<()> {
         sidecar_drain_start.elapsed().as_secs_f64(),
         sidecar_count
     );
-
-    drop(converter_lbd_sender);
-    drop(ifcowl_sender);
 
     let serializer_join_start = Instant::now();
     lbd_thread
@@ -1000,7 +1032,6 @@ fn validate_activation_plan_with_args(
         || active.contains(lbd_pipeline::OMG_FOG_PRODUCER_ID)
         || active.contains(lbd_pipeline::IFCOWL_PRODUCER_ID)
         || active.contains(lbd_pipeline::RML_MAPPER_ID)
-        || active.contains(lbd_pipeline::ONTOLOGY_MAPPER_ID)
         || active.contains(GEOMETRY_PRODUCER_ID);
     if !has_any_producer {
         anyhow::bail!(
