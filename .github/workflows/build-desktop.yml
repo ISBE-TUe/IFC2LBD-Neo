@@ -4,7 +4,7 @@
 # binaries are available in the GitHub Release. This workflow:
 #   1. Builds the web app (Vite) → dist/
 #   2. Copies dist/ → electron/renderer/
-#   3. Downloads CLI binaries from the release
+#   3. Downloads CLI binaries from the release (via gh CLI)
 #   4. Bundles everything into platform-specific Electron installers
 #   5. Uploads installers to the same release
 
@@ -44,7 +44,9 @@ jobs:
   build-macos:
     needs: get-tag
     if: needs.get-tag.outputs.valid == 'true'
-    runs-on: macos-latest
+    runs-on: macos-14
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
@@ -74,18 +76,21 @@ jobs:
         working-directory: electron
         run: npm install
 
-      # 4. Download CLI binary from the release
-      - name: Download macOS CLI binary from release
-        uses: robinraju/release-download@v1.10
-        with:
-          tag: ${{ needs.get-tag.outputs.tag }}
-          fileName: ifc2lbd-neo-macos
-          outPath: /tmp/cli-download
+      # 4. Download CLI binary from the release using gh CLI
+      - name: Download macOS CLI binary
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p /tmp/cli-download
+          gh release download "${{ needs.get-tag.outputs.tag }}" \
+            --repo ${{ github.repository }} \
+            --pattern "ifc2lbd-neo-macos" \
+            --dir /tmp/cli-download
+          chmod +x /tmp/cli-download/ifc2lbd-neo-macos
 
       - name: Stage CLI binary
         run: |
           mkdir -p electron/resources/bin/macos
-          chmod +x /tmp/cli-download/ifc2lbd-neo-macos
           cp /tmp/cli-download/ifc2lbd-neo-macos electron/resources/bin/macos/ifc2lbd-neo
 
       # 5. Build the Electron app
@@ -105,6 +110,8 @@ jobs:
     needs: get-tag
     if: needs.get-tag.outputs.valid == 'true'
     runs-on: windows-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
@@ -135,13 +142,17 @@ jobs:
         working-directory: electron
         run: npm install
 
-      # 4. Download CLI binary from the release
-      - name: Download Windows CLI binary from release
-        uses: robinraju/release-download@v1.10
-        with:
-          tag: ${{ needs.get-tag.outputs.tag }}
-          fileName: ifc2lbd-neo-windows.exe
-          outPath: /tmp/cli-download
+      # 4. Download CLI binary from the release using gh CLI
+      - name: Download Windows CLI binary
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p /tmp/cli-download
+          gh release download "${{ needs.get-tag.outputs.tag }}" \
+            --repo ${{ github.repository }} \
+            --pattern "ifc2lbd-neo-windows.exe" \
+            --dir /tmp/cli-download
 
       - name: Stage CLI binary
         shell: bash
