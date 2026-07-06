@@ -1,0 +1,158 @@
+# Build Electron desktop apps for macOS and Windows.
+#
+# Triggered by the same tag push as build-cli.yml and deploy-web.yml.
+# This workflow downloads the CLI artifacts from the build-cli.yml run
+# (via the GitHub Release), bundles them into Electron apps, and uploads
+# the installers (.dmg, .exe) to the same GitHub Release.
+#
+# IMPORTANT: This workflow runs AFTER build-cli.yml because it depends on
+# the CLI binaries being available in the GitHub Release. We use
+# `workflow_run` to chain after build-cli.yml completes.
+#
+# Architecture:
+#   - Download CLI binaries from the release (created by build-cli.yml)
+#   - Bundle them into the Electron app via electron-builder extraResources
+#   - Build platform-specific installers on native runners
+#   - Upload installers to the same release
+
+name: Build Desktop Apps
+
+on:
+  workflow_run:
+    workflows: ["Build CLI Binaries"]
+    types:
+      - completed
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (must already exist with CLI binaries)"
+        required: true
+        default: "v0.1.0"
+
+jobs:
+  # ── Determine the tag ───────────────────────────────────────────────────────
+  # For workflow_run triggers, we need to extract the tag from the upstream run.
+  # For manual dispatch, we use the input directly.
+  get-tag:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      valid: ${{ steps.resolve.outputs.valid }}
+    steps:
+      - name: Resolve tag from workflow_run
+        if: github.event_name == 'workflow_run'
+        id: resolve
+        run: |
+          # The triggering workflow run's head_branch contains the tag for tag-triggered runs
+          TAG="${{ github.event.workflow_run.head_branch }}"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "valid=true" >> $GITHUB_OUTPUT
+          echo "Resolved tag from workflow_run: $TAG"
+
+      - name: Resolve tag from manual input
+        if: github.event_name == 'workflow_dispatch'
+        id: resolve_manual
+        run: |
+          TAG="${{ inputs.tag }}"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "valid=true" >> $GITHUB_OUTPUT
+          echo "Resolved tag from manual input: $TAG"
+
+  # ── macOS (Apple Silicon) ─────────────────────────────────────────────────
+  build-macos:
+    needs: get-tag
+    if: needs.get-tag.outputs.valid == 'true'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Electron dependencies
+        working-directory: electron
+        run: npm ci || npm install
+
+      - name: Download macOS CLI binary from release
+        uses: robinraju/release-download@v1.10
+        with:
+          tag: ${{ needs.get-tag.outputs.tag }}
+          fileName: ifc2lbd-neo-macos
+          outPath: /tmp/cli-download
+
+      - name: Stage CLI binary for electron-builder
+        run: |
+          mkdir -p electron/resources/bin/macos
+          chmod +x /tmp/cli-download/ifc2lbd-neo-macos
+          cp /tmp/cli-download/ifc2lbd-neo-macos electron/resources/bin/macos/ifc2lbd-neo
+
+      - name: Build Electron app (macOS)
+        working-directory: electron
+        run: npx electron-builder --mac --arm64
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ifc2lbd-neo-desktop-macos
+          path: electron/release/*.dmg
+          if-no-files-found: error
+
+  # ── Windows (x86_64) ──────────────────────────────────────────────────────
+  build-windows:
+    needs: get-tag
+    if: needs.get-tag.outputs.valid == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Electron dependencies
+        working-directory: electron
+        run: npm ci || npm install
+
+      - name: Download Windows CLI binary from release
+        uses: robinraju/release-download@v1.10
+        with:
+          tag: ${{ needs.get-tag.outputs.tag }}
+          fileName: ifc2lbd-neo-windows.exe
+          outPath: /tmp/cli-download
+
+      - name: Stage CLI binary for electron-builder
+        shell: bash
+        run: |
+          mkdir -p electron/resources/bin/win32
+          cp /tmp/cli-download/ifc2lbd-neo-windows.exe electron/resources/bin/win32/ifc2lbd-neo.exe
+
+      - name: Build Electron app (Windows)
+        working-directory: electron
+        run: npx electron-builder --win --x64
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ifc2lbd-neo-desktop-windows
+          path: electron/release/*.exe
+          if-no-files-found: error
+
+  # ── Upload installers to GitHub Release ────────────────────────────────────
+  upload-to-release:
+    needs: [get-tag, build-macos, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Upload desktop installers to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.get-tag.outputs.tag }}
+          files: |
+            artifacts/ifc2lbd-neo-desktop-macos/*.dmg
+            artifacts/ifc2lbd-neo-desktop-windows/*.exe

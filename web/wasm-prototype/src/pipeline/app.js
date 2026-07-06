@@ -9,6 +9,7 @@ import initWasm, {
 	convertIfcToSink,
 	initNeoThreadPool,
 } from "../wasm/ifc2lbd_wasm.js";
+import { MODULES as FALLBACK_MODULES, resolvePlanStatic } from "./module-metadata.js";
 import "./pipeline.css";
 import {
 	getState,
@@ -526,23 +527,34 @@ async function runSinkConversionInMain(
 // ---------------------------------------------------------------------------
 
 async function init() {
-	if (!window.isSecureContext || !window.crossOriginIsolated) {
-		document.querySelector("#wasm-loading")?.remove();
-		document
-			.querySelector(".pipeline-app")
-			?.style.setProperty("visibility", "visible");
-		throw new Error(
-			"Requires secure+isolated context. Open http://localhost:3031 or use HTTPS with COOP/COEP.",
-		);
+	// In Electron, skip WASM loading — the native CLI is used instead.
+	// We still need the module list (from the WASM bindings) for the UI grid.
+	// The module metadata is hardcoded as a fallback.
+	const isElectron = window.electronAPI?.isElectron;
+
+	if (!isElectron) {
+		if (!window.isSecureContext || !window.crossOriginIsolated) {
+			document.querySelector("#wasm-loading")?.remove();
+			document
+				.querySelector(".pipeline-app")
+				?.style.setProperty("visibility", "visible");
+			throw new Error(
+				"Requires secure+isolated context. Open http://localhost:3031 or use HTTPS with COOP/COEP.",
+			);
+		}
+
+		await initWasm();
 	}
 
-	await initWasm();
 	const HIDDEN_MODULES = new Set([
 		"neo-ifc-topology-producer",
 		"neo-bbox-enricher",
 		"neo-topology-full-producer",
 	]);
-	const modules = listModules().filter((m) => !HIDDEN_MODULES.has(m.id));
+
+	// In Electron mode, use the static module list instead of WASM.
+	const rawModules = isElectron ? FALLBACK_MODULES : listModules();
+	const modules = rawModules.filter((m) => !HIDDEN_MODULES.has(m.id));
 	update({ modules });
 
 	// WASM and modules ready — remove spinner, reveal app
@@ -723,20 +735,222 @@ async function init() {
 	setupOutputDirectoryUiSupport();
 	initCiteWidget();
 
-	log(`WASM ready. Pipeline dashboard.`);
-	log(`Build: ${RUNTIME_BUILD}`);
-	log(
-		`WASM: ${WASM64_AVAILABLE ? "wasm64 (16 GiB limit) + wasm32 (4 GiB limit)" : "wasm32 (4 GiB limit)"}${WASM64_AVAILABLE ? "" : WASM64_ENABLED ? " — wasm64 not supported in this browser" : " — wasm64 disabled (VITE_ENABLE_WASM64 not set)"}`,
-	);
+	if (isElectron) {
+		log(`Native CLI ready. Pipeline dashboard (Electron mode).`);
+		log(`Build: ${RUNTIME_BUILD}`);
+	} else {
+		log(`WASM ready. Pipeline dashboard.`);
+		log(`Build: ${RUNTIME_BUILD}`);
+		log(
+			`WASM: ${WASM64_AVAILABLE ? "wasm64 (16 GiB limit) + wasm32 (4 GiB limit)" : "wasm32 (4 GiB limit)"}${WASM64_AVAILABLE ? "" : WASM64_ENABLED ? " — wasm64 not supported in this browser" : " — wasm64 disabled (VITE_ENABLE_WASM64 not set)"}`,
+		);
+	}
 }
 
 // ---------------------------------------------------------------------------
 // Conversion
 // ---------------------------------------------------------------------------
 
+/**
+ * Run conversion via the Electron sidecar (native CLI).
+ *
+ * Instead of loading WASM and running in a Web Worker, this path:
+ *   1. Asks the main process to open a file dialog (if no file is loaded)
+ *   2. Sends the module config to the main process via IPC
+ *   3. The main process spawns ifc2lbd-neo, writes output to a temp dir
+ *   4. Stage events arrive via IPC and update the UI (same as WASM path)
+ *   5. On completion, output files are read back and rendered as downloads
+ *
+ * The CLI runs with full native threading (rayon) and no memory limits.
+ */
+async function runConversionElectron() {
+	const state = getState();
+
+	// Check for input
+	if (state.inputFormat === "structured-data") {
+		if (!state.structuredDataFiles || !state.structuredDataFiles.length) {
+			log("No structured data files selected.");
+			return;
+		}
+	} else {
+		if (!state.ifcFile) {
+			// In Electron, prompt the user to select a file via the native dialog
+			const result = await window.electronAPI.openFile();
+			if (!result) {
+				log("No file selected.");
+				return;
+			}
+			// Create a File-like object from the native file data
+			const file = new File([result.content], result.name, {
+				type: "application/octet-stream",
+			});
+			update({
+				ifcFile: file,
+				ifcFileBytes: null,
+				inputFormat: "ifc",
+			});
+			const btn = document.querySelector("#rail-file-btn");
+			if (btn) btn.classList.add("has-file");
+			const text = document.querySelector("#rail-file-text");
+			if (text) text.textContent = result.name;
+			const meta = document.querySelector("#rail-file-meta");
+			if (meta) meta.textContent = bytesToHuman(result.size);
+			log(`File: ${result.name} (${bytesToHuman(result.size)})`);
+		}
+	}
+
+	update({ running: true });
+	const runBtn = document.querySelector("#btn-run");
+	if (runBtn) {
+		runBtn.disabled = true;
+		runBtn.textContent = "◉ RUNNING";
+		runBtn.classList.add("running");
+	}
+	const infoElReset = document.querySelector("#runtime-info");
+	if (infoElReset) infoElReset.innerHTML = "";
+
+	try {
+		const { activeModules, moduleOptions, baseUri, outputStem, ifcFile } =
+			getState();
+
+		// Build module options array (same format as CLI --module-opt)
+		const moduleOptionsArr = [];
+		for (const [pluginId, opts] of Object.entries(moduleOptions)) {
+			if (!activeModules.has(pluginId)) continue;
+			for (const [key, value] of Object.entries(opts)) {
+				if (value) moduleOptionsArr.push(`${pluginId}.${key}=${value}`);
+			}
+		}
+
+		// For the CLI, we need the file on disk. In Electron, the file dialog
+		// gives us the path directly. If the file was selected via the browser
+		// file input (unlikely in Electron, but handle it), we fall back to
+		// writing it to a temp file.
+		let inputPath;
+		if (ifcFile?.path) {
+			// Electron File objects have a .path property
+			inputPath = ifcFile.path;
+		} else {
+			// Write to temp file as fallback
+			const tempDir = await window.electronAPI.getTempDir?.();
+			inputPath = `${tempDir}/input.ifc`;
+			const bytes = new Uint8Array(await ifcFile.arrayBuffer());
+			await window.electronAPI.writeFile?.(inputPath, bytes);
+		}
+
+		// In Electron mode, use the static plan resolver instead of WASM.
+		const plan = resolvePlanStatic([...activeModules], moduleOptionsArr);
+		log(`Plan: ${plan.enabledIds.join(", ")}`);
+		log(`Running via native CLI (Electron sidecar)...`);
+
+		resetStageStatuses();
+
+		// Subscribe to progress events from the main process
+		const logUnsub = window.electronAPI.onConversionLog((line) => {
+			log(line);
+		});
+		const stageUnsub = window.electronAPI.onStageEvent((event) => {
+			updateStageStatus(event);
+			const icon =
+				event.status === "success"
+					? "✓"
+					: event.status === "failed"
+						? "✗"
+						: "→";
+			log(
+				`${icon} ${event.pluginId}: ${event.status}${event.durationMs ? ` ${(event.durationMs / 1000).toFixed(2)}s` : ""}${event.triplesOut ? ` (${event.triplesOut.toLocaleString()} triples)` : ""}`,
+			);
+		});
+
+		const t0 = performance.now();
+
+		const result = await window.electronAPI.runConversion({
+			inputPath,
+			modules: [...activeModules],
+			moduleOptions: moduleOptionsArr,
+			baseUri,
+			outputStem,
+			inputFormat: state.inputFormat,
+		});
+
+		// Unsubscribe from progress events
+		logUnsub?.();
+		stageUnsub?.();
+
+		// Convert the returned files to the same format as the WASM path
+		const renderedFiles = (result.files || []).map((file) => ({
+			filename: file.filename,
+			mimeType: file.mimeType,
+			role: file.filename.endsWith(".manifest.json")
+				? "manifest"
+				: file.filename.endsWith(".nq")
+					? "chunk"
+					: "other",
+			payloadParts: [new Uint8Array(file.content)],
+		}));
+
+		// Ask the user for an output directory, or show downloads
+		const outputDir = await window.electronAPI.openDirectory();
+		if (outputDir) {
+			const { saved, totalBytes: written } =
+				await window.electronAPI.saveFiles(
+					outputDir,
+					result.files.map((f) => ({
+						filename: f.filename,
+						content: f.content,
+					})),
+				);
+			renderDownloadsMessage(
+				`Saved ${saved} file(s), ${bytesToHuman(written)} to ${outputDir}.`,
+			);
+			log(`Saved ${saved} file(s), ${bytesToHuman(written)} to ${outputDir}.`);
+		} else {
+			renderDownloads(renderedFiles);
+		}
+
+		const elapsedMs = performance.now() - t0;
+		const timeStr = `${(elapsedMs / 1000).toFixed(1)}s`;
+		log(`Finished in ${timeStr}.`);
+
+		const infoEl = document.querySelector("#runtime-info");
+		if (infoEl)
+			infoEl.innerHTML = `<span style="color:var(--status-success);font-weight:600">Finished in ${timeStr}</span>`;
+	} catch (error) {
+		log(`ERROR: ${error instanceof Error ? error.message : String(error)}`);
+		const { stageStatuses } = getState();
+		const updated = { ...stageStatuses };
+		for (const [id, s] of Object.entries(updated)) {
+			if (s.status === "running")
+				updated[id] = { ...s, status: "failed", error: error.message };
+		}
+		update({ stageStatuses: updated });
+		const infoEl = document.querySelector("#runtime-info");
+		if (infoEl)
+			infoEl.innerHTML = `<span style="color:var(--status-failed);font-weight:600">Failed: ${escapeHtml(error instanceof Error ? error.message : String(error))}</span>`;
+	} finally {
+		update({ running: false });
+		const runBtn = document.querySelector("#btn-run");
+		if (runBtn) {
+			runBtn.disabled = false;
+			runBtn.textContent = "RUN";
+			runBtn.classList.remove("running");
+		}
+	}
+}
+
 async function runConversion() {
 	const state = getState();
 	if (state.running) return;
+
+	// ── Electron sidecar path ──────────────────────────────────────────────
+	// When running inside Electron, use the native CLI instead of WASM.
+	// The CLI runs as a separate process with full native threading (rayon)
+	// and no memory limits.
+	if (window.electronAPI?.isElectron) {
+		return runConversionElectron();
+	}
+
+	// ── Browser WASM path (existing) ─────────────────────────────────────────
 
 	// Check for input
 	if (state.inputFormat === "structured-data") {

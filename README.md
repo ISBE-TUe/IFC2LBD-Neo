@@ -271,14 +271,15 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-Pushing a tag (`v*`) triggers **two workflows in parallel**:
+Pushing a tag (`v*`) triggers **three workflows**:
 
 | Workflow                         | What it does                                                            |
 | -------------------------------- | ----------------------------------------------------------------------- |
 | `build-cli.yml`                  | Builds Linux + macOS + Windows binaries → creates GitHub Release        |
 | `deploy-web.yml`                 | Rebuilds WASM + Vite app → deploys to Cloudflare Pages                   |
+| `build-desktop.yml`              | Downloads CLI binaries from release → builds Electron .dmg + .exe → uploads to same release |
 
-Both fire independently — a CLI build failure won't block the web deploy (and vice versa).
+`build-cli.yml` and `deploy-web.yml` fire in parallel on tag push. `build-desktop.yml` chains after `build-cli.yml` (via `workflow_run`) because it needs the CLI binaries to bundle into the installers.
 
 ### Manual trigger (no git tag)
 
@@ -367,9 +368,21 @@ vendor/
   geometry/                    Vendored geometry engine (MPL-2.0)
 web/
   wasm-prototype/              Browser UI (Vite + WASM)
+electron/                      Electron desktop app (native CLI sidecar)
 docs/                          Architecture and usage documentation
 scripts/                       Build and tooling scripts
 ```
+
+---
+
+## Desktop App (Electron)
+
+The desktop app wraps the web UI in Electron and replaces the WASM conversion engine with the native CLI binary running as a sidecar process. This provides full native threading (rayon) and no memory limits.
+
+- **macOS**: `.dmg` (Apple Silicon)
+- **Windows**: `.exe` (NSIS installer, x64)
+
+Desktop installers are built by `.github/workflows/build-desktop.yml` and published to the same GitHub Release as the CLI binaries. See [`electron/README.md`](electron/README.md) for architecture and development details.
 
 ---
 

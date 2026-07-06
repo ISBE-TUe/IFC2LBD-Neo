@@ -1,0 +1,63 @@
+{
+  "name": "ifc2lbd-neo-desktop",
+  "version": "0.1.0",
+  "description": "IFC2LBD-Neo Desktop — IFC to LBD/RDF converter",
+  "main": "src/main.js",
+  "type": "module",
+  "scripts": {
+    "dev": "electron .",
+    "build": "electron-builder",
+    "build:dir": "electron-builder --dir",
+    "build:mac": "electron-builder --mac",
+    "build:win": "electron-builder --win"
+  },
+  "author": "IFC2LBD-Neo Contributors",
+  "license": "AGPL-3.0-only",
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.0"
+  },
+  "build": {
+    "appId": "io.github.isbe-tue.ifc2lbd-neo",
+    "productName": "IFC2LBD-Neo",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**/*",
+      "renderer/**/*",
+      "resources/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../resources/bin/${os}",
+        "to": "bin",
+        "filter": ["**/*"]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["arm64"]
+        }
+      ]
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    }
+  }
+}
