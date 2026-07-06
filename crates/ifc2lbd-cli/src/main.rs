@@ -281,10 +281,7 @@ fn main() -> anyhow::Result<()> {
         let model = std::sync::Arc::new(build_model(&step).context("failed to build IFC model")?);
         let build_dur = build_start.elapsed().as_secs_f64();
         tracing::info!("module parse: success {:.3}s", build_dur);
-        tracing::info!(
-            "phase build_model completed in {:.3}s",
-            build_dur
-        );
+        tracing::info!("phase build_model completed in {:.3}s", build_dur);
         (step, model, None, None)
     };
 
@@ -420,10 +417,7 @@ fn main() -> anyhow::Result<()> {
     for id in &preprocess_ids {
         tracing::info!("module {}: success {:.3}s", id, preprocess_dur);
     }
-    tracing::info!(
-        "phase preprocess completed in {:.3}s",
-        preprocess_dur
-    );
+    tracing::info!("phase preprocess completed in {:.3}s", preprocess_dur);
 
     let export_plugin = built_in_registry
         .resolve_active_export(&activation_plan.enabled_ids)
@@ -688,10 +682,7 @@ fn main() -> anyhow::Result<()> {
         for id in &postprocess_ids {
             tracing::info!("module {}: success {:.3}s", id, postprocess_dur);
         }
-        tracing::info!(
-            "phase postprocess completed in {:.3}s",
-            postprocess_dur
-        );
+        tracing::info!("phase postprocess completed in {:.3}s", postprocess_dur);
     }
 
     // Route batches to the appropriate serializer channel:
@@ -773,10 +764,7 @@ fn main() -> anyhow::Result<()> {
     for id in &active_serializer_ids {
         tracing::info!("module {}: success {:.3}s", id, serializer_dur);
     }
-    tracing::info!(
-        "phase serializer_join completed in {:.3}s",
-        serializer_dur
-    );
+    tracing::info!("phase serializer_join completed in {:.3}s", serializer_dur);
 
     // Emit export stage events
     let export_ids: Vec<String> = activation_plan
@@ -791,8 +779,7 @@ fn main() -> anyhow::Result<()> {
     }
     let summaries =
         session::finalize(session).map_err(|e| anyhow::anyhow!("export finalize failed: {}", e))?;
-    let export_dur = serializer_join_start.elapsed().as_secs_f64()
-        - serializer_dur;
+    let export_dur = serializer_join_start.elapsed().as_secs_f64() - serializer_dur;
     for id in &export_ids {
         tracing::info!("module {}: success {:.3}s", id, export_dur.max(0.001));
     }
