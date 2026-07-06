@@ -333,10 +333,6 @@ cargo bench -p ifc2lbd-cli
 | Module authoring and activation | `docs/plugin-authoring-and-activation.md`   |
 | Converter pipeline architecture | `docs/converter-pipeline.md`                |
 | Testing and benchmarking        | `docs/testing-and-benchmarking.md`          |
-| Geometry module plan            | `docs/geometry-module-plan.md`              |
-| Geometry dedup open work        | `docs/geometry-dedup-todo.md`               |
-| Structured data + RML plan      | `docs/plan-structured-data-and-ontology-mapping.md` |
-| Open work items                 | `docs/todo.md`                              |
 
 ---
 

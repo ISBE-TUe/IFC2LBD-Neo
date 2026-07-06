@@ -42,6 +42,7 @@ vendor/chijin/target/
 #web/fragments-debugviewer/
 web/ifclite-debugviewer/
 ifc2lbd-neo-linux-x86_64
+ifc2lbd-neo-macos
 web/wasm-prototype/src/wasm/ifc2lbd_wasm_bg.wasm
 web/wasm-prototype/src/wasm64/ifc2lbd_wasm_bg.wasm
 
