@@ -207,6 +207,12 @@ jobs:
             - **macOS**: `ifc2lbd-neo-desktop-0.1.0-arm64.dmg` (Apple Silicon)
             - **Windows**: `ifc2lbd-neo-desktop-0.1.0-x64.exe` (x64 installer)
 
+            > **⚠️ macOS**: After downloading and installing, run this in Terminal before opening:
+            > ```bash
+            > xattr -cr /Applications/IFC2LBD-Neo.app
+            > ```
+            > The app is not Apple-code-signed (no Developer ID certificate). This removes the quarantine attribute that causes the "damaged" error.
+
             For a commercial license, contact: l.t.kirner@tue.nl
           files: |
             artifacts/ifc2lbd-neo-desktop-macos/*.dmg
