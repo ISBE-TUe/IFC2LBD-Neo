@@ -1,0 +1,35 @@
+NOTICE — IFC2LBD-Neo License and Third-Party Components
+=======================================================
+
+This product is dual-licensed:
+
+  1. GNU Affero General Public License v3.0 (AGPL-3.0-only)
+     — for open-source use.  See LICENSE for the full text.
+
+  2. Commercial License
+     — for proprietary or commercial use that is incompatible with
+       the AGPL-3.0 terms.  Contact: l.t.kirner@tue.nl
+
+Unless explicitly stated otherwise in a file's header, all source code
+in this repository is licensed under AGPL-3.0-only.
+
+Copyright (C) 2024–2026 IFC2LBD-Neo Contributors.
+
+Third-Party Components
+---------------------
+
+The following components are included under their respective licenses:
+
+  vendor/geometry/  (ifc-lite-core, ifc-lite-geometry)
+    License: Mozilla Public License 2.0 (MPL-2.0)
+    Source: https://github.com/LTplus-AG/ifc-lite
+    Copyright: IFC-Lite Contributors
+    Full text: LICENSE-MPL
+
+    MPL-2.0 is compatible with AGPL-3.0 per Mozilla's Section 3.3.
+    The MPL-2.0 code remains under MPL-2.0; the rest of the project is
+    under AGPL-3.0-only.  The combined work is distributed under both
+    licenses where applicable.
+
+All other dependencies (Rust crates, npm packages) retain their
+original licenses as declared in Cargo.lock and package-lock.json.

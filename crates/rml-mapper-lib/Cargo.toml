@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 authors = ["RML Mapper Contributors"]
 description = "A Rust implementation of an RML (RDF Mapping Language) mapper for transforming heterogeneous data sources to RDF"
-license = "MIT OR Apache-2.0"
+license.workspace = true
 keywords = ["rml", "rdf", "mapping", "data-transformation", "semantic-web"]
 categories = ["database", "parser-implementations", "web-programming"]
 

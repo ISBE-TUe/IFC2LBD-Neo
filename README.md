@@ -256,6 +256,60 @@ Features:
 
 ---
 
+## Releases
+
+The CLI binaries are built **natively** on their respective platform runners (no cross-compilation) and published to GitHub Releases. The web UI download buttons point to the latest release assets.
+
+### How to ship a new release
+
+```bash
+# 1. Ensure main is green and you're on the latest commit
+git checkout main && git pull
+
+# 2. Tag the release
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Pushing a tag (`v*`) triggers **two workflows in parallel**:
+
+| Workflow                         | What it does                                                            |
+| -------------------------------- | ----------------------------------------------------------------------- |
+| `build-cli.yml`                  | Builds Linux + macOS + Windows binaries → creates GitHub Release        |
+| `deploy-web.yml`                 | Rebuilds WASM + Vite app → deploys to Cloudflare Pages                   |
+
+Both fire independently — a CLI build failure won't block the web deploy (and vice versa).
+
+### Manual trigger (no git tag)
+
+If you want to build binaries without creating a git tag:
+
+1. Go to **GitHub → Actions → "Build CLI Binaries" → Run workflow**
+2. Enter a tag name (e.g. `v0.1.0-rc1`) — it does **not** need to exist as a git ref
+3. The workflow builds and creates a release under that name
+
+### Download URLs
+
+The web UI download buttons use these stable URLs (always resolve to the latest release):
+
+```
+https://github.com/ISBE-TUe/IFC2LBD-Neo/releases/latest/download/ifc2lbd-neo-linux
+https://github.com/ISBE-TUe/IFC2LBD-Neo/releases/latest/download/ifc2lbd-neo-macos
+https://github.com/ISBE-TUe/IFC2LBD-Neo/releases/latest/download/ifc2lbd-neo-windows.exe
+```
+
+### Local builds (for testing)
+
+For local testing without GitHub Actions, use the Docker-based script:
+
+```bash
+./scripts/build_all_cli.sh
+```
+
+This builds Linux (Docker `linux/amd64`) and macOS (native) locally. Windows requires the GitHub Actions workflow or a Windows machine — cross-compiling from Linux hits `windows-sys` import-library issues.
+
+---
+
 ## Testing
 
 Run the full native test suite:
@@ -320,3 +374,14 @@ web/
 docs/                          Architecture and usage documentation
 scripts/                       Build and tooling scripts
 ```
+
+---
+
+## License
+
+IFC2LBD-Neo is dual-licensed:
+
+- **AGPL-3.0-only** for open-source use. See [LICENSE](LICENSE) for the full text.
+- **Commercial license** for proprietary or commercial use incompatible with AGPL-3.0 terms. Contact: **<l.t.kirner@tue.nl>**
+
+The vendored geometry engine in `vendor/geometry/` is derived from [ifc-lite](https://github.com/LTplus-AG/ifc-lite) and remains licensed under [MPL-2.0](LICENSE-MPL). MPL-2.0 is compatible with AGPL-3.0 per Mozilla's Section 3.3. See [NOTICE](NOTICE) for details.
