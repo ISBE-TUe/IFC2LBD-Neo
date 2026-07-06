@@ -1,19 +1,12 @@
 # Build Electron desktop apps for macOS and Windows.
 #
-# Triggered by the same tag push as build-cli.yml and deploy-web.yml.
-# This workflow downloads the CLI artifacts from the build-cli.yml run
-# (via the GitHub Release), bundles them into Electron apps, and uploads
-# the installers (.dmg, .exe) to the same GitHub Release.
-#
-# IMPORTANT: This workflow runs AFTER build-cli.yml because it depends on
-# the CLI binaries being available in the GitHub Release. We use
-# `workflow_run` to chain after build-cli.yml completes.
-#
-# Architecture:
-#   - Download CLI binaries from the release (created by build-cli.yml)
-#   - Bundle them into the Electron app via electron-builder extraResources
-#   - Build platform-specific installers on native runners
-#   - Upload installers to the same release
+# Triggered after build-cli.yml completes (via workflow_run) so the CLI
+# binaries are available in the GitHub Release. This workflow:
+#   1. Builds the web app (Vite) → dist/
+#   2. Copies dist/ → electron/renderer/
+#   3. Downloads CLI binaries from the release
+#   4. Bundles everything into platform-specific Electron installers
+#   5. Uploads installers to the same release
 
 name: Build Desktop Apps
 
@@ -30,33 +23,22 @@ on:
         default: "v0.1.0"
 
 jobs:
-  # ── Determine the tag ───────────────────────────────────────────────────────
-  # For workflow_run triggers, we need to extract the tag from the upstream run.
-  # For manual dispatch, we use the input directly.
   get-tag:
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.resolve.outputs.tag }}
       valid: ${{ steps.resolve.outputs.valid }}
     steps:
-      - name: Resolve tag from workflow_run
-        if: github.event_name == 'workflow_run'
+      - name: Resolve tag
         id: resolve
         run: |
-          # The triggering workflow run's head_branch contains the tag for tag-triggered runs
-          TAG="${{ github.event.workflow_run.head_branch }}"
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            TAG="${{ github.event.workflow_run.head_branch }}"
+          else
+            TAG="${{ inputs.tag }}"
+          fi
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "valid=true" >> $GITHUB_OUTPUT
-          echo "Resolved tag from workflow_run: $TAG"
-
-      - name: Resolve tag from manual input
-        if: github.event_name == 'workflow_dispatch'
-        id: resolve_manual
-        run: |
-          TAG="${{ inputs.tag }}"
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-          echo "valid=true" >> $GITHUB_OUTPUT
-          echo "Resolved tag from manual input: $TAG"
 
   # ── macOS (Apple Silicon) ─────────────────────────────────────────────────
   build-macos:
@@ -69,11 +51,30 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
+          cache-dependency-path: web/wasm-prototype/package-lock.json
 
+      # 1. Build the web app (Vite) — produces dist/
+      - name: Install web dependencies
+        working-directory: web/wasm-prototype
+        run: npm ci
+
+      - name: Build web app
+        working-directory: web/wasm-prototype
+        run: npm run build
+
+      # 2. Copy built web app into electron/renderer/
+      - name: Stage renderer
+        run: |
+          mkdir -p electron/renderer
+          cp -r web/wasm-prototype/dist/* electron/renderer/
+
+      # 3. Install Electron dependencies
       - name: Install Electron dependencies
         working-directory: electron
-        run: npm ci || npm install
+        run: npm install
 
+      # 4. Download CLI binary from the release
       - name: Download macOS CLI binary from release
         uses: robinraju/release-download@v1.10
         with:
@@ -81,12 +82,13 @@ jobs:
           fileName: ifc2lbd-neo-macos
           outPath: /tmp/cli-download
 
-      - name: Stage CLI binary for electron-builder
+      - name: Stage CLI binary
         run: |
           mkdir -p electron/resources/bin/macos
           chmod +x /tmp/cli-download/ifc2lbd-neo-macos
           cp /tmp/cli-download/ifc2lbd-neo-macos electron/resources/bin/macos/ifc2lbd-neo
 
+      # 5. Build the Electron app
       - name: Build Electron app (macOS)
         working-directory: electron
         run: npx electron-builder --mac --arm64
@@ -109,11 +111,31 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
+          cache-dependency-path: web/wasm-prototype/package-lock.json
 
+      # 1. Build the web app (Vite) — produces dist/
+      - name: Install web dependencies
+        working-directory: web/wasm-prototype
+        run: npm ci
+
+      - name: Build web app
+        working-directory: web/wasm-prototype
+        run: npm run build
+
+      # 2. Copy built web app into electron/renderer/
+      - name: Stage renderer
+        shell: bash
+        run: |
+          mkdir -p electron/renderer
+          cp -r web/wasm-prototype/dist/* electron/renderer/
+
+      # 3. Install Electron dependencies
       - name: Install Electron dependencies
         working-directory: electron
-        run: npm ci || npm install
+        run: npm install
 
+      # 4. Download CLI binary from the release
       - name: Download Windows CLI binary from release
         uses: robinraju/release-download@v1.10
         with:
@@ -121,12 +143,13 @@ jobs:
           fileName: ifc2lbd-neo-windows.exe
           outPath: /tmp/cli-download
 
-      - name: Stage CLI binary for electron-builder
+      - name: Stage CLI binary
         shell: bash
         run: |
           mkdir -p electron/resources/bin/win32
           cp /tmp/cli-download/ifc2lbd-neo-windows.exe electron/resources/bin/win32/ifc2lbd-neo.exe
 
+      # 5. Build the Electron app
       - name: Build Electron app (Windows)
         working-directory: electron
         run: npx electron-builder --win --x64

@@ -277,10 +277,13 @@ fn main() -> anyhow::Result<()> {
             parse_start.elapsed().as_secs_f64()
         );
         let build_start = Instant::now();
+        tracing::info!("module parse: running");
         let model = std::sync::Arc::new(build_model(&step).context("failed to build IFC model")?);
+        let build_dur = build_start.elapsed().as_secs_f64();
+        tracing::info!("module parse: success {:.3}s", build_dur);
         tracing::info!(
             "phase build_model completed in {:.3}s",
-            build_start.elapsed().as_secs_f64()
+            build_dur
         );
         (step, model, None, None)
     };
@@ -407,11 +410,19 @@ fn main() -> anyhow::Result<()> {
     }
 
     let preprocess_start = Instant::now();
+    // Emit "running" for each preprocessor so the UI can show active modules
+    for id in &preprocess_ids {
+        tracing::info!("module {}: running", id);
+    }
     lbd_pipeline::spawn_preprocessors(&preprocess_ids, &built_in_registry, &mut ctx)
         .map_err(|e| anyhow::anyhow!("preprocess stage failed: {:?}", e))?;
+    let preprocess_dur = preprocess_start.elapsed().as_secs_f64();
+    for id in &preprocess_ids {
+        tracing::info!("module {}: success {:.3}s", id, preprocess_dur);
+    }
     tracing::info!(
         "phase preprocess completed in {:.3}s",
-        preprocess_start.elapsed().as_secs_f64()
+        preprocess_dur
     );
 
     let export_plugin = built_in_registry
@@ -618,6 +629,10 @@ fn main() -> anyhow::Result<()> {
     }
 
     let producer_start = Instant::now();
+    // Emit "running" for each producer so the UI shows active modules
+    for id in &active_producer_ids {
+        tracing::info!("module {}: running", id);
+    }
     // Dispatch all producers through the plugin system.
     // Each producer gets its own bounded channel (backpressure per-producer).
     // Routing threads forward batches to the appropriate serializer channel:
@@ -635,10 +650,18 @@ fn main() -> anyhow::Result<()> {
     // active, we could stream directly, but collecting is simpler and the
     // CLI has no memory constraints like WASM.
     let mut all_batches: Vec<lbd_pipeline::TaggedBatch> = Vec::new();
-    for (_id, rx) in producer_receivers {
+    for (id, rx) in producer_receivers {
+        let mut triple_count = 0usize;
         for batch in rx {
+            triple_count += batch.triples.len();
             all_batches.push(batch);
         }
+        tracing::info!(
+            "module {}: success {:.3}s ({} triples)",
+            id,
+            producer_start.elapsed().as_secs_f64(),
+            triple_count
+        );
     }
 
     // Run postprocess plugins (e.g. ontology mapper) on the collected batches.
@@ -651,6 +674,9 @@ fn main() -> anyhow::Result<()> {
         .collect();
     if !postprocess_ids.is_empty() {
         let postprocess_start = Instant::now();
+        for id in &postprocess_ids {
+            tracing::info!("module {}: running", id);
+        }
         lbd_pipeline::spawn_postprocessors(
             &postprocess_ids,
             &built_in_registry,
@@ -658,9 +684,13 @@ fn main() -> anyhow::Result<()> {
             &mut all_batches,
         )
         .map_err(|e| anyhow::anyhow!("postprocess stage failed: {:?}", e))?;
+        let postprocess_dur = postprocess_start.elapsed().as_secs_f64();
+        for id in &postprocess_ids {
+            tracing::info!("module {}: success {:.3}s", id, postprocess_dur);
+        }
         tracing::info!(
             "phase postprocess completed in {:.3}s",
-            postprocess_start.elapsed().as_secs_f64()
+            postprocess_dur
         );
     }
 
@@ -718,6 +748,18 @@ fn main() -> anyhow::Result<()> {
     );
 
     let serializer_join_start = Instant::now();
+    // Emit "running" for active serializers
+    let active_serializer_ids: Vec<String> = activation_plan
+        .enabled_ids
+        .iter()
+        .filter_map(|id| built_in_registry.plugin(id).map(|p| p.manifest()))
+        .filter(|m| m.stage == lbd_pipeline::PipelineStage::Serialize)
+        .map(|m| m.id.to_string())
+        .collect();
+    for id in &active_serializer_ids {
+        tracing::info!("module {}: running", id);
+    }
+
     lbd_thread
         .join()
         .map_err(|_| anyhow::anyhow!("LBD serializer thread panicked"))??;
@@ -727,13 +769,33 @@ fn main() -> anyhow::Result<()> {
             .join()
             .map_err(|_| anyhow::anyhow!("IfcOWL serializer thread panicked"))??;
     }
+    let serializer_dur = serializer_join_start.elapsed().as_secs_f64();
+    for id in &active_serializer_ids {
+        tracing::info!("module {}: success {:.3}s", id, serializer_dur);
+    }
     tracing::info!(
         "phase serializer_join completed in {:.3}s",
-        serializer_join_start.elapsed().as_secs_f64()
+        serializer_dur
     );
 
+    // Emit export stage events
+    let export_ids: Vec<String> = activation_plan
+        .enabled_ids
+        .iter()
+        .filter_map(|id| built_in_registry.plugin(id).map(|p| p.manifest()))
+        .filter(|m| m.stage == lbd_pipeline::PipelineStage::Export)
+        .map(|m| m.id.to_string())
+        .collect();
+    for id in &export_ids {
+        tracing::info!("module {}: running", id);
+    }
     let summaries =
         session::finalize(session).map_err(|e| anyhow::anyhow!("export finalize failed: {}", e))?;
+    let export_dur = serializer_join_start.elapsed().as_secs_f64()
+        - serializer_dur;
+    for id in &export_ids {
+        tracing::info!("module {}: success {:.3}s", id, export_dur.max(0.001));
+    }
     for summary in &summaries {
         tracing::info!(
             "exported {} ({}, {} bytes, role={})",

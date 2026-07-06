@@ -143,7 +143,7 @@ jobs:
 
             Download the binary for your platform:
             - **Linux**: `ifc2lbd-neo-linux` (x86_64)
-            - **macOS**: `ifc2lbd-neo-macos` (Universal — Intel + Apple Silicon)
+            - **macOS**: `ifc2lbd-neo-macos` (Apple Silicon, arm64)
             - **Windows**: `ifc2lbd-neo-windows.exe` (x86_64)
           files: |
             artifacts/ifc2lbd-neo-linux/ifc2lbd-neo-linux

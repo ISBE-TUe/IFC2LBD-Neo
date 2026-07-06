@@ -1,45 +1,36 @@
 #!/usr/bin/env bash
-# Build ifc2lbd-neo CLI binaries for Linux, macOS, and Windows.
+# Build ifc2lbd-neo CLI binaries for Linux and macOS locally.
+#
+# Windows is NOT built locally — cross-compiling from Linux hits
+# windows-sys import-library issues. Use the GitHub Actions workflow
+# (build-cli.yml) for Windows binaries.
 #
 # Platform strategy:
-#   Linux   → Docker (linux/amd64)   — same as existing build_linux_cli.sh
+#   Linux   → Docker (linux/amd64) — reproducible, no host toolchain needed
 #   macOS   → Native (aarch64-apple-darwin) — Docker can't produce macOS binaries
-#   Windows → Docker (linux/amd64, x86_64-pc-windows-gnu) — MinGW cross-compile
+#   Windows → GitHub Actions CI only (build-cli.yml)
 #
-# Outputs (repo root):
+# Outputs (repo root, gitignored):
 #   ./ifc2lbd-neo-linux-x86_64
 #   ./ifc2lbd-neo-macos
-#   ./ifc2lbd-neo-windows.exe
 #
-# Then copies them to web/wasm-prototype/public/bin/ and dist/bin/
-# (served by the web UI download buttons).
+# For published binaries, see GitHub Releases:
+#   https://github.com/ISBE-TUe/IFC2LBD-Neo/releases/latest
 #
 # Requirements:
 #   - Docker Desktop (with QEMU for linux/amd64 emulation on Apple Silicon)
 #   - Rust toolchain installed locally (for macOS native build)
-#   - ~15-20 GB disk for Docker volumes (cargo registry + target dirs)
 
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 REPO="$(pwd)"
-BIN_DIR="$REPO/web/wasm-prototype/public/bin"
-DIST_DIR="$REPO/web/wasm-prototype/dist/bin"
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
 log() { echo -e "\n\033[1;32m>>> $*\033[0m"; }
 warn() { echo -e "\033[1;33m!! $*\033[0m"; }
 die()  { echo -e "\033[1;31m✗ $*\033[0m"; exit 1; }
-
-ensure_docker() {
-  command -v docker >/dev/null 2>&1 || die "Docker is required. Install Docker Desktop."
-  docker info >/dev/null 2>&1 || die "Docker is not running."
-}
-
-ensure_rust() {
-  command -v cargo >/dev/null 2>&1 || die "Rust toolchain required for macOS native build."
-}
 
 # ─── Linux (x86_64) via Docker ───────────────────────────────────────────────
 
@@ -65,9 +56,6 @@ build_linux() {
 }
 
 # ─── macOS (aarch64) — Native build ──────────────────────────────────────────
-#
-# Docker cannot produce macOS binaries (requires Apple signed code signing
-# entitlements and the Apple SDK). We build natively on the host.
 
 build_macos() {
   log "Building macOS aarch64 binary (native)..."
@@ -80,64 +68,20 @@ build_macos() {
   file "$REPO/ifc2lbd-neo-macos"
 }
 
-# ─── Windows (x86_64) via Docker ─────────────────────────────────────────────
-
-build_windows() {
-  log "Building Windows x86_64 binary (Docker, x86_64-pc-windows-gnu)..."
-
-  docker run --rm --platform linux/amd64 \
-    -v "$REPO":/work -w /work \
-    -v ifc2lbd_cargo_registry:/usr/local/cargo/registry \
-    -e CARGO_TARGET_DIR=/work/target/x86_64-pc-windows-gnu \
-    -e RUSTFLAGS='--cfg getrandom_backend="windows_legacy"' \
-    rust:latest \
-    bash -c '
-      set -euo pipefail
-      # Add Windows cross-compile target
-      rustup target add x86_64-pc-windows-gnu
-      # Install system deps
-      apt-get update -qq
-      apt-get install -y -qq --no-install-recommends pkg-config libssl-dev clang cmake >/dev/null
-      # Build for Windows GNU target (produces .exe via MinGW-w64)
-      # RUSTFLAGS forces getrandom to use the windows_legacy backend (advapi32.dll)
-      # instead of the default windows backend which requires bcryptprimitives.dll
-      cargo build --release -p ifc2lbd-cli --bin ifc2lbd-neo \
-        --target x86_64-pc-windows-gnu
-    '
-
-  cp "target/x86_64-pc-windows-gnu/release/ifc2lbd-neo.exe" "$REPO/ifc2lbd-neo-windows.exe"
-  log "✓ Windows: $(du -h "$REPO/ifc2lbd-neo-windows.exe" | cut -f1)"
-  file "$REPO/ifc2lbd-neo-windows.exe"
-}
-
-# ─── Copy to web download directories ────────────────────────────────────────
-
-deploy_binaries() {
-  log "Binaries are now published via GitHub Releases."
-  log "Local copies remain in the repo root for testing."
-  ls -lh "$REPO/ifc2lbd-neo-linux-x86_64" "$REPO/ifc2lbd-neo-macos" 2>/dev/null
-}
-
 # ─── Main ────────────────────────────────────────────────────────────────────
 
-ensure_docker
-ensure_rust
+command -v docker >/dev/null 2>&1 || die "Docker is required. Install Docker Desktop."
+docker info >/dev/null 2>&1 || die "Docker is not running."
+command -v cargo >/dev/null 2>&1 || die "Rust toolchain required for macOS native build."
 
-# Check Docker platform support
 if [[ "$(uname -m)" == "arm64" ]]; then
-  warn "Apple Silicon detected — Linux and Windows builds will run under QEMU emulation."
-  warn "Cold build: ~15-20 min each. Warm builds (cached target/) are much faster."
-  warn "Do NOT wipe target/linux-x86_64 or target/x86_64-pc-windows-gnu between runs."
+  warn "Apple Silicon — Linux build runs under QEMU emulation (~10 min cold, fast warm)."
 fi
 
 build_linux
 build_macos
-build_windows
-deploy_binaries
 
-log "All builds complete! 🎉"
+log "Local builds complete! 🎉"
+log "Windows: use GitHub Actions (build-cli.yml) — push a tag or run manually."
 echo ""
-echo "Download URLs (relative, served by web UI):"
-echo "  Linux:   /bin/ifc2lbd-neo-linux"
-echo "  macOS:   /bin/ifc2lbd-neo-macos"
-echo "  Windows: /bin/ifc2lbd-neo-windows.exe"
+echo "Published binaries: https://github.com/ISBE-TUe/IFC2LBD-Neo/releases/latest"

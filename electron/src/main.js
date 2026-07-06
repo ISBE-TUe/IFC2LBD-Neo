@@ -10,21 +10,20 @@
 // The renderer (web app) detects Electron via `window.electronAPI` and
 // uses IPC instead of the WASM worker for conversions.
 
-import { app, BrowserWindow, ipcMain, dialog } from "electron";
-import { spawn } from "node:child_process";
-import {
-	mkdirSync,
-	rmSync,
-	writeFileSync,
-	readFileSync,
-	readdirSync,
-	statSync,
-} from "node:fs";
-import { join, dirname, basename, extname } from "node:path";
-import { fileURLToPath } from "node:url";
-import { tmpdir } from "node:os";
+const { app, BrowserWindow, ipcMain, dialog } = require("electron");
+const { spawn } = require("node:child_process");
+const {
+  mkdirSync,
+  rmSync,
+  writeFileSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+} = require("node:fs");
+const { join, dirname, basename, extname } = require("node:path");
+const { tmpdir } = require("node:os");
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
+const __dirname = __dirname;
 
 // ── CLI binary path ─────────────────────────────────────────────────────────
 //

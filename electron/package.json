@@ -3,7 +3,6 @@
   "version": "0.1.0",
   "description": "IFC2LBD-Neo Desktop — IFC to LBD/RDF converter",
   "main": "src/main.js",
-  "type": "module",
   "scripts": {
     "dev": "electron .",
     "build": "electron-builder",
@@ -39,6 +38,7 @@
     ],
     "mac": {
       "category": "public.app-category.developer-tools",
+      "icon": "build/icon.png",
       "target": [
         {
           "target": "dmg",
@@ -47,6 +47,7 @@
       ]
     },
     "win": {
+      "icon": "build/icon.png",
       "target": [
         {
           "target": "nsis",

@@ -9,7 +9,10 @@ import initWasm, {
 	convertIfcToSink,
 	initNeoThreadPool,
 } from "../wasm/ifc2lbd_wasm.js";
-import { MODULES as FALLBACK_MODULES, resolvePlanStatic } from "./module-metadata.js";
+import {
+	MODULES as FALLBACK_MODULES,
+	resolvePlanStatic,
+} from "./module-metadata.js";
 import "./pipeline.css";
 import {
 	getState,
@@ -892,14 +895,13 @@ async function runConversionElectron() {
 		// Ask the user for an output directory, or show downloads
 		const outputDir = await window.electronAPI.openDirectory();
 		if (outputDir) {
-			const { saved, totalBytes: written } =
-				await window.electronAPI.saveFiles(
-					outputDir,
-					result.files.map((f) => ({
-						filename: f.filename,
-						content: f.content,
-					})),
-				);
+			const { saved, totalBytes: written } = await window.electronAPI.saveFiles(
+				outputDir,
+				result.files.map((f) => ({
+					filename: f.filename,
+					content: f.content,
+				})),
+			);
 			renderDownloadsMessage(
 				`Saved ${saved} file(s), ${bytesToHuman(written)} to ${outputDir}.`,
 			);
