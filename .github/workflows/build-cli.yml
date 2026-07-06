@@ -1,0 +1,151 @@
+# Build ifc2lbd-neo CLI binaries for Linux, macOS, and Windows.
+#
+# Two ways to trigger:
+#   1. Push a tag:  git tag v0.1.0 && git push origin v0.1.0
+#      → all three platforms build → GitHub Release created automatically
+#   2. Manual:      GitHub Actions → "Build CLI Binaries" → Run workflow
+#      → enter a tag name (tag does NOT need to exist as a git ref)
+#
+# NOT on every push, because:
+#   - The CLI binaries change rarely relative to the WASM/web app
+#   - Each build takes ~5-10 min on its native runner
+#   - Binaries are ~30 MB each — committing them bloats git history
+#
+# Binaries are published to GitHub Releases. The web UI download buttons
+# point to:
+#   https://github.com/ISBE-TUe/IFC2LBD-Neo/releases/latest/download/<asset>
+#
+# Each platform builds natively on its matching runner (no QEMU, no
+# cross-compile — avoids the windows-sys import-library issues that
+# break MinGW cross-compile from Linux).
+
+name: Build CLI Binaries
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.1.0)"
+        required: true
+        default: "v0.1.0"
+      prerelease:
+        description: "Mark as prerelease"
+        type: boolean
+        default: false
+
+jobs:
+  # ── Linux (x86_64) ──────────────────────────────────────────────────────
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev clang cmake
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: cli-linux
+
+      - name: Build
+        run: cargo build --release -p ifc2lbd-cli --bin ifc2lbd-neo
+
+      - name: Strip and rename
+        run: |
+          strip target/release/ifc2lbd-neo
+          cp target/release/ifc2lbd-neo ifc2lbd-neo-linux
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ifc2lbd-neo-linux
+          path: ifc2lbd-neo-linux
+          if-no-files-found: error
+
+  # ── macOS (Apple Silicon) ──────────────────────────────────────────────
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: cli-macos
+
+      - name: Build
+        run: |
+          cargo build --release -p ifc2lbd-cli --bin ifc2lbd-neo
+          strip target/release/ifc2lbd-neo
+          cp target/release/ifc2lbd-neo ifc2lbd-neo-macos
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ifc2lbd-neo-macos
+          path: ifc2lbd-neo-macos
+          if-no-files-found: error
+
+  # ── Windows (x86_64) ───────────────────────────────────────────────────
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: cli-windows
+
+      - name: Build
+        shell: bash
+        run: cargo build --release -p ifc2lbd-cli --bin ifc2lbd-neo
+
+      - name: Rename
+        shell: bash
+        run: cp target/release/ifc2lbd-neo.exe ifc2lbd-neo-windows.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ifc2lbd-neo-windows.exe
+          path: ifc2lbd-neo-windows.exe
+          if-no-files-found: error
+
+  # ── Publish to GitHub Releases ─────────────────────────────────────────
+  release:
+    needs: [build-linux, build-macos, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Debug artifact layout
+        run: find artifacts -type f -ls
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          prerelease: ${{ inputs.prerelease }}
+          generate_release_notes: true
+          body: |
+            ## CLI Binaries
+
+            Download the binary for your platform:
+            - **Linux**: `ifc2lbd-neo-linux` (x86_64)
+            - **macOS**: `ifc2lbd-neo-macos` (Universal — Intel + Apple Silicon)
+            - **Windows**: `ifc2lbd-neo-windows.exe` (x86_64)
+          files: |
+            artifacts/ifc2lbd-neo-linux/ifc2lbd-neo-linux
+            artifacts/ifc2lbd-neo-macos/ifc2lbd-neo-macos
+            artifacts/ifc2lbd-neo-windows.exe/ifc2lbd-neo-windows.exe
