@@ -1877,14 +1877,13 @@ function initMusic() {
 
 // ---- Floating citation widget ----
 
-// TODO: replace with actual paper URL and BibTeX entry once published
-const PAPER_URL = "https://doi.org/10.0000/TODO";
-const BIBTEX_ENTRY = `@article{ifc2lbdneo,
-  title     = {IFC2LBD-Neo: A High-Performance IFC-to-LBD Conversion Pipeline},
-  author    = {TODO},
-  journal   = {TODO},
-  year      = {2026},
-  doi       = {10.0000/TODO},
+const PAPER_URL = "https://research.tue.nl/files/396497680/EG_ICE2026-1.pdf";
+const BIBTEX_ENTRY = `@inproceedings{6dfbd65779994b9cb40a5e5990afed5f,
+  title     = "IFC2LBD-Neo: A Rust-Based Converter for Efficient Linked Building Data Generation from IFC",
+  author    = "Lukas Kirner and Jyrki Oraskari and A.J.A. Donkers and Ekaterina Petrova and Pieter Pauwels and Jakob Beetz",
+  booktitle = "Proceedings of the 33rd EG-ICE International Workshop on Intelligent Computing in Engineering",
+  year      = "2026",
+  url       = "https://www.dicea.unipd.it/eg-ice-2026-padua",
 }`;
 
 function initCiteWidget() {
