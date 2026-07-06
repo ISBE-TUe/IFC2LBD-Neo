@@ -294,9 +294,9 @@ If you want to build binaries without creating a git tag:
 The web UI download buttons use these stable URLs (always resolve to the latest release):
 
 ```
-https://github.com/ISBE-TUe/IFC2LBD-Neo/releases/latest/download/ifc2lbd-neo-linux
-https://github.com/ISBE-TUe/IFC2LBD-Neo/releases/latest/download/ifc2lbd-neo-macos
-https://github.com/ISBE-TUe/IFC2LBD-Neo/releases/latest/download/ifc2lbd-neo-windows.exe
+https://github.com/ISBE-TUe/IFC2LBD-Neo/releases/latest/download/ifc2lbd-neo-cli-linux
+https://github.com/ISBE-TUe/IFC2LBD-Neo/releases/latest/download/ifc2lbd-neo-cli-macos
+https://github.com/ISBE-TUe/IFC2LBD-Neo/releases/latest/download/ifc2lbd-neo-cli-windows.exe
 ```
 
 ### Local builds (for testing)

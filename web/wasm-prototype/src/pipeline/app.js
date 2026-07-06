@@ -2,13 +2,25 @@
 // app.js — Pipeline dashboard (Ableton Session View style)
 // ---------------------------------------------------------------------------
 
-import initWasm, {
+// WASM imports are dynamic (lazy) so they don't crash in Electron's file://
+// protocol. In Electron mode, these are never loaded at all.
+let initWasm,
 	listModules,
 	resolvePlan,
 	planExecution,
 	convertIfcToSink,
-	initNeoThreadPool,
-} from "../wasm/ifc2lbd_wasm.js";
+	initNeoThreadPool;
+
+async function loadWasmModule() {
+	const mod = await import("../wasm/ifc2lbd_wasm.js");
+	initWasm = mod.default;
+	listModules = mod.listModules;
+	resolvePlan = mod.resolvePlan;
+	planExecution = mod.planExecution;
+	convertIfcToSink = mod.convertIfcToSink;
+	initNeoThreadPool = mod.initNeoThreadPool;
+}
+
 import {
 	MODULES as FALLBACK_MODULES,
 	resolvePlanStatic,
@@ -546,6 +558,7 @@ async function init() {
 			);
 		}
 
+		await loadWasmModule();
 		await initWasm();
 	}
 
@@ -825,23 +838,11 @@ async function runConversionElectron() {
 			}
 		}
 
-		// For the CLI, we need the file on disk. In Electron, the file dialog
-		// gives us the path directly. If the file was selected via the browser
-		// file input (unlikely in Electron, but handle it), we fall back to
-		// writing it to a temp file.
-		let inputPath;
-		if (ifcFile?.path) {
-			// Electron File objects have a .path property
-			inputPath = ifcFile.path;
-		} else {
-			// Write to temp file as fallback
-			const tempDir = await window.electronAPI.getTempDir?.();
-			inputPath = `${tempDir}/input.ifc`;
-			const bytes = new Uint8Array(await ifcFile.arrayBuffer());
-			await window.electronAPI.writeFile?.(inputPath, bytes);
-		}
+		// For the CLI, we need the file on disk. In Electron's sandboxed
+		// renderer, File.path is not available, so we send the file bytes
+		// via IPC and the main process writes them to a temp file.
+		const fileData = await ifcFile.arrayBuffer();
 
-		// In Electron mode, use the static plan resolver instead of WASM.
 		const plan = resolvePlanStatic([...activeModules], moduleOptionsArr);
 		log(`Plan: ${plan.enabledIds.join(", ")}`);
 		log(`Running via native CLI (Electron sidecar)...`);
@@ -867,48 +868,57 @@ async function runConversionElectron() {
 
 		const t0 = performance.now();
 
+		// Determine output extension from active serializer
+		const hasNquads =
+			activeModules.has("neo-nquads-serializer") ||
+			activeModules.has("neo-nquads-chunked-serializer");
+		const outputExt = hasNquads ? ".nq" : ".ttl";
+
 		const result = await window.electronAPI.runConversion({
-			inputPath,
+			fileName: ifcFile.name,
+			fileData,
 			modules: [...activeModules],
 			moduleOptions: moduleOptionsArr,
 			baseUri,
 			outputStem,
+			outputExt,
 			inputFormat: state.inputFormat,
 		});
 
 		// Unsubscribe from progress events
-		logUnsub?.();
-		stageUnsub?.();
+		logUnsub();
+		stageUnsub();
 
-		// Convert the returned files to the same format as the WASM path
-		const renderedFiles = (result.files || []).map((file) => ({
-			filename: file.filename,
-			mimeType: file.mimeType,
-			role: file.filename.endsWith(".manifest.json")
-				? "manifest"
-				: file.filename.endsWith(".nq")
-					? "chunk"
-					: "other",
-			payloadParts: [new Uint8Array(file.content)],
-		}));
-
-		// Ask the user for an output directory, or show downloads
-		const outputDir = await window.electronAPI.openDirectory();
-		if (outputDir) {
-			const { saved, totalBytes: written } = await window.electronAPI.saveFiles(
-				outputDir,
-				result.files.map((f) => ({
-					filename: f.filename,
-					content: f.content,
-				})),
-			);
-			renderDownloadsMessage(
-				`Saved ${saved} file(s), ${bytesToHuman(written)} to ${outputDir}.`,
-			);
-			log(`Saved ${saved} file(s), ${bytesToHuman(written)} to ${outputDir}.`);
-		} else {
-			renderDownloads(renderedFiles);
+		// result contains { tempDir, files: [{ filename, mimeType, size }] }
+		// Show output files as clickable links in the downloads bar — same
+		// styling as the web app. Clicking opens a native Save File dialog.
+		const container = document.querySelector("#downloads");
+		if (container) {
+			container.innerHTML = "";
+			for (const file of result.files || []) {
+				const link = document.createElement("a");
+				link.className = "download-link";
+				link.textContent = `${file.filename} (${bytesToHuman(file.size)})`;
+				link.href = "#";
+				link.addEventListener("click", async (e) => {
+					e.preventDefault();
+					const savePath = await window.electronAPI.showSaveDialog(
+						file.filename,
+					);
+					if (!savePath) return;
+					await window.electronAPI.saveOutputFile(
+						result.tempDir,
+						file.filename,
+						savePath,
+					);
+					log(`Saved ${file.filename} to ${savePath}`);
+				});
+				container.appendChild(link);
+			}
 		}
+		log(
+			`Output: ${(result.files || []).map((f) => `${f.filename} (${bytesToHuman(f.size)})`).join(", ")}`,
+		);
 
 		const elapsedMs = performance.now() - t0;
 		const timeStr = `${(elapsedMs / 1000).toFixed(1)}s`;
@@ -1849,7 +1859,7 @@ function initMusic() {
 	const widget = document.querySelector("#music-widget");
 	if (!btn || !slider || !widget) return;
 
-	const audio = new Audio("/soundtrack/lbd2neo.mp3");
+	const audio = new Audio("./soundtrack/lbd2neo.mp3");
 	audio.preload = "none";
 	audio.loop = true;
 	audio.volume = slider.value / 100;
@@ -1877,7 +1887,8 @@ function initMusic() {
 
 // ---- Floating citation widget ----
 
-const PAPER_URL = "https://research.tue.nl/files/396497680/EG_ICE2026-1.pdf";
+const PAPER_URL =
+	"https://research.tue.nl/nl/publications/ifc2lbd-neo-a-rust-based-converter-for-efficient-linked-building-";
 const BIBTEX_ENTRY = `@inproceedings{6dfbd65779994b9cb40a5e5990afed5f,
   title     = "IFC2LBD-Neo: A Rust-Based Converter for Efficient Linked Building Data Generation from IFC",
   author    = "Lukas Kirner and Jyrki Oraskari and A.J.A. Donkers and Ekaterina Petrova and Pieter Pauwels and Jakob Beetz",

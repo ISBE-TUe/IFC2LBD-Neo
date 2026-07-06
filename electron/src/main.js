@@ -4,21 +4,21 @@
 //   1. Create the browser window and load the renderer (web app)
 //   2. Handle IPC: spawn the bundled ifc2lbd-neo CLI as a sidecar process
 //   3. Parse CLI stderr (tracing output) for stage progress events
-//   4. Read output files from the temp directory and send them back
-//   5. Clean up temp files on completion
+//   4. On completion, return file metadata (names, sizes) — NOT content
+//   5. Copy output files from temp dir to user-chosen directory
 //
 // The renderer (web app) detects Electron via `window.electronAPI` and
 // uses IPC instead of the WASM worker for conversions.
 
-const { app, BrowserWindow, ipcMain, dialog } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, shell } = require("electron");
 const { spawn } = require("node:child_process");
 const {
-  mkdirSync,
-  rmSync,
-  writeFileSync,
-  readFileSync,
-  readdirSync,
-  statSync,
+	mkdirSync,
+	rmSync,
+	writeFileSync,
+	readdirSync,
+	statSync,
+	copyFileSync,
 } = require("node:fs");
 const { join, basename, extname } = require("node:path");
 const { tmpdir } = require("node:os");
@@ -26,14 +26,8 @@ const { tmpdir } = require("node:os");
 // In CommonJS, __dirname is already defined by Node.js — no need to set it.
 
 // ── CLI binary path ─────────────────────────────────────────────────────────
-//
-// In development, the CLI is at ../resources/bin/<os>/ifc2lbd-neo.
-// In production (packaged), it's in the extraResources/bin/ directory.
-//
-// electron-builder copies extraResources to <app>/Resources/bin/.
 
 function getCliPath() {
-	const platform = process.platform === "win32" ? "win32" : "macos";
 	const exeName =
 		process.platform === "win32" ? "ifc2lbd-neo.exe" : "ifc2lbd-neo";
 
@@ -43,7 +37,7 @@ function getCliPath() {
 	}
 
 	// Development: relative to the electron/ directory
-	return join(__dirname, "..", "resources", "bin", platform, exeName);
+	return join(__dirname, "..", "resources", "bin", "macos", exeName);
 }
 
 // ── Window management ────────────────────────────────────────────────────────
@@ -61,24 +55,28 @@ function createWindow() {
 			preload: join(__dirname, "preload.js"),
 			contextIsolation: true,
 			nodeIntegration: false,
-			// Electron doesn't need cross-origin isolation (no SharedArrayBuffer)
-			// because we use IPC instead of WASM workers.
 		},
 	});
 
-	// In development, load the Vite dev server. In production, load the built files.
 	const isDev = !app.isPackaged;
 	if (isDev) {
-		// Vite dev server — start with `npm run dev` in web/wasm-prototype/
 		mainWindow.loadURL("http://localhost:3031");
 		mainWindow.webContents.openDevTools();
 	} else {
-		// Load the bundled renderer from the web app's dist/
 		mainWindow.loadFile(join(__dirname, "..", "renderer", "index.html"));
 	}
 
 	mainWindow.on("closed", () => {
 		mainWindow = null;
+	});
+
+	// Open all external links (https://) in the system browser, not in Electron
+	mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+		if (url.startsWith("https://") || url.startsWith("http://")) {
+			shell.openExternal(url);
+			return { action: "deny" };
+		}
+		return { action: "allow" };
 	});
 }
 
@@ -106,17 +104,7 @@ ipcMain.handle("dialog:openFile", async () => {
 		properties: ["openFile"],
 	});
 	if (result.canceled || result.filePaths.length === 0) return null;
-	const filePath = result.filePaths[0];
-	const content = readFileSync(filePath);
-	return {
-		name: basename(filePath),
-		path: filePath,
-		size: content.byteLength,
-		content: content.buffer.slice(
-			content.byteOffset,
-			content.byteOffset + content.byteLength,
-		),
-	};
+	return result.filePaths[0];
 });
 
 ipcMain.handle("dialog:openDirectory", async () => {
@@ -128,21 +116,30 @@ ipcMain.handle("dialog:openDirectory", async () => {
 	return result.filePaths[0];
 });
 
+ipcMain.handle("dialog:showSaveDialog", async (_event, { defaultFileName }) => {
+	const result = await dialog.showSaveDialog(mainWindow, {
+		title: "Save output file",
+		defaultPath: defaultFileName || "output.ttl",
+	});
+	if (result.canceled || !result.filePath) return null;
+	return result.filePath;
+});
+
+ipcMain.handle("shell:openExternal", async (_event, { url }) => {
+	await shell.openExternal(url);
+});
+
 // ── IPC: Run conversion ──────────────────────────────────────────────────────
 //
-// The renderer sends a conversion request with:
-//   { inputPath, modules, moduleOptions, baseUri, outputStem, inputFormat }
-//
-// The main process:
-//   1. Creates a temp output directory
-//   2. Builds the CLI command from the request
-//   3. Spawns the CLI binary
-//   4. Parses stderr for stage events and forwards them via IPC
-//   5. On completion, reads output files and returns them
+// The renderer sends: { fileName, fileData (ArrayBuffer), modules, moduleOptions, ... }
+// The main process writes the input to a temp dir, spawns the CLI, parses
+// stderr for stage events, and returns file METADATA only (no content).
+// The renderer then asks the user where to save, and the main process copies
+// files from the temp dir to the target directory.
 
 let activeConversion = null;
 
-ipcMain.handle("conversion:run", async (event, request) => {
+ipcMain.handle("conversion:run", async (_event, request) => {
 	if (activeConversion) {
 		throw new Error("A conversion is already running.");
 	}
@@ -150,14 +147,23 @@ ipcMain.handle("conversion:run", async (event, request) => {
 	const tempDir = join(tmpdir(), `ifc2lbd-neo-${Date.now()}`);
 	mkdirSync(tempDir, { recursive: true });
 
+	// Write input file to temp directory
+	const inputFile = join(tempDir, request.fileName || "input.ifc");
+	if (request.fileData) {
+		writeFileSync(inputFile, Buffer.from(request.fileData));
+	}
+
+	// Output path — extension is determined by the active serializer
+	// (Turtle → .ttl, N-Quads → .nq). The renderer sends the correct extension.
+	const outputExt = request.outputExt || ".ttl";
 	const outputFile = join(
 		tempDir,
-		`${request.outputStem || "converted-model"}.ttl`,
+		`${request.outputStem || "converted-model"}${outputExt}`,
 	);
 
 	// Build CLI arguments
 	const args = [
-		request.inputPath,
+		inputFile,
 		"--output",
 		outputFile,
 		"--base-uri",
@@ -187,10 +193,6 @@ ipcMain.handle("conversion:run", async (event, request) => {
 
 		let stderrBuffer = "";
 
-		// Parse stderr for stage events
-		// The CLI uses tracing::info! which outputs lines like:
-		//   2024-01-15T10:30:00.123Z INFO ifc2lbd_cli: phase input_parsing completed in 0.123s
-		//   2024-01-15T10:30:00.456Z INFO ifc2lbd_cli: module neo-bot-producer: success (1234 triples)
 		child.stderr.on("data", (chunk) => {
 			stderrBuffer += chunk.toString();
 			const lines = stderrBuffer.split("\n");
@@ -198,10 +200,9 @@ ipcMain.handle("conversion:run", async (event, request) => {
 
 			for (const line of lines) {
 				if (!line.trim()) continue;
-				// Forward all log lines to the renderer
 				mainWindow?.webContents.send("conversion:log", line.trim());
 
-				// Try to parse stage events
+				// Parse stage events: "module <id>: running/success/failed"
 				const stageMatch = line.match(
 					/module\s+(\S+):\s+(success|failed|running)/,
 				);
@@ -241,51 +242,45 @@ ipcMain.handle("conversion:run", async (event, request) => {
 				return;
 			}
 
-			// Read output files from temp directory
-			const outputFiles = [];
+			// Return file METADATA only — no content through IPC
+			const fileMetadata = [];
 			try {
 				const entries = readdirSync(tempDir);
 				for (const entry of entries) {
+					// Skip the input file
+					if (entry === request.fileName) continue;
 					const fullPath = join(tempDir, entry);
 					if (!statSync(fullPath).isFile()) continue;
-					const content = readFileSync(fullPath);
 					const ext = extname(entry);
 					let mimeType = "application/octet-stream";
 					if (ext === ".ttl") mimeType = "text/turtle";
 					else if (ext === ".nq") mimeType = "application/n-quads";
 					else if (ext === ".json") mimeType = "application/json";
 
-					outputFiles.push({
+					fileMetadata.push({
 						filename: entry,
 						mimeType,
-						content: content.buffer.slice(
-							content.byteOffset,
-							content.byteOffset + content.byteLength,
-						),
+						size: statSync(fullPath).size,
 					});
 				}
 			} catch (readErr) {
-				rmSync(tempDir, { recursive: true, force: true });
 				reject(new Error(`Failed to read output: ${readErr.message}`));
 				return;
 			}
 
-			rmSync(tempDir, { recursive: true, force: true });
-			resolve({ files: outputFiles });
+			// Return tempDir so the renderer can request a copy later
+			resolve({ tempDir, files: fileMetadata });
 		});
 	});
 });
 
-// ── IPC: Save output files ──────────────────────────────────────────────────
+// ── IPC: Copy output files from temp dir to user-chosen directory ───────────
 
-ipcMain.handle("files:save", async (event, { directory, files }) => {
-	let saved = 0;
-	let totalBytes = 0;
-	for (const file of files) {
-		const filePath = join(directory, file.filename);
-		writeFileSync(filePath, Buffer.from(file.content));
-		saved++;
-		totalBytes += file.content.byteLength;
-	}
-	return { saved, totalBytes };
-});
+ipcMain.handle(
+	"files:copyFile",
+	async (_event, { tempDir, fileName, targetPath }) => {
+		const srcPath = join(tempDir, fileName);
+		copyFileSync(srcPath, targetPath);
+		return { saved: 1, totalBytes: statSync(srcPath).size };
+	},
+);

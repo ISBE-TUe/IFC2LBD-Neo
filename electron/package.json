@@ -13,12 +13,12 @@
   "author": "IFC2LBD-Neo Contributors",
   "license": "AGPL-3.0-only",
   "devDependencies": {
-    "electron": "^33.0.0",
+    "electron": "^33.4.11",
     "electron-builder": "^25.1.0"
   },
   "build": {
     "appId": "io.github.isbe-tue.ifc2lbd-neo",
-    "productName": "IFC2LBD-Neo",
+    "productName": "ifc2lbd-neo",
     "directories": {
       "output": "release",
       "buildResources": "build"
@@ -36,13 +36,17 @@
         {
           "from": "resources/bin/macos",
           "to": "bin",
-          "filter": ["**/*"]
+          "filter": [
+            "**/*"
+          ]
         }
       ],
       "target": [
         {
           "target": "dmg",
-          "arch": ["arm64"]
+          "arch": [
+            "arm64"
+          ]
         }
       ]
     },
@@ -52,13 +56,17 @@
         {
           "from": "resources/bin/win32",
           "to": "bin",
-          "filter": ["**/*"]
+          "filter": [
+            "**/*"
+          ]
         }
       ],
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ]
     },

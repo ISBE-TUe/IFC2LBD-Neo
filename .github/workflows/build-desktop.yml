@@ -84,14 +84,14 @@ jobs:
           mkdir -p /tmp/cli-download
           gh release download "${{ needs.get-tag.outputs.tag }}" \
             --repo ${{ github.repository }} \
-            --pattern "ifc2lbd-neo-macos" \
+            --pattern "ifc2lbd-neo-cli-macos" \
             --dir /tmp/cli-download
-          chmod +x /tmp/cli-download/ifc2lbd-neo-macos
+          chmod +x /tmp/cli-download/ifc2lbd-neo-cli-macos
 
       - name: Stage CLI binary
         run: |
           mkdir -p electron/resources/bin/macos
-          cp /tmp/cli-download/ifc2lbd-neo-macos electron/resources/bin/macos/ifc2lbd-neo
+          cp /tmp/cli-download/ifc2lbd-neo-cli-macos electron/resources/bin/macos/ifc2lbd-neo
 
       # 5. Build the Electron app
       - name: Build Electron app (macOS)
@@ -158,14 +158,14 @@ jobs:
           mkdir -p /tmp/cli-download
           gh release download "${{ needs.get-tag.outputs.tag }}" \
             --repo ${{ github.repository }} \
-            --pattern "ifc2lbd-neo-windows.exe" \
+            --pattern "ifc2lbd-neo-cli-windows.exe" \
             --dir /tmp/cli-download
 
       - name: Stage CLI binary
         shell: bash
         run: |
           mkdir -p electron/resources/bin/win32
-          cp /tmp/cli-download/ifc2lbd-neo-windows.exe electron/resources/bin/win32/ifc2lbd-neo.exe
+          cp /tmp/cli-download/ifc2lbd-neo-cli-windows.exe electron/resources/bin/win32/ifc2lbd-neo.exe
 
       # 5. Build the Electron app
       - name: Build Electron app (Windows)

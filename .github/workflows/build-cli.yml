@@ -60,12 +60,12 @@ jobs:
       - name: Strip and rename
         run: |
           strip target/release/ifc2lbd-neo
-          cp target/release/ifc2lbd-neo ifc2lbd-neo-linux
+          cp target/release/ifc2lbd-neo ifc2lbd-neo-cli-linux
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ifc2lbd-neo-linux
-          path: ifc2lbd-neo-linux
+          name: ifc2lbd-neo-cli-linux
+          path: ifc2lbd-neo-cli-linux
           if-no-files-found: error
 
   # ── macOS (Apple Silicon) ──────────────────────────────────────────────
@@ -84,12 +84,12 @@ jobs:
         run: |
           cargo build --release -p ifc2lbd-cli --bin ifc2lbd-neo
           strip target/release/ifc2lbd-neo
-          cp target/release/ifc2lbd-neo ifc2lbd-neo-macos
+          cp target/release/ifc2lbd-neo ifc2lbd-neo-cli-macos
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ifc2lbd-neo-macos
-          path: ifc2lbd-neo-macos
+          name: ifc2lbd-neo-cli-macos
+          path: ifc2lbd-neo-cli-macos
           if-no-files-found: error
 
   # ── Windows (x86_64) ───────────────────────────────────────────────────
@@ -110,12 +110,12 @@ jobs:
 
       - name: Rename
         shell: bash
-        run: cp target/release/ifc2lbd-neo.exe ifc2lbd-neo-windows.exe
+        run: cp target/release/ifc2lbd-neo.exe ifc2lbd-neo-cli-windows.exe
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ifc2lbd-neo-windows.exe
-          path: ifc2lbd-neo-windows.exe
+          name: ifc2lbd-neo-cli-windows.exe
+          path: ifc2lbd-neo-cli-windows.exe
           if-no-files-found: error
 
   # ── Publish to GitHub Releases ─────────────────────────────────────────
@@ -142,10 +142,10 @@ jobs:
             ## CLI Binaries
 
             Download the binary for your platform:
-            - **Linux**: `ifc2lbd-neo-linux` (x86_64)
-            - **macOS**: `ifc2lbd-neo-macos` (Apple Silicon, arm64)
-            - **Windows**: `ifc2lbd-neo-windows.exe` (x86_64)
+            - **Linux**: `ifc2lbd-neo-cli-linux` (x86_64)
+            - **macOS**: `ifc2lbd-neo-cli-macos` (Apple Silicon, arm64)
+            - **Windows**: `ifc2lbd-neo-cli-windows.exe` (x86_64)
           files: |
-            artifacts/ifc2lbd-neo-linux/ifc2lbd-neo-linux
-            artifacts/ifc2lbd-neo-macos/ifc2lbd-neo-macos
-            artifacts/ifc2lbd-neo-windows.exe/ifc2lbd-neo-windows.exe
+            artifacts/ifc2lbd-neo-cli-linux/ifc2lbd-neo-cli-linux
+            artifacts/ifc2lbd-neo-cli-macos/ifc2lbd-neo-cli-macos
+            artifacts/ifc2lbd-neo-cli-windows.exe/ifc2lbd-neo-cli-windows.exe
