@@ -98,6 +98,12 @@ jobs:
         working-directory: electron
         run: npx electron-builder --mac --arm64
 
+      # 6. Ad-hoc sign the app (no Developer ID certificate in CI)
+      #    Without signing, macOS shows "damaged and can't be opened"
+      - name: Ad-hoc sign macOS app
+        run: |
+          codesign --force --deep --sign - electron/release/mac-arm64/IFC2LBD-Neo.app
+
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:

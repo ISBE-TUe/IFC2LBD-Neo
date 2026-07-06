@@ -29,16 +29,16 @@
       "resources/**/*",
       "package.json"
     ],
-    "extraResources": [
-      {
-        "from": "../resources/bin/${os}",
-        "to": "bin",
-        "filter": ["**/*"]
-      }
-    ],
     "mac": {
       "category": "public.app-category.developer-tools",
       "icon": "build/icon.png",
+      "extraResources": [
+        {
+          "from": "resources/bin/macos",
+          "to": "bin",
+          "filter": ["**/*"]
+        }
+      ],
       "target": [
         {
           "target": "dmg",
@@ -48,6 +48,13 @@
     },
     "win": {
       "icon": "build/icon.png",
+      "extraResources": [
+        {
+          "from": "resources/bin/win32",
+          "to": "bin",
+          "filter": ["**/*"]
+        }
+      ],
       "target": [
         {
           "target": "nsis",
