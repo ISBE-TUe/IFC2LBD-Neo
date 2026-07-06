@@ -1,0 +1,49 @@
+<svg version="1.2" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+	<defs>
+		<clipPath clipPathUnits="userSpaceOnUse" id="cp1">
+			<path d="m512 1024c-283.14 0-512-228.86-512-512 0-283.14 228.86-512 512-512 283.14 0 512 228.86 512 512 0 283.14-228.86 512-512 512z"/>
+		</clipPath>
+		
+	</defs>
+	<style>
+		.s0 { fill: #3a3a3a } 
+		.s1 { fill: #4a4a4a;stroke: #4a4a4a } 
+		.s2 { fill: none;stroke: #29d43a;stroke-linecap: round;stroke-linejoin: round;stroke-width: 36 } 
+		.s3 { fill: none;stroke: #fff200;stroke-linecap: round;stroke-linejoin: round;stroke-width: 36 } 
+		.s4 { fill: none;stroke: #ff1111;stroke-linecap: round;stroke-linejoin: round;stroke-width: 36 } 
+		.s5 { fill: none;stroke: #19c7f2;stroke-linecap: round;stroke-linejoin: round;stroke-width: 36 } 
+		.s6 { fill: none;stroke: #0718ff;stroke-linecap: round;stroke-linejoin: round;stroke-width: 36 } 
+		.s7 { fill: none;stroke: #c017c9;stroke-linecap: round;stroke-linejoin: round;stroke-width: 36 } 
+	</style>
+	<path fill-rule="evenodd" class="s0" d="m512 1024c-283.14 0-512-228.86-512-512 0-283.14 228.86-512 512-512 283.14 0 512 228.86 512 512 0 283.14-228.86 512-512 512z"/>
+	<g id="Clip-Path" clip-path="url(#cp1)">
+		<g>
+			<!-- Edges connecting hub to satellites -->
+			<line x1="512" y1="512" x2="493" y2="44" stroke="#4a4a4a" stroke-width="16"/>
+			<line x1="512" y1="512" x2="933" y2="745" stroke="#4a4a4a" stroke-width="16"/>
+			<line x1="512" y1="512" x2="711" y2="210" stroke="#4a4a4a" stroke-width="16"/>
+			<line x1="512" y1="512" x2="153" y2="443" stroke="#4a4a4a" stroke-width="16"/>
+			<line x1="512" y1="512" x2="208" y2="856" stroke="#4a4a4a" stroke-width="16"/>
+			<!-- Cross-edges between satellites -->
+			<line x1="493" y1="44" x2="711" y2="210" stroke="#4a4a4a" stroke-width="10"/>
+			<line x1="153" y1="443" x2="208" y2="856" stroke="#4a4a4a" stroke-width="10"/>
+			<line x1="711" y1="210" x2="933" y2="745" stroke="#4a4a4a" stroke-width="10"/>
+			<!-- Nodes -->
+			<path fill-rule="evenodd" class="s1" d="m512 620c-59.72 0-108-48.28-108-108 0-59.72 48.28-108 108-108 59.72 0 108 48.28 108 108 0 59.72-48.28 108-108 108z"/>
+			<path id="Layer copy" fill-rule="evenodd" class="s1" d="m493 132c-48.66 0-88-39.34-88-88 0-48.66 39.34-88 88-88 48.66 0 88 39.34 88 88 0 48.66-39.34 88-88 88z"/>
+			<path fill-rule="evenodd" class="s1" d="m933 849c-57.51 0-104-46.49-104-104 0-57.51 46.49-104 104-104 57.51 0 104 46.49 104 104 0 57.51-46.49 104-104 104z"/>
+			<path fill-rule="evenodd" class="s1" d="m711 279c-38.16 0-69-30.84-69-69 0-38.16 30.84-69 69-69 38.16 0 69 30.84 69 69 0 38.16-30.84 69-69 69z"/>
+			<path id="Layer copy 2" fill-rule="evenodd" class="s1" d="m153 512c-38.16 0-69-30.84-69-69 0-38.16 30.84-69 69-69 38.16 0 69 30.84 69 69 0 38.16-30.84 69-69 69z"/>
+			<path fill-rule="evenodd" class="s1" d="m208 938c-45.35 0-82-36.65-82-82 0-45.35 36.65-82 82-82 45.35 0 82 36.65 82 82 0 45.35-36.65 82-82 82z"/>
+		</g>
+		
+	</g>
+	<g>
+		<path class="s2" d="m140 780h320v-388"/>
+		<path class="s3" d="m524 780v-554"/>
+		<path class="s4" d="m588 780v-300"/>
+		<path class="s5" d="m652 780v-472"/>
+		<path class="s6" d="m716 780v-674"/>
+		<path class="s7" d="m780 780v-342"/>
+	</g>
+</svg>
