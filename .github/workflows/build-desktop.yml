@@ -103,6 +103,7 @@ jobs:
       - name: Ad-hoc sign macOS app
         run: |
           codesign --force --deep --sign - electron/release/mac-arm64/IFC2LBD-Neo.app
+          xattr -cr electron/release/mac-arm64/IFC2LBD-Neo.app
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4

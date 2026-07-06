@@ -20,10 +20,10 @@ const {
   readdirSync,
   statSync,
 } = require("node:fs");
-const { join, dirname, basename, extname } = require("node:path");
+const { join, basename, extname } = require("node:path");
 const { tmpdir } = require("node:os");
 
-const __dirname = __dirname;
+// In CommonJS, __dirname is already defined by Node.js — no need to set it.
 
 // ── CLI binary path ─────────────────────────────────────────────────────────
 //
