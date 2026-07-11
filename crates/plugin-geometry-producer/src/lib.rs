@@ -137,12 +137,12 @@ impl GeometryFormat {
         }
     }
 
-    pub fn filename(&self) -> &'static str {
+    pub fn extension(&self) -> &'static str {
         match self {
-            Self::Fragments => "model.frag",
-            Self::Gltf => "model.glb",
-            Self::Parquet => "model.parquet",
-            Self::Ifc5 => "model.ifcx",
+            Self::Fragments => "frag",
+            Self::Gltf => "glb",
+            Self::Parquet => "parquet",
+            Self::Ifc5 => "ifcx",
         }
     }
 
@@ -223,8 +223,22 @@ impl ProducerPlugin for GeometryProducerPlugin {
         };
 
         if let Some(tx) = &ctx.sidecar_tx {
+            // Derive the output filename from the configured stem, falling
+            // back to "model" when no stem is available in the context.
+            let stem = ctx
+                .get::<String>()
+                .map(|s| {
+                    let trimmed = s.trim();
+                    if trimmed.is_empty() {
+                        "model".to_string()
+                    } else {
+                        trimmed.to_string()
+                    }
+                })
+                .unwrap_or_else(|| "model".to_string());
+            let filename = format!("{}.{}", stem, format.extension());
             let _ = tx.send(DerivedFile {
-                filename: format.filename().to_string(),
+                filename,
                 mime_type: format.mime_type(),
                 bytes,
             });

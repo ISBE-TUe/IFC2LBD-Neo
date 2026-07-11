@@ -64,8 +64,8 @@ export function loadConfig() {
       update({
         activeModules,
         moduleOptions,
-        baseUri: config.baseUri || "https://lbd.example.com/",
-        outputStem: config.outputStem || "converted-model",
+        baseUri: config.baseUri || "https://lbd.org/",
+        outputStem: config.outputStem || "",
       });
       log(`Config loaded: ${activeModules.size} modules, ${config.moduleOptions?.length || 0} options.`);
     } catch (err) {

@@ -71,6 +71,24 @@ jobs:
           mkdir -p electron/renderer
           cp -r web/wasm-prototype/dist/* electron/renderer/
 
+      # 2b. Build and stage the viewer web app
+      - name: Clone viewer repo
+        run: |
+          git clone https://github.com/ISBE-TUe/viewer.IFC2LBD.git /tmp/viewer
+
+      - name: Install viewer dependencies
+        working-directory: /tmp/viewer
+        run: npm ci
+
+      - name: Build viewer
+        working-directory: /tmp/viewer
+        run: npm run build
+
+      - name: Stage viewer
+        run: |
+          mkdir -p electron/renderer/viewer
+          cp -r /tmp/viewer/dist/* electron/renderer/viewer/
+
       # 3. Install Electron dependencies
       - name: Install Electron dependencies
         working-directory: electron
@@ -143,6 +161,28 @@ jobs:
         run: |
           mkdir -p electron/renderer
           cp -r web/wasm-prototype/dist/* electron/renderer/
+
+      # 2b. Build and stage the viewer web app
+      - name: Clone viewer repo
+        shell: bash
+        run: |
+          git clone https://github.com/ISBE-TUe/viewer.IFC2LBD.git /tmp/viewer
+
+      - name: Install viewer dependencies
+        working-directory: /tmp/viewer
+        run: npm ci
+
+      - name: Build viewer
+        working-directory: /tmp/viewer
+        run: npm run build
+
+      - name: Stage viewer
+        shell: bash
+        run: |
+          mkdir -p electron/renderer/viewer
+          cp -r /tmp/viewer/dist/* electron/renderer/viewer/
+
+
 
       # 3. Install Electron dependencies
       - name: Install Electron dependencies

@@ -31,6 +31,7 @@ import {
 	update,
 	updateStageStatus,
 	resetStageStatuses,
+	subscribe,
 } from "./state.js";
 import { initSession } from "./session.js";
 import { initSidebar } from "./sidebar.js";
@@ -88,10 +89,9 @@ const TURTLE_OPTS = {
 };
 
 const TEMPLATES = [
-	// --- Default (no geometry) ---
 	{
-		id: "default-turtle",
-		label: "Default — Turtle",
+		id: "default",
+		label: "Default",
 		desc: "Standard producers, Turtle output",
 		modules: [
 			...PREPROCESS_MODULES,
@@ -102,23 +102,8 @@ const TEMPLATES = [
 		options: { ...TURTLE_OPTS },
 	},
 	{
-		id: "default-nquads",
-		label: "Default — N-Quads",
-		desc: "Standard producers, N-Quads output",
-		modules: [
-			...PREPROCESS_MODULES,
-			...LBD_MODULES,
-			"neo-nquads-serializer",
-			"neo-file-export",
-		],
-		options: {
-			"neo-file-export": { compress: "gzip" },
-			"neo-bsdd-producer": { compact: "true", dedup_properties: "true" },
-		},
-	},
-	{
-		id: "default-ifcowl-turtle",
-		label: "Default + IfcOWL — Turtle",
+		id: "default-ifcowl",
+		label: "Default + IfcOWL",
 		desc: "Standard producers + IfcOWL, Turtle output",
 		modules: [
 			...PREPROCESS_MODULES,
@@ -130,25 +115,8 @@ const TEMPLATES = [
 		options: { ...TURTLE_OPTS },
 	},
 	{
-		id: "default-ifcowl-nquads",
-		label: "Default + IfcOWL — N-Quads",
-		desc: "Standard producers + IfcOWL, N-Quads output",
-		modules: [
-			...PREPROCESS_MODULES,
-			...LBD_MODULES,
-			"neo-ifcowl-producer",
-			"neo-nquads-serializer",
-			"neo-file-export",
-		],
-		options: {
-			"neo-file-export": { compress: "gzip" },
-			"neo-bsdd-producer": { compact: "true", dedup_properties: "true" },
-		},
-	},
-	// --- Geometry (default + geometry preprocess + geometry producer) ---
-	{
-		id: "geometry-turtle",
-		label: "Geometry — Turtle",
+		id: "default-geometry",
+		label: "Default + Geometry",
 		desc: "Default + geometry preprocess & producer, Turtle output",
 		modules: [
 			...PREPROCESS_MODULES,
@@ -159,124 +127,15 @@ const TEMPLATES = [
 		],
 		options: { ...TURTLE_OPTS },
 	},
-	{
-		id: "geometry-nquads",
-		label: "Geometry — N-Quads",
-		desc: "Default + geometry preprocess & producer, N-Quads output",
-		modules: [
-			...PREPROCESS_MODULES,
-			...GEO_MODULES,
-			...LBD_MODULES,
-			"neo-nquads-serializer",
-			"neo-file-export",
-		],
-		options: {
-			"neo-file-export": { compress: "gzip" },
-			"neo-bsdd-producer": { compact: "true", dedup_properties: "true" },
-		},
-	},
-	{
-		id: "geometry-ifcowl-turtle",
-		label: "Geometry + IfcOWL — Turtle",
-		desc: "Default + geometry + IfcOWL, Turtle output",
-		modules: [
-			...PREPROCESS_MODULES,
-			...GEO_MODULES,
-			...LBD_MODULES,
-			"neo-ifcowl-producer",
-			"neo-turtle-serializer",
-			"neo-file-export",
-		],
-		options: { ...TURTLE_OPTS },
-	},
-	{
-		id: "geometry-ifcowl-nquads",
-		label: "Geometry + IfcOWL — N-Quads",
-		desc: "Default + geometry + IfcOWL, N-Quads output",
-		modules: [
-			...PREPROCESS_MODULES,
-			...GEO_MODULES,
-			...LBD_MODULES,
-			"neo-ifcowl-producer",
-			"neo-nquads-serializer",
-			"neo-file-export",
-		],
-		options: {
-			"neo-file-export": { compress: "gzip" },
-			"neo-bsdd-producer": { compact: "true", dedup_properties: "true" },
-		},
-	},
-	// --- RML (structured data) ---
-	{
-		id: "rml-turtle",
-		label: "RML → Turtle",
-		desc: "RML mapper with Turtle output",
-		modules: ["neo-rml-mapper", "neo-turtle-serializer", "neo-file-export"],
-		options: { ...TURTLE_OPTS },
-	},
-	{
-		id: "rml-nquads",
-		label: "RML → N-Quads",
-		desc: "RML mapper with N-Quads output",
-		modules: ["neo-rml-mapper", "neo-nquads-serializer", "neo-file-export"],
-		options: {
-			"neo-file-export": { compress: "gzip" },
-			"neo-bsdd-producer": { compact: "true", dedup_properties: "true" },
-		},
-	},
-	{
-		id: "ontology-turtle",
-		label: "Ontology Mapping → Turtle",
-		desc: "Ontology mapper with Turtle output",
-		modules: [
-			"neo-ontology-mapper",
-			"neo-turtle-serializer",
-			"neo-file-export",
-		],
-		options: { ...TURTLE_OPTS },
-	},
-	{
-		id: "ontology-nquads",
-		label: "Ontology Mapping → N-Quads",
-		desc: "Ontology mapper with N-Quads output",
-		modules: [
-			"neo-ontology-mapper",
-			"neo-nquads-serializer",
-			"neo-file-export",
-		],
-		options: {
-			"neo-file-export": { compress: "gzip" },
-			"neo-bsdd-producer": { compact: "true", dedup_properties: "true" },
-		},
-	},
-	{
-		id: "rml-ontology-turtle",
-		label: "RML + Ontology → Turtle",
-		desc: "RML mapper + ontology mapping with Turtle output",
-		modules: [
-			"neo-rml-mapper",
-			"neo-ontology-mapper",
-			"neo-turtle-serializer",
-			"neo-file-export",
-		],
-		options: { ...TURTLE_OPTS },
-	},
-	{
-		id: "rml-ontology-nquads",
-		label: "RML + Ontology → N-Quads",
-		desc: "RML mapper + ontology mapping with N-Quads output",
-		modules: [
-			"neo-rml-mapper",
-			"neo-ontology-mapper",
-			"neo-nquads-serializer",
-			"neo-file-export",
-		],
-		options: {
-			"neo-file-export": { compress: "gzip" },
-			"neo-bsdd-producer": { compact: "true", dedup_properties: "true" },
-		},
-	},
 ];
+
+/** Resolve the output stem: use the user-set value, or derive from the IFC filename. */
+function resolveOutputStem() {
+	const { outputStem, ifcFile } = getState();
+	if (outputStem) return outputStem;
+	if (ifcFile) return ifcFile.name.replace(/\.[^.]+$/, "");
+	return "converted-model";
+}
 
 function applyTemplate(templateId) {
 	const tpl = TEMPLATES.find((t) => t.id === templateId);
@@ -286,6 +145,23 @@ function applyTemplate(templateId) {
 		moduleOptions: { ...tpl.options },
 	});
 	log(`Template: ${tpl.label}`);
+	// Keep the dropdown showing the selected preset
+	const picker = document.querySelector("#template-picker");
+	if (picker) picker.value = templateId;
+}
+
+/** Sync the template dropdown to reflect the current module selection.
+ *  If active modules match a template, show it; otherwise show Custom. */
+function syncTemplatePicker() {
+	const picker = document.querySelector("#template-picker");
+	if (!picker) return;
+	const { activeModules } = getState();
+	const match = TEMPLATES.find(
+		(t) =>
+			t.modules.length === activeModules.size &&
+			t.modules.every((m) => activeModules.has(m)),
+	);
+	picker.value = match ? match.id : "";
 }
 
 // ---------------------------------------------------------------------------
@@ -608,10 +484,13 @@ async function init() {
 		templatePicker.addEventListener("change", () => {
 			if (templatePicker.value) {
 				applyTemplate(templatePicker.value);
-				templatePicker.value = ""; // reset to placeholder
 			}
 		});
 	}
+
+	// Sync template dropdown when modules change manually (toggle circles)
+	subscribe("activeModules", () => syncTemplatePicker());
+	syncTemplatePicker(); // initial sync — default state matches a preset
 
 	// Wire left rail: file input + settings
 	document.querySelector("#file-input")?.addEventListener("change", (e) => {
@@ -630,6 +509,12 @@ async function init() {
 		if (text) text.textContent = file.name;
 		const meta = document.querySelector("#rail-file-meta");
 		if (meta) meta.textContent = bytesToHuman(file.size);
+		// Update Model Name placeholder to show stripped filename
+		const stemInput = document.querySelector("#output-stem-input");
+		if (stemInput) {
+			const baseName = file.name.replace(/\.[^.]+$/, "");
+			stemInput.placeholder = `(auto: ${baseName})`;
+		}
 		log(`File: ${file.name} (${bytesToHuman(file.size)})`);
 	});
 
@@ -682,7 +567,7 @@ async function init() {
 	document
 		.querySelector("#output-stem-input")
 		?.addEventListener("change", (e) =>
-			update({ outputStem: e.target.value.trim() || "converted-model" }),
+			update({ outputStem: e.target.value.trim() }),
 		);
 	document
 		.querySelector("#toggle-preprocess")
@@ -740,11 +625,15 @@ async function init() {
 		.querySelector("#btn-cli-cmd")
 		?.addEventListener("click", showCliCommand);
 	document.querySelector("#btn-viewer")?.addEventListener("click", () => {
-		window.open(
-			"https://viewer-ifc2lbd-neo.pages.dev/",
-			"_blank",
-			"noopener,noreferrer",
-		);
+		if (window.electronAPI?.isElectron) {
+			window.electronAPI.openViewer();
+		} else {
+			window.open(
+				"https://viewer-ifc2lbd-neo.pages.dev/",
+				"_blank",
+				"noopener,noreferrer",
+			);
+		}
 	});
 	document.querySelector("#btn-run")?.addEventListener("click", runConversion);
 	initMusic();
@@ -811,6 +700,12 @@ async function runConversionElectron() {
 			if (text) text.textContent = result.name;
 			const meta = document.querySelector("#rail-file-meta");
 			if (meta) meta.textContent = bytesToHuman(result.size);
+			// Update Model Name placeholder to show stripped filename
+			const stemInput = document.querySelector("#output-stem-input");
+			if (stemInput) {
+				const baseName = result.name.replace(/\.[^.]+$/, "");
+				stemInput.placeholder = `(auto: ${baseName})`;
+			}
 			log(`File: ${result.name} (${bytesToHuman(result.size)})`);
 		}
 	}
@@ -826,8 +721,8 @@ async function runConversionElectron() {
 	if (infoElReset) infoElReset.innerHTML = "";
 
 	try {
-		const { activeModules, moduleOptions, baseUri, outputStem, ifcFile } =
-			getState();
+		const { activeModules, moduleOptions, baseUri, ifcFile } = getState();
+		const outputStem = resolveOutputStem();
 
 		// Build module options array (same format as CLI --module-opt)
 		const moduleOptionsArr = [];
@@ -898,7 +793,18 @@ async function runConversionElectron() {
 			for (const file of result.files || []) {
 				const link = document.createElement("a");
 				link.className = "download-link";
-				link.textContent = `${file.filename} (${bytesToHuman(file.size)})`;
+				link.textContent = "";
+				const icon = document.createElement("span");
+				icon.className = "download-icon";
+				icon.textContent = "▼";
+				link.appendChild(icon);
+				const name = document.createElement("span");
+				name.textContent = file.filename;
+				link.appendChild(name);
+				const sizeBadge = document.createElement("span");
+				sizeBadge.className = "download-size";
+				sizeBadge.textContent = bytesToHuman(file.size);
+				link.appendChild(sizeBadge);
 				link.href = "#";
 				link.addEventListener("click", async (e) => {
 					e.preventDefault();
@@ -988,7 +894,8 @@ async function runConversion() {
 	if (infoElReset) infoElReset.innerHTML = "";
 
 	try {
-		const { activeModules, moduleOptions, baseUri, outputStem } = getState();
+		const { activeModules, moduleOptions, baseUri } = getState();
+		const outputStem = resolveOutputStem();
 		const moduleIds = [...activeModules];
 		const moduleOptionsArr = [];
 		for (const [pluginId, opts] of Object.entries(moduleOptions)) {
@@ -1350,7 +1257,18 @@ function renderDownloads(files) {
 		link.className = "download-link";
 		link.href = url;
 		link.download = file.filename;
-		link.textContent = `${file.filename} (${bytesToHuman(blob.size)})`;
+		link.textContent = "";
+		const icon = document.createElement("span");
+		icon.className = "download-icon";
+		icon.textContent = "▼";
+		link.appendChild(icon);
+		const name = document.createElement("span");
+		name.textContent = file.filename;
+		link.appendChild(name);
+		const sizeBadge = document.createElement("span");
+		sizeBadge.className = "download-size";
+		sizeBadge.textContent = bytesToHuman(blob.size);
+		link.appendChild(sizeBadge);
 		container.appendChild(link);
 	}
 }

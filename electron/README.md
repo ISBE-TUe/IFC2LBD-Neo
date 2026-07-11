@@ -38,6 +38,19 @@ cd electron && npm install && npm run dev
 Electron loads `http://localhost:3031` in development. The web app detects
 `window.electronAPI` and switches to the native CLI path automatically.
 
+The "Viewer" button opens the IFC2LBD-Neo Viewer (SPARQL + 3D viewer) in a
+new Electron window. In development, it loads `http://localhost:3004`; in
+packaged builds, it loads the bundled `renderer/viewer/index.html`. The
+viewer's COOP/COEP headers (for SharedArrayBuffer) are set via
+`session.webRequest.onHeadersReceived`.
+
+To run the viewer dev server alongside the pipeline:
+
+```bash
+# Terminal 3: start the viewer dev server
+cd viewer.IFC2LBD && npm run dev
+```
+
 ## Building
 
 The desktop apps are built by `.github/workflows/build-desktop.yml`, which
@@ -56,6 +69,10 @@ npm install
 npm run build:mac    # → release/*.dmg
 npm run build:win    # → release/*.exe
 ```
+
+The CI workflow also builds the viewer web app from
+`github.com/ISBE-TUe/viewer.IFC2LBD` and bundles it into
+`electron/renderer/viewer/`.
 
 ## Files
 

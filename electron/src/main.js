@@ -92,6 +92,61 @@ app.on("window-all-closed", () => {
 	if (process.platform !== "darwin") app.quit();
 });
 
+// ── IPC: Open Viewer window ─────────────────────────────────────────────────
+// Opens a new Electron window with the viewer web app (offline, bundled).
+// The viewer needs SharedArrayBuffer for oxigraph, so we set COOP/COEP
+// headers on its session.
+
+let viewerWindow = null;
+
+ipcMain.handle("viewer:open", async () => {
+	// Reuse existing window if still open
+	if (viewerWindow && !viewerWindow.isDestroyed()) {
+		viewerWindow.focus();
+		return;
+	}
+
+	viewerWindow = new BrowserWindow({
+		width: 1400,
+		height: 900,
+		minWidth: 900,
+		minHeight: 600,
+		title: "IFC2LBD-Neo Viewer",
+		webPreferences: {
+			contextIsolation: true,
+			nodeIntegration: false,
+		},
+	});
+
+	// Set COOP/COEP headers so the viewer gets crossOriginIsolated=true
+	// (required for SharedArrayBuffer used by the oxigraph worker)
+	viewerWindow.webContents.session.webRequest.onHeadersReceived(
+		(details, callback) => {
+			callback({
+				responseHeaders: {
+					...details.responseHeaders,
+					"Cross-Origin-Opener-Policy": ["same-origin"],
+					"Cross-Origin-Embedder-Policy": ["require-corp"],
+				},
+			});
+		},
+	);
+
+	const isDev = !app.isPackaged;
+	if (isDev) {
+		viewerWindow.loadURL("http://localhost:3004");
+		viewerWindow.webContents.openDevTools();
+	} else {
+		viewerWindow.loadFile(
+			join(__dirname, "..", "renderer", "viewer", "index.html"),
+		);
+	}
+
+	viewerWindow.on("closed", () => {
+		viewerWindow = null;
+	});
+});
+
 // ── IPC: File dialog ─────────────────────────────────────────────────────────
 
 ipcMain.handle("dialog:openFile", async () => {
@@ -167,7 +222,7 @@ ipcMain.handle("conversion:run", async (_event, request) => {
 		"--output",
 		outputFile,
 		"--base-uri",
-		request.baseUri || "https://lbd.example.com/",
+		request.baseUri || "https://lbd.org/",
 	];
 
 	if (request.inputFormat === "structured-data") {

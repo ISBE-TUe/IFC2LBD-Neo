@@ -2338,6 +2338,8 @@ fn run_geometry_pipeline(
     // Sidecar channel to collect geometry output bytes
     let (sidecar_tx, sidecar_rx) = crossbeam::channel::bounded(chan_cap);
     ctx.sidecar_tx = Some(sidecar_tx);
+    // Insert the output stem so the geometry producer names sidecar files correctly
+    ctx.insert(std::sync::Arc::new(settings.output_stem.clone()));
 
     let registry = crate::plugins::browser_registry();
 

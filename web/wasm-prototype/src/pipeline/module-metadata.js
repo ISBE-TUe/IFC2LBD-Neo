@@ -35,30 +35,30 @@ export const MODULES = [
 	// Preprocess
 	mod(
 		"neo-cleanup-preprocess",
-		"Cleanup",
+		"ASCII Repair",
 		"Preprocess",
-		"ASCII repair and property deduplication",
+		"Deduplicates IFC property occurrences and normalizes property payload quality",
 		"Optional",
 	),
 	mod(
 		"neo-bsdd-match-preprocess",
-		"bSDD Match",
+		"bSDD Matcher",
 		"Preprocess",
-		"Match properties to bSDD dictionaries",
+		"Precomputes bSDD fuzzy/exact match cache shared by producers",
 		"Optional",
 	),
 	mod(
 		"neo-qto-preprocess",
-		"QTO",
+		"QTO Rebuild",
 		"Preprocess",
-		"QTO reconstruction from geometry",
+		"Detects missing IFC quantity sets and computes them from STEP geometry",
 		"Optional",
 	),
 	mod(
 		"neo-geometry-preprocess",
-		"Geometry",
+		"Geometry preprocessor",
 		"Preprocess",
-		"Tessellate and prepare geometry for streaming",
+		"Tessellates IFC geometry using ifc-lite and stores TessellatedModel in context",
 		"Optional",
 		["metadata"],
 	),
@@ -93,7 +93,7 @@ export const MODULES = [
 	),
 	mod(
 		"neo-props-opm",
-		"Props OPM",
+		"Props-OPM",
 		"Produce",
 		"OPM property set modeling",
 		"Required",
@@ -102,7 +102,7 @@ export const MODULES = [
 	),
 	mod(
 		"neo-omg-fog",
-		"OMG/FOG",
+		"OMG-FOG",
 		"Produce",
 		"Ontology for Managing Geometry / Fog features",
 		"Required",
@@ -120,9 +120,9 @@ export const MODULES = [
 	),
 	mod(
 		"neo-geometry-producer",
-		"Geo Sidecar",
+		"Geometry producer",
 		"Produce",
-		"Geometry sidecar files (Fragments/glTF/Parquet)",
+		"Serializes tessellated geometry to fragments, glTF, Parquet or IFC5",
 		"Optional",
 		["format"],
 	),
@@ -148,7 +148,7 @@ export const MODULES = [
 	// Serialize
 	mod(
 		"neo-turtle-serializer",
-		"Turtle",
+		"Turtle serializer",
 		"Serialize",
 		"Turtle RDF serialization",
 		"Required",
@@ -156,7 +156,7 @@ export const MODULES = [
 	),
 	mod(
 		"neo-nquads-serializer",
-		"N-Quads",
+		"N-Quads serializer",
 		"Serialize",
 		"N-Quads serialization with named graphs",
 		"Required",
@@ -164,7 +164,7 @@ export const MODULES = [
 	),
 	mod(
 		"neo-nquads-chunked-serializer",
-		"N-Quads Chunked",
+		"N-Quads chunked serializer",
 		"Serialize",
 		"Chunked N-Quads for large datasets",
 		"Required",
@@ -180,7 +180,7 @@ export const MODULES = [
 	// Export
 	mod(
 		"neo-file-export",
-		"File Export",
+		"File exporter",
 		"Export",
 		"Write output files to disk",
 		"Required",

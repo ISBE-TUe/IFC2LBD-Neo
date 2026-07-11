@@ -27,8 +27,8 @@ const state = {
 			compress: "gzip",
 		},
 	},
-	baseUri: "https://lbd.example.com/",
-	outputStem: "converted-model",
+	baseUri: "https://lbd.org/",
+	outputStem: "",
 	ifcFile: null,
 	ifcFileBytes: null,
 	structuredDataFiles: null, // File[] or null (array for directory mode)

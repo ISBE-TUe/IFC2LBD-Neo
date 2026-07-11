@@ -143,16 +143,17 @@
                 type="text"
                 class="rail-input"
                 id="base-uri-input"
-                value="https://lbd.example.com/"
+                value="https://lbd.org/"
               />
             </div>
             <div class="rail-field">
-              <span class="rail-field-label">Stem</span>
+              <span class="rail-field-label">Model Name</span>
               <input
                 type="text"
                 class="rail-input"
                 id="output-stem-input"
-                value="converted-model"
+                value=""
+                placeholder="(auto from filename)"
               />
             </div>
           </div>
@@ -206,8 +207,11 @@
 
       <!-- Bottom Bar -->
       <div class="bottom-bar">
-        <div class="downloads-bar" id="downloads">
-          <span class="downloads-empty">No files.</span>
+        <div class="downloads-bar">
+          <span class="downloads-header">OUTPUT</span>
+          <div class="downloads-list" id="downloads">
+            <span class="downloads-empty">No files.</span>
+          </div>
         </div>
         <div class="log-bar">
           <div class="log-header" id="log-toggle">▾ LOG</div>

@@ -379,6 +379,14 @@ fn main() -> anyhow::Result<()> {
         settings.nquads.graph_naming,
     );
     ctx.insert(std::sync::Arc::new(OutputDir(output_dir.clone())));
+    // Insert the output stem so the geometry producer can name sidecar files
+    // (e.g. "duplex.frag" instead of "model.frag").
+    let output_stem = Path::new(&lbd_filename)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("model")
+        .to_string();
+    ctx.insert(std::sync::Arc::new(output_stem));
     if settings.compress_output {
         ctx.insert(std::sync::Arc::new(pipeline_plugins::CompressOutput(true)));
     }
