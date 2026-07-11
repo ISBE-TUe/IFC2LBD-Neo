@@ -78,6 +78,10 @@ function createWindow() {
 		}
 		return { action: "allow" };
 	});
+
+	// Set up COOP/COEP on the main window session from the start so the
+	// viewer gets crossOriginIsolated when loaded (SharedArrayBuffer).
+	setupCrossOriginIsolation(mainWindow);
 }
 
 app.whenReady().then(() => {
@@ -112,10 +116,6 @@ function setupCrossOriginIsolation(win) {
 		},
 	);
 }
-
-// Set up COOP/COEP on the main window from the start so the viewer
-// gets crossOriginIsolated when loaded.
-setupCrossOriginIsolation(mainWindow);
 
 ipcMain.handle("viewer:open", async () => {
 	const isDev = !app.isPackaged;
