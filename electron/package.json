@@ -19,7 +19,7 @@
   "build": {
     "appId": "io.github.isbe-tue.ifc2lbd-neo",
     "productName": "ifc2lbd-neo",
-    "artifactName": "ifc2lbd-neo-desktop-${version}-${arch}.${ext}",
+    "artifactName": "ifc2lbd-neo-desktop-${arch}.${ext}",
     "directories": {
       "output": "release",
       "buildResources": "build"

@@ -9,9 +9,9 @@ High-performance Rust converter from IFC STEP to LBD, IfcOWL, and 3D geometry (F
 | Platform | Link |
 |----------|------|
 | **Web App** (runs in browser, no installation) | [ifc2lbd-neo.pages.dev](https://ifc2lbd-neo.pages.dev) |
-| **macOS Desktop** (`.dmg`, Apple Silicon) | [GitHub Releases](https://github.com/ISBE-TUe/IFC2LBD-Neo/releases/latest) |
-| **Windows Desktop** (`.exe`, x64 installer) | [GitHub Releases](https://github.com/ISBE-TUe/IFC2LBD-Neo/releases/latest) |
-| **CLI Binaries** (Linux, macOS, Windows) | [GitHub Releases](https://github.com/ISBE-TUe/IFC2LBD-Neo/releases/latest) |
+| **macOS Desktop** (`.dmg`, Apple Silicon) | [Download](https://github.com/ISBE-TUe/IFC2LBD-Neo/releases/latest/download/ifc2lbd-neo-desktop-arm64.dmg) |
+| **Windows Desktop** (`.exe`, x64 installer) | [Download](https://github.com/ISBE-TUe/IFC2LBD-Neo/releases/latest/download/ifc2lbd-neo-desktop-x64.exe) |
+| **CLI Binaries** (Linux, macOS, Windows) | [Latest Release](https://github.com/ISBE-TUe/IFC2LBD-Neo/releases/latest) |
 
 > **macOS**: The desktop app and CLI binary are not Apple-code-signed. After installing, run this in Terminal before opening:
 > ```bash
