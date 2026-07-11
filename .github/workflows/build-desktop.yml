@@ -74,7 +74,7 @@ jobs:
       # 2b. Build and stage the viewer web app
       - name: Clone viewer repo
         run: |
-          git clone https://github.com/ISBE-TUe/viewer.IFC2LBD.git "$RUNNER_TEMP/viewer"
+          git clone https://x-access-token:${{ secrets.VIEWER_REPO_TOKEN }}@github.com/ISBE-TUe/viewer.IFC2LBD.git "$RUNNER_TEMP/viewer"
 
       - name: Install viewer dependencies
         working-directory: ${{ runner.temp }}/viewer
@@ -166,7 +166,7 @@ jobs:
       - name: Clone viewer repo
         shell: bash
         run: |
-          git clone https://github.com/ISBE-TUe/viewer.IFC2LBD.git "$RUNNER_TEMP/viewer"
+          git clone https://x-access-token:${{ secrets.VIEWER_REPO_TOKEN }}@github.com/ISBE-TUe/viewer.IFC2LBD.git "$RUNNER_TEMP/viewer"
 
       - name: Install viewer dependencies
         working-directory: ${{ runner.temp }}/viewer
