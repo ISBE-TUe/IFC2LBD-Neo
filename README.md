@@ -4,14 +4,14 @@ High-performance Rust converter from IFC STEP to LBD, IfcOWL, and 3D geometry (F
 
 ---
 
-## Try It
+## Try It Now
 
 | Platform | Link |
 |----------|------|
-| 🌐 **Web App** | [ifc2lbd-neo.pages.dev](https://ifc2lbd-neo.pages.dev) — runs entirely in your browser, no installation |
-| 🖥️ **macOS Desktop** | [Download .dmg](https://github.com/ISBE-TUe/IFC2LBD-Neo/releases/latest/download/ifc2lbd-neo-desktop-0.1.0-arm64.dmg) (Apple Silicon) |
-| 🪟 **Windows Desktop** | [Download .exe](https://github.com/ISBE-TUe/IFC2LBD-Neo/releases/latest/download/ifc2lbd-neo-desktop-0.1.0-x64.exe) (x64 installer) |
-| 📦 **CLI Binaries** | [Latest Release](https://github.com/ISBE-TUe/IFC2LBD-Neo/releases/latest) — Linux, macOS, Windows |
+| 🌐 **Web App** (no install, runs in browser) | **[ifc2lbd-neo.pages.dev](https://ifc2lbd-neo.pages.dev)** |
+| 🔍 **Viewer** (SPARQL + 3D model viewer) | **[viewer-ifc2lbd-neo.pages.dev](https://viewer-ifc2lbd-neo.pages.dev)** |
+| 🖥️ **Desktop App** (macOS `.dmg`, Windows `.exe`) | **[GitHub Releases](https://github.com/ISBE-TUe/IFC2LBD-Neo/releases/latest)** |
+| 📦 **CLI Binary** (Linux, macOS, Windows) | **[GitHub Releases](https://github.com/ISBE-TUe/IFC2LBD-Neo/releases/latest)** |
 
 > **⚠️ macOS**: The desktop app and CLI binary are not Apple-code-signed. After installing, run this in Terminal before opening:
 > ```bash
