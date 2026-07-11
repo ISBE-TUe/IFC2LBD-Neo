@@ -31,8 +31,11 @@ contextBridge.exposeInMainWorld("electronAPI", {
 		return () => ipcRenderer.removeListener("conversion:stageEvent", handler);
 	},
 
-	// Open the viewer in a new Electron window (offline, bundled)
+	// Navigate to the viewer in the same window (offline, bundled)
 	openViewer: () => ipcRenderer.invoke("viewer:open"),
+
+	// Navigate back to the converter from the viewer
+	navigateBack: () => ipcRenderer.invoke("viewer:navigateBack"),
 
 	// Open URL in external browser (for download links that don't work in file://)
 	openExternal: (url) => ipcRenderer.invoke("shell:openExternal", { url }),

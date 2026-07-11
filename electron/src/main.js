@@ -92,35 +92,15 @@ app.on("window-all-closed", () => {
 	if (process.platform !== "darwin") app.quit();
 });
 
-// ── IPC: Open Viewer window ─────────────────────────────────────────────────
-// Opens a new Electron window with the viewer web app (offline, bundled).
-// The viewer needs SharedArrayBuffer for oxigraph, so we set COOP/COEP
-// headers on its session.
+// ── IPC: Navigate to Viewer (same window) ────────────────────────────────────
+// Navigates the main window to the viewer web app (no new window).
+// The viewer needs SharedArrayBuffer for oxigraph, so COOP/COEP headers
+// must be set on the main window's session.
 
-let viewerWindow = null;
+let isViewerLoaded = false;
 
-ipcMain.handle("viewer:open", async () => {
-	// Reuse existing window if still open
-	if (viewerWindow && !viewerWindow.isDestroyed()) {
-		viewerWindow.focus();
-		return;
-	}
-
-	viewerWindow = new BrowserWindow({
-		width: 1400,
-		height: 900,
-		minWidth: 900,
-		minHeight: 600,
-		title: "IFC2LBD-Neo Viewer",
-		webPreferences: {
-			contextIsolation: true,
-			nodeIntegration: false,
-		},
-	});
-
-	// Set COOP/COEP headers so the viewer gets crossOriginIsolated=true
-	// (required for SharedArrayBuffer used by the oxigraph worker)
-	viewerWindow.webContents.session.webRequest.onHeadersReceived(
+function setupCrossOriginIsolation(win) {
+	win.webContents.session.webRequest.onHeadersReceived(
 		(details, callback) => {
 			callback({
 				responseHeaders: {
@@ -131,20 +111,34 @@ ipcMain.handle("viewer:open", async () => {
 			});
 		},
 	);
+}
 
+// Set up COOP/COEP on the main window from the start so the viewer
+// gets crossOriginIsolated when loaded.
+setupCrossOriginIsolation(mainWindow);
+
+ipcMain.handle("viewer:open", async () => {
 	const isDev = !app.isPackaged;
+	isViewerLoaded = true;
 	if (isDev) {
-		viewerWindow.loadURL("http://localhost:3004");
-		viewerWindow.webContents.openDevTools();
+		mainWindow.loadURL("http://localhost:3004");
 	} else {
-		viewerWindow.loadFile(
+		mainWindow.loadFile(
 			join(__dirname, "..", "renderer", "viewer", "index.html"),
 		);
 	}
+	mainWindow.title = "IFC2LBD-Neo Debug Viewer";
+});
 
-	viewerWindow.on("closed", () => {
-		viewerWindow = null;
-	});
+ipcMain.handle("viewer:navigateBack", async () => {
+	const isDev = !app.isPackaged;
+	isViewerLoaded = false;
+	if (isDev) {
+		mainWindow.loadURL("http://localhost:3031");
+	} else {
+		mainWindow.loadFile(join(__dirname, "..", "renderer", "index.html"));
+	}
+	mainWindow.title = "IFC2LBD-Neo";
 });
 
 // ── IPC: File dialog ─────────────────────────────────────────────────────────
