@@ -145,6 +145,12 @@ jobs:
             - **Linux**: `ifc2lbd-neo-cli-linux` (x86_64)
             - **macOS**: `ifc2lbd-neo-cli-macos` (Apple Silicon, arm64)
             - **Windows**: `ifc2lbd-neo-cli-windows.exe` (x86_64)
+
+            > **⚠️ macOS**: The binary is not Apple-code-signed. After downloading, make it executable and remove the quarantine attribute:
+            > ```bash
+            > chmod +x ifc2lbd-neo-cli-macos
+            > xattr -cr ifc2lbd-neo-cli-macos
+            > ```
           files: |
             artifacts/ifc2lbd-neo-cli-linux/ifc2lbd-neo-cli-linux
             artifacts/ifc2lbd-neo-cli-macos/ifc2lbd-neo-cli-macos
