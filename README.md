@@ -4,6 +4,22 @@ High-performance Rust converter from IFC STEP to LBD, IfcOWL, and 3D geometry (F
 
 ---
 
+## Try It
+
+| Platform | Link |
+|----------|------|
+| 🌐 **Web App** | [ifc2lbd-neo.pages.dev](https://ifc2lbd-neo.pages.dev) — runs entirely in your browser, no installation |
+| 🖥️ **macOS Desktop** | [Download .dmg](https://github.com/ISBE-TUe/IFC2LBD-Neo/releases/latest/download/ifc2lbd-neo-desktop-0.1.0-arm64.dmg) (Apple Silicon) |
+| 🪟 **Windows Desktop** | [Download .exe](https://github.com/ISBE-TUe/IFC2LBD-Neo/releases/latest/download/ifc2lbd-neo-desktop-0.1.0-x64.exe) (x64 installer) |
+| 📦 **CLI Binaries** | [Latest Release](https://github.com/ISBE-TUe/IFC2LBD-Neo/releases/latest) — Linux, macOS, Windows |
+
+> **⚠️ macOS**: The desktop app and CLI binary are not Apple-code-signed. After installing, run this in Terminal before opening:
+> ```bash
+> xattr -cr /Applications/IFC2LBD-Neo.app
+> ```
+
+---
+
 ## Overview
 
 IFC2LBD-Neo reads IFC STEP files (or structured data) and produces RDF output in Turtle or N-Quads format, plus optional 3D geometry sidecars. The conversion pipeline is driven entirely by explicit module selection — there are no implicit profiles or hidden defaults. Every active preprocessor, producer, serializer, and exporter must be named on the command line (or selected in the web UI).
