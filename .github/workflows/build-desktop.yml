@@ -74,20 +74,20 @@ jobs:
       # 2b. Build and stage the viewer web app
       - name: Clone viewer repo
         run: |
-          git clone https://github.com/ISBE-TUe/viewer.IFC2LBD.git /tmp/viewer
+          git clone https://github.com/ISBE-TUe/viewer.IFC2LBD.git "$RUNNER_TEMP/viewer"
 
       - name: Install viewer dependencies
-        working-directory: /tmp/viewer
+        working-directory: ${{ runner.temp }}/viewer
         run: npm ci
 
       - name: Build viewer
-        working-directory: /tmp/viewer
+        working-directory: ${{ runner.temp }}/viewer
         run: npm run build
 
       - name: Stage viewer
         run: |
           mkdir -p electron/renderer/viewer
-          cp -r /tmp/viewer/dist/* electron/renderer/viewer/
+          cp -r "$RUNNER_TEMP/viewer/dist/"* electron/renderer/viewer/
 
       # 3. Install Electron dependencies
       - name: Install Electron dependencies
@@ -166,21 +166,21 @@ jobs:
       - name: Clone viewer repo
         shell: bash
         run: |
-          git clone https://github.com/ISBE-TUe/viewer.IFC2LBD.git /tmp/viewer
+          git clone https://github.com/ISBE-TUe/viewer.IFC2LBD.git "$RUNNER_TEMP/viewer"
 
       - name: Install viewer dependencies
-        working-directory: /tmp/viewer
+        working-directory: ${{ runner.temp }}/viewer
         run: npm ci
 
       - name: Build viewer
-        working-directory: /tmp/viewer
+        working-directory: ${{ runner.temp }}/viewer
         run: npm run build
 
       - name: Stage viewer
         shell: bash
         run: |
           mkdir -p electron/renderer/viewer
-          cp -r /tmp/viewer/dist/* electron/renderer/viewer/
+          cp -r "$RUNNER_TEMP/viewer/dist/"* electron/renderer/viewer/
 
 
 
