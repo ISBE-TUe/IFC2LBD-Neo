@@ -8,12 +8,12 @@ High-performance Rust converter from IFC STEP to LBD, IfcOWL, and 3D geometry (F
 
 | Platform | Link |
 |----------|------|
-| 🌐 **Web App** (no install, runs in browser) | **[ifc2lbd-neo.pages.dev](https://ifc2lbd-neo.pages.dev)** |
-| 🔍 **Viewer** (SPARQL + 3D model viewer) | **[viewer-ifc2lbd-neo.pages.dev](https://viewer-ifc2lbd-neo.pages.dev)** |
-| 🖥️ **Desktop App** (macOS `.dmg`, Windows `.exe`) | **[GitHub Releases](https://github.com/ISBE-TUe/IFC2LBD-Neo/releases/latest)** |
-| 📦 **CLI Binary** (Linux, macOS, Windows) | **[GitHub Releases](https://github.com/ISBE-TUe/IFC2LBD-Neo/releases/latest)** |
+| **Web App** (no install, runs in browser) | **[ifc2lbd-neo.pages.dev](https://ifc2lbd-neo.pages.dev)** |
+| **Viewer** (SPARQL + 3D model viewer) | **[viewer-ifc2lbd-neo.pages.dev](https://viewer-ifc2lbd-neo.pages.dev)** |
+| **Desktop App** (macOS `.dmg`, Windows `.exe`) | **[GitHub Releases](https://github.com/ISBE-TUe/IFC2LBD-Neo/releases/latest)** |
+| **CLI Binary** (Linux, macOS, Windows) | **[GitHub Releases](https://github.com/ISBE-TUe/IFC2LBD-Neo/releases/latest)** |
 
-> **⚠️ macOS**: The desktop app and CLI binary are not Apple-code-signed. After installing, run this in Terminal before opening:
+> **macOS**: The desktop app and CLI binary are not Apple-code-signed. After installing, run this in Terminal before opening:
 > ```bash
 > xattr -cr /Applications/IFC2LBD-Neo.app
 > ```
@@ -24,11 +24,12 @@ High-performance Rust converter from IFC STEP to LBD, IfcOWL, and 3D geometry (F
 
 IFC2LBD-Neo reads IFC STEP files (or structured data) and produces RDF output in Turtle or N-Quads format, plus optional 3D geometry sidecars. The conversion pipeline is driven entirely by explicit module selection — there are no implicit profiles or hidden defaults. Every active preprocessor, producer, serializer, and exporter must be named on the command line (or selected in the web UI).
 
-The project ships three artefacts:
+The project ships four artefacts:
 
 - `ifc2lbd-neo` — command-line binary (native, full feature set)
 - `ifc2lbd-wasm` — WebAssembly library for in-browser conversion
 - Web prototype — browser UI at [ifc2lbd-neo.pages.dev](https://ifc2lbd-neo.pages.dev)
+- Desktop app — Electron app wrapping the web UI with native CLI sidecar (macOS + Windows)
 
 ---
 
@@ -219,13 +220,13 @@ cargo build --release -p ifc2lbd-cli --bin ifc2lbd-neo
 CLI binary for Linux x86_64 (e.g. cross-building from macOS) — uses Docker:
 
 ```bash
-bash scripts/build_linux_cli.sh   # -> ./ifc2lbd-neo-linux-x86_64
+bash scripts/build_all_cli.sh   # -> ./ifc2lbd-neo-linux-x86_64
 ```
 
 `cross` does not work in this repo because of the nightly rustup override used
 for WASM; the script builds inside a Linux `rust` container instead. The cargo
 registry and target dir are cached, so only the first run is slow. See the
-header of [scripts/build_linux_cli.sh](scripts/build_linux_linux_cli.sh) for details.
+header of [scripts/build_all_cli.sh](scripts/build_all_cli.sh) for details.
 
 WebAssembly library (requires Rust nightly and wasm-bindgen-cli):
 
@@ -264,7 +265,7 @@ Features:
 - IFC file import (file picker + directory picker)
 - Structured data import (JSON/CSV/XML) — click the "Parse Structured Data" module in the Import column to select files
 - Module pipeline grid with clickable activation circles
-- Preset configurations (Default, Geometry, IfcOWL, RML, Ontology — Turtle/N-Quads)
+- Preset configurations (Default, Default + IfcOWL, Default + Geometry)
 - Compressed mode toggle (bSDD compact+dedup + gzip export)
 - CLI command generator with download bin buttons (Linux/macOS/Windows)
 - Citation widget (paper link + BibTeX copy)
@@ -398,7 +399,7 @@ The desktop app wraps the web UI in Electron and replaces the WASM conversion en
 - **macOS**: `.dmg` (Apple Silicon)
 - **Windows**: `.exe` (NSIS installer, x64)
 
-Desktop installers are built by `.github/workflows/build-desktop.yml` and published to the same GitHub Release as the CLI binaries. See [`electron/README.md`](electron/README.md) for architecture and development details.
+Desktop installers are built by `.github/workflows/build-desktop.yml` and published to the same GitHub Release as the CLI binaries. The desktop app also bundles the [IFC2LBD-Neo Viewer](https://github.com/ISBE-TUe/viewer.IFC2LBD) as a built-in offline SPARQL + 3D viewer. See [`electron/README.md`](electron/README.md) for architecture and development details.
 
 ---
 
