@@ -144,7 +144,7 @@ ipcMain.handle("viewer:open", async () => {
 	if (isDev) {
 		mainWindow.loadURL("http://localhost:3004");
 	} else {
-		mainWindow.loadURL("viewer://viewer/index.html");
+		mainWindow.loadURL("viewer://app/index.html");
 	}
 	mainWindow.title = "IFC2LBD-Neo Debug Viewer";
 });
