@@ -16,6 +16,7 @@ const {
 	mkdirSync,
 	rmSync,
 	writeFileSync,
+	readFileSync,
 	readdirSync,
 	statSync,
 	copyFileSync,
@@ -139,6 +140,29 @@ ipcMain.handle("viewer:navigateBack", async () => {
 		mainWindow.loadFile(join(__dirname, "..", "renderer", "index.html"));
 	}
 	mainWindow.title = "IFC2LBD-Neo";
+});
+
+// ── IPC: Read viewer asset file (for workers in file:// protocol) ───────────
+// In Electron's file:// protocol, fetch() and new Worker() with file://
+// URLs are blocked. The renderer asks the main process to read the file
+// and returns the content as a base64 string, which the renderer converts
+// to a blob URL for Worker creation.
+
+ipcMain.handle("viewer:readAsset", async (_event, filename) => {
+	const isDev = !app.isPackaged;
+	let assetPath;
+	if (isDev) {
+		// Dev: viewer is served by Vite at localhost:3004
+		return null;
+	}
+	assetPath = join(__dirname, "..", "renderer", "viewer", filename);
+	try {
+		const content = readFileSync(assetPath);
+		return content.toString("base64");
+	} catch (err) {
+		console.error(`Failed to read viewer asset ${filename}:`, err);
+		return null;
+	}
 });
 
 // ── IPC: File dialog ─────────────────────────────────────────────────────────
