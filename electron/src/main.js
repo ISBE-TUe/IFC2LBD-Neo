@@ -90,7 +90,7 @@ app.whenReady().then(() => {
 	// In file:// protocol, new Worker() and dynamic imports are blocked.
 	// The viewer:// protocol serves files from the renderer/viewer/ directory
 	// with proper COOP/COEP headers, allowing workers and imports to work.
-	protocol.handle("viewer", (request) => {
+	protocol.handle("viewer", async (request) => {
 		const url = new URL(request.url);
 		let filename = url.pathname;
 		if (filename.startsWith("/")) filename = filename.slice(1);
@@ -104,7 +104,17 @@ app.whenReady().then(() => {
 		}
 
 		const filePath = join(viewerDir, filename);
-		return net.fetch(`file://${filePath}`);
+		const response = await net.fetch(`file://${filePath}`);
+		// Clone the response with COOP/COEP headers so the viewer gets
+		// crossOriginIsolated=true (required for SharedArrayBuffer).
+		const headers = new Headers(response.headers);
+		headers.set("Cross-Origin-Opener-Policy", "same-origin");
+		headers.set("Cross-Origin-Embedder-Policy", "require-corp");
+		return new Response(response.body, {
+			status: response.status,
+			statusText: response.statusText,
+			headers,
+		});
 	});
 
 	createWindow();
