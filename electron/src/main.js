@@ -10,8 +10,9 @@
 // The renderer (web app) detects Electron via `window.electronAPI` and
 // uses IPC instead of the WASM worker for conversions.
 
-const { app, BrowserWindow, ipcMain, dialog, shell, protocol, net } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, shell } = require("electron");
 const { spawn } = require("node:child_process");
+const { createServer } = require("node:http");
 const {
 	mkdirSync,
 	rmSync,
@@ -19,8 +20,9 @@ const {
 	readdirSync,
 	statSync,
 	copyFileSync,
+	readFileSync,
 } = require("node:fs");
-const { join, basename, extname } = require("node:path");
+const { join, basename, extname, extname: _ext } = require("node:path");
 const { tmpdir } = require("node:os");
 
 // In CommonJS, __dirname is already defined by Node.js — no need to set it.
@@ -55,7 +57,7 @@ function createWindow() {
 			preload: join(__dirname, "preload.js"),
 			contextIsolation: true,
 			nodeIntegration: false,
-			webSecurity: false,
+			webSecurity: true,
 		},
 	});
 
@@ -80,43 +82,10 @@ function createWindow() {
 		return { action: "allow" };
 	});
 
-	// Set up COOP/COEP on the main window session from the start so the
-	// viewer gets crossOriginIsolated when loaded (SharedArrayBuffer).
-	setupCrossOriginIsolation(mainWindow);
+	// COOP/COEP headers for the viewer are set by the local HTTP server.
 }
 
 app.whenReady().then(() => {
-	// Register a custom protocol to serve viewer assets in Electron.
-	// In file:// protocol, new Worker() and dynamic imports are blocked.
-	// The viewer:// protocol serves files from the renderer/viewer/ directory
-	// with proper COOP/COEP headers, allowing workers and imports to work.
-	protocol.handle("viewer", async (request) => {
-		const url = new URL(request.url);
-		let filename = url.pathname;
-		if (filename.startsWith("/")) filename = filename.slice(1);
-
-		const isDev = !app.isPackaged;
-		const viewerDir = isDev
-			? null
-			: join(__dirname, "..", "renderer", "viewer");
-		if (!viewerDir) {
-			return new Response("Not available in dev mode", { status: 404 });
-		}
-
-		const filePath = join(viewerDir, filename);
-		const response = await net.fetch(`file://${filePath}`);
-		// Clone the response with COOP/COEP headers so the viewer gets
-		// crossOriginIsolated=true (required for SharedArrayBuffer).
-		const headers = new Headers(response.headers);
-		headers.set("Cross-Origin-Opener-Policy", "same-origin");
-		headers.set("Cross-Origin-Embedder-Policy", "require-corp");
-		return new Response(response.body, {
-			status: response.status,
-			statusText: response.statusText,
-			headers,
-		});
-	});
-
 	createWindow();
 
 	app.on("activate", () => {
@@ -124,30 +93,72 @@ app.whenReady().then(() => {
 	});
 });
 
+// ── Local HTTP server for viewer (packaged mode) ─────────────────────────────
+// In Electron's file:// protocol, fetch(), new Worker(), and dynamic import()
+// are all blocked. A local HTTP server serves the viewer files with proper
+// COOP/COEP headers so SharedArrayBuffer works.
+
+let viewerServer = null;
+
+function startViewerServer() {
+	if (viewerServer) return viewerServer;
+	const viewerDir = join(__dirname, "..", "renderer", "viewer");
+	const MIME = {
+		".html": "text/html",
+		".js": "text/javascript",
+		".mjs": "text/javascript",
+		".css": "text/css",
+		".json": "application/json",
+		".wasm": "application/wasm",
+		".png": "image/png",
+		".svg": "image/svg+xml",
+		".woff": "font/woff",
+		".woff2": "font/woff2",
+		".rq": "application/sparql-query",
+		".frag": "application/octet-stream",
+		".gz": "application/gzip",
+	};
+	viewerServer = createServer((req, res) => {
+		let path = req.url === "/" ? "/index.html" : req.url;
+		// Strip query string
+		path = path.split("?")[0];
+		// Remove leading /
+		if (path.startsWith("/")) path = path.slice(1);
+		const filePath = join(viewerDir, path);
+		try {
+			const content = readFileSync(filePath);
+			const ext = extname(filePath).toLowerCase();
+			res.writeHead(200, {
+				"Content-Type": MIME[ext] || "application/octet-stream",
+				"Cross-Origin-Opener-Policy": "same-origin",
+				"Cross-Origin-Embedder-Policy": "require-corp",
+			});
+			res.end(content);
+		} catch {
+			res.writeHead(404);
+			res.end("Not found");
+		}
+	});
+	viewerServer.listen(0, "127.0.0.1");
+	return viewerServer;
+}
+
+function getViewerUrl() {
+	const server = startViewerServer();
+	const port = server.address().port;
+	return `http://127.0.0.1:${port}/`;
+}
+
 app.on("window-all-closed", () => {
 	if (process.platform !== "darwin") app.quit();
 });
 
 // ── IPC: Navigate to Viewer (same window) ────────────────────────────────────
 // Navigates the main window to the viewer web app (no new window).
-// The viewer needs SharedArrayBuffer for oxigraph, so COOP/COEP headers
-// must be set on the main window's session.
+// The viewer is served by a local HTTP server with COOP/COEP headers
+// so SharedArrayBuffer works (needed for oxigraph and fragments workers).
 
 let isViewerLoaded = false;
-
-function setupCrossOriginIsolation(win) {
-	win.webContents.session.webRequest.onHeadersReceived(
-		(details, callback) => {
-			callback({
-				responseHeaders: {
-					...details.responseHeaders,
-					"Cross-Origin-Opener-Policy": ["same-origin"],
-					"Cross-Origin-Embedder-Policy": ["require-corp"],
-				},
-			});
-		},
-	);
-}
 
 ipcMain.handle("viewer:open", async () => {
 	const isDev = !app.isPackaged;
@@ -155,7 +166,7 @@ ipcMain.handle("viewer:open", async () => {
 	if (isDev) {
 		mainWindow.loadURL("http://localhost:3004");
 	} else {
-		mainWindow.loadURL("viewer://app/index.html");
+		mainWindow.loadURL(getViewerUrl());
 	}
 	mainWindow.title = "IFC2LBD-Neo Debug Viewer";
 });
