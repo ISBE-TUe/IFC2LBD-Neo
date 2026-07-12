@@ -10,13 +10,12 @@
 // The renderer (web app) detects Electron via `window.electronAPI` and
 // uses IPC instead of the WASM worker for conversions.
 
-const { app, BrowserWindow, ipcMain, dialog, shell } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, shell, protocol, net } = require("electron");
 const { spawn } = require("node:child_process");
 const {
 	mkdirSync,
 	rmSync,
 	writeFileSync,
-	readFileSync,
 	readdirSync,
 	statSync,
 	copyFileSync,
@@ -86,6 +85,27 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+	// Register a custom protocol to serve viewer assets in Electron.
+	// In file:// protocol, new Worker() and dynamic imports are blocked.
+	// The viewer:// protocol serves files from the renderer/viewer/ directory
+	// with proper COOP/COEP headers, allowing workers and imports to work.
+	protocol.handle("viewer", (request) => {
+		const url = new URL(request.url);
+		let filename = url.pathname;
+		if (filename.startsWith("/")) filename = filename.slice(1);
+
+		const isDev = !app.isPackaged;
+		const viewerDir = isDev
+			? null
+			: join(__dirname, "..", "renderer", "viewer");
+		if (!viewerDir) {
+			return new Response("Not available in dev mode", { status: 404 });
+		}
+
+		const filePath = join(viewerDir, filename);
+		return net.fetch(`file://${filePath}`);
+	});
+
 	createWindow();
 
 	app.on("activate", () => {
@@ -124,9 +144,7 @@ ipcMain.handle("viewer:open", async () => {
 	if (isDev) {
 		mainWindow.loadURL("http://localhost:3004");
 	} else {
-		mainWindow.loadFile(
-			join(__dirname, "..", "renderer", "viewer", "index.html"),
-		);
+		mainWindow.loadURL("viewer://viewer/index.html");
 	}
 	mainWindow.title = "IFC2LBD-Neo Debug Viewer";
 });
@@ -147,23 +165,6 @@ ipcMain.handle("viewer:navigateBack", async () => {
 // URLs are blocked. The renderer asks the main process to read the file
 // and returns the content as a base64 string, which the renderer converts
 // to a blob URL for Worker creation.
-
-ipcMain.handle("viewer:readAsset", async (_event, filename) => {
-	const isDev = !app.isPackaged;
-	let assetPath;
-	if (isDev) {
-		// Dev: viewer is served by Vite at localhost:3004
-		return null;
-	}
-	assetPath = join(__dirname, "..", "renderer", "viewer", filename);
-	try {
-		const content = readFileSync(assetPath);
-		return content.toString("base64");
-	} catch (err) {
-		console.error(`Failed to read viewer asset ${filename}:`, err);
-		return null;
-	}
-});
 
 // ── IPC: File dialog ─────────────────────────────────────────────────────────
 

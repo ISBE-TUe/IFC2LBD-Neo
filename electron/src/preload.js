@@ -37,9 +37,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
 	// Navigate back to the converter from the viewer
 	navigateBack: () => ipcRenderer.invoke("viewer:navigateBack"),
 
-	// Read a viewer asset file (for workers in file:// protocol)
-	readAsset: (filename) => ipcRenderer.invoke("viewer:readAsset", filename),
-
 	// Open URL in external browser (for download links that don't work in file://)
 	openExternal: (url) => ipcRenderer.invoke("shell:openExternal", { url }),
 
