@@ -62,7 +62,16 @@ fn forward_as_tagged(
     kind: BatchKind,
     tagged_sender: Sender<TaggedBatch>,
 ) {
-    rayon::spawn(move || {
+    // Use std::thread::spawn (not rayon::spawn) so the relay does NOT occupy a
+    // rayon worker thread while blocked on channel send.
+    //
+    // Each producer spawns one forwarder. With 6 producers on a 14-thread pool,
+    // rayon::spawn forwarders would consume 6 of 14 threads just to block on
+    // channel I/O. When IfcOWL (rayon::scope, up to 12 sub-tasks) and bSDD
+    // (par_iter) also need rayon threads, the pool exhausts and deadlocks.
+    // OS threads are correct for I/O-bound relays — they sleep in the kernel
+    // when blocked, not in a rayon semaphore.
+    std::thread::spawn(move || {
         for batch in raw_receiver {
             if tagged_sender
                 .send(TaggedBatch {

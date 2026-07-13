@@ -140,7 +140,14 @@ fn forward_as_tagged(
     kind: BatchKind,
     tagged_sender: Sender<TaggedBatch>,
 ) {
-    rayon::spawn(move || {
+    // On native targets, use std::thread::spawn so the relay does NOT occupy a
+    // rayon worker thread while blocked on channel send. See pipeline_plugins.rs
+    // for the full deadlock explanation.
+    //
+    // On WASM, std::thread::spawn is unavailable; rayon::spawn is safe because
+    // the WASM thread pool is small (max_concurrent=1), so there is no pool
+    // exhaustion risk.
+    let relay = move || {
         for batch in raw_receiver {
             if tagged_sender
                 .send(TaggedBatch {
@@ -152,7 +159,11 @@ fn forward_as_tagged(
                 break;
             }
         }
-    });
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    std::thread::spawn(relay);
+    #[cfg(target_arch = "wasm32")]
+    rayon::spawn(relay);
 }
 
 pub(crate) fn js_err<E: ToString>(error: E) -> JsValue {
