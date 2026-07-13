@@ -12,6 +12,23 @@
     />
     <link rel="apple-touch-icon" href="./icon-1024.png" />
     <title>IFC2LBD-Neo Pipeline</title>
+    <script>
+      // Set 70% zoom on mobile/touch devices only
+      if (
+        "ontouchstart" in window ||
+        navigator.maxTouchPoints > 0 ||
+        window.innerWidth < 900
+      ) {
+        document.addEventListener("DOMContentLoaded", function () {
+          var meta = document.querySelector('meta[name="viewport"]');
+          if (meta)
+            meta.setAttribute(
+              "content",
+              "width=device-width, initial-scale=0.7, maximum-scale=0.7, user-scalable=no",
+            );
+        });
+      }
+    </script>
     <style>
       body {
         background: #d5d5d5;
