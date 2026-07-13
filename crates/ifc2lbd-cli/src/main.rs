@@ -441,7 +441,11 @@ fn main() -> anyhow::Result<()> {
         crossbeam::channel::bounded(SERIALIZER_CHANNEL_CAPACITY);
     let lbd_receiver = converter_lbd_receiver;
 
-    let (ifcowl_sender, mut ifcowl_receiver) = if emit_ifcowl {
+    // IfcOWL channel: only needed for N-Quads (merged into LBD output thread).
+    // For Turtle, IfcOWL triples go directly to the main LBD channel (joined layout).
+    let (ifcowl_sender, mut ifcowl_receiver) = if emit_ifcowl
+        && output_format == OutputFormat::Nquads
+    {
         let (sender, receiver) = crossbeam::channel::bounded(SERIALIZER_CHANNEL_CAPACITY);
         (Some(sender), Some(receiver))
     } else {
@@ -603,32 +607,10 @@ fn main() -> anyhow::Result<()> {
         Ok(())
     });
 
-    // For Turtle + IfcOWL: IfcOWL gets its own output file serialized in a
-    // separate thread. The bounded channel provides backpressure to cap memory.
-    let mut ifcowl_thread = None;
-    if output_format == OutputFormat::Turtle && emit_ifcowl {
-        let receiver = ifcowl_receiver
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("missing IfcOWL receiver for turtle sidecar mode"))?;
-        let ifcowl_filename = resolve_ifcowl_filename(&lbd_filename);
-        let ifcowl_base = base_options.base_uri.clone();
-        let ifcowl_session = session.clone();
-        let ifcowl_filename_thread = ifcowl_filename.clone();
-        ifcowl_thread = Some(thread::spawn(move || -> anyhow::Result<()> {
-            let sink = session::open_sink(
-                &ifcowl_session,
-                &ifcowl_filename_thread,
-                "text/turtle",
-                "ifcowl-sidecar",
-            )
-            .map_err(|e| anyhow::anyhow!("failed to open IfcOWL output sink: {}", e))?;
-            let writer = BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, sink);
-            serialize_turtle_batches_to_writer(receiver, writer, Some(&ifcowl_base)).with_context(
-                || format!("failed to write IfcOWL Turtle to {ifcowl_filename_thread}"),
-            )?;
-            Ok(())
-        }));
-    }
+    // Turtle + IfcOWL: no separate sidecar file. IfcOWL triples are routed to
+    // the main LBD channel (joined layout). The separate sidecar was a stub
+    // that only contained prefix declarations with no actual triples.
+    let ifcowl_thread: Option<thread::JoinHandle<anyhow::Result<()>>> = None;
 
     let producer_start = Instant::now();
     // Emit "running" for each producer so the UI shows active modules
@@ -725,12 +707,14 @@ fn main() -> anyhow::Result<()> {
     }
 
     // Route batches to the appropriate serializer channel:
-    //   IfcOWL/alignment graph IRIs → ifcowl_sender (separate bounded channel, OOM safety)
-    //   All other graphs            → converter_lbd_sender
+    //   N-Quads: IfcOWL/alignment → ifcowl_sender (merged into LBD output thread)
+    //   Turtle:  IfcOWL/alignment → converter_lbd_sender (joined with LBD triples)
+    //   All other graphs          → converter_lbd_sender
     let owl_sender = ifcowl_sender.clone();
     for batch in all_batches {
         let iri = batch.kind.iri();
-        if iri.ends_with("/ifcowl") || iri.ends_with("/alignment") {
+        let is_ifcowl = iri.ends_with("/ifcowl") || iri.ends_with("/alignment");
+        if is_ifcowl && owl_sender.is_some() {
             if let Some(ref tx) = owl_sender {
                 let _ = tx.send(batch.triples);
             }
