@@ -635,13 +635,20 @@ fn main() -> anyhow::Result<()> {
     for id in &active_producer_ids {
         tracing::info!("module {}: running", id);
     }
-    // Dispatch all producers through the plugin system.
-    // Each producer gets its own bounded channel (backpressure per-producer).
-    // Routing threads forward batches to the appropriate serializer channel:
-    //   IfcOWL/alignment graph IRIs → ifcowl_sender (separate bounded channel, OOM safety)
-    //   All other graphs            → converter_lbd_sender
+    // Split producers: IfcOWL runs in a second batch after all other producers
+    // finish. IfcOWL uses rayon::scope with many sub-tasks that block on
+    // channel::send. Running it concurrently with bSDD (par_iter) can exhaust
+    // the rayon pool on large files → deadlock. Running it alone gives it the
+    // full thread pool; the main thread drains its receiver so channel sends
+    // don't block. CLI-only; WASM runs a single producer at a time anyway.
+    let (other_producer_ids, ifcowl_ids): (Vec<String>, Vec<String>) = active_producer_ids
+        .iter()
+        .cloned()
+        .partition(|id| id != lbd_pipeline::IFCOWL_PRODUCER_ID);
+
+    // Phase 1: all non-IfcOWL producers
     let producer_receivers = lbd_pipeline::spawn_producers(
-        &active_producer_ids,
+        &other_producer_ids,
         &built_in_registry,
         &ctx,
         SERIALIZER_CHANNEL_CAPACITY,
@@ -664,6 +671,30 @@ fn main() -> anyhow::Result<()> {
             producer_start.elapsed().as_secs_f64(),
             triple_count
         );
+    }
+
+    // Phase 2: IfcOWL runs alone — full rayon pool available, main thread
+    // dedicated to draining its receiver. No deadlock possible.
+    if !ifcowl_ids.is_empty() {
+        let ifcowl_receivers = lbd_pipeline::spawn_producers(
+            &ifcowl_ids,
+            &built_in_registry,
+            &ctx,
+            SERIALIZER_CHANNEL_CAPACITY,
+        );
+        for (id, rx) in ifcowl_receivers {
+            let mut triple_count = 0usize;
+            for batch in rx {
+                triple_count += batch.triples.len();
+                all_batches.push(batch);
+            }
+            tracing::info!(
+                "module {}: success {:.3}s ({} triples)",
+                id,
+                producer_start.elapsed().as_secs_f64(),
+                triple_count
+            );
+        }
     }
 
     // Run postprocess plugins (e.g. ontology mapper) on the collected batches.
