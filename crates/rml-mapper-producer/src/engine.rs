@@ -122,8 +122,7 @@ pub fn execute_rml_streaming(
     #[cfg(target_family = "wasm")]
     {
         executor.execute().map_err(|e| format!("execute: {e}"))?;
-        drop(executor);
-        drop(quad_tx);
+        drop(executor); // drops the quad_tx inside, closing the channel
         let mut batch = Vec::with_capacity(batch_size);
         for quads in quad_rx {
             for quad in quads {
