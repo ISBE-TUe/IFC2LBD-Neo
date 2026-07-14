@@ -113,6 +113,12 @@ struct Args {
     #[arg(long = "input-format", default_value = "ifc")]
     input_format: String,
 
+    /// Additional structured data file (JSON/CSV/XML) for RML mapping.
+    /// Can be provided multiple times. Loaded alongside IFC input — both
+    /// IFC producers and the RML mapper run in the same pipeline.
+    #[arg(long = "structured-data")]
+    structured_data: Vec<PathBuf>,
+
     /// Enable one or more modules by id. Can be provided multiple times.
     #[arg(long = "module")]
     module: Vec<String>,
@@ -286,6 +292,20 @@ fn main() -> anyhow::Result<()> {
         (step, model, None, None)
     };
 
+    // Also read RML mapping config when --structured-data files are provided
+    // alongside IFC (not just in --input-format structured-data mode).
+    let rml_config = rml_config.or_else(|| {
+        module_configs
+            .get(lbd_pipeline::RML_MAPPER_ID)
+            .and_then(|m| m.get("rml_mapping"))
+            .cloned()
+            .map(|turtle| {
+                std::sync::Arc::new(structured_data::RmlMappingConfig {
+                    mapping_turtle: turtle,
+                })
+            })
+    });
+
     let base_options = ConvertOptions {
         base_uri: args.base_uri.clone(),
         emit_ifcowl_links: emit_ifcowl,
@@ -393,12 +413,28 @@ fn main() -> anyhow::Result<()> {
         ctx.insert(std::sync::Arc::new(pipeline_plugins::CompressOutput(true)));
     }
 
-    // Insert structured data + RML config if in structured data mode
+    // Insert structured data + RML config.
+    // From --input-format structured-data (IFC-less mode) or --structured-data (alongside IFC).
     if let Some(sd) = &structured_data {
         ctx.insert(sd.clone());
     }
     if let Some(cfg) = &rml_config {
         ctx.insert(cfg.clone());
+    }
+    // Additional structured data files from --structured-data flag (loaded alongside IFC).
+    if !args.structured_data.is_empty() {
+        let extra_files: Vec<(String, Vec<u8>)> = args.structured_data
+            .iter()
+            .filter_map(|p| {
+                let name = p.file_name()?.to_string_lossy().to_string();
+                std::fs::read(p).ok().map(|bytes| (name, bytes))
+            })
+            .collect();
+        if !extra_files.is_empty() {
+            let sd = std::sync::Arc::new(structured_data::StructuredDataInput::from_raw(extra_files));
+            ctx.insert(sd);
+            tracing::info!("loaded {} structured data file(s) via --structured-data", args.structured_data.len());
+        }
     }
 
     // Insert ontology mapping config from module options (alignment + ontology files)

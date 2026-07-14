@@ -169,10 +169,9 @@ function render() {
 			?.addEventListener("change", (e) => {
 				const files = Array.from(e.target.files || []);
 				if (!files.length) return;
+				// Don't clear ifcFile — both IFC and structured data can coexist.
 				update({
 					structuredDataFiles: files,
-					inputFormat: "structured-data",
-					ifcFile: null,
 				});
 				const meta = content.querySelector("#structured-file-meta");
 				if (meta)
@@ -180,8 +179,6 @@ function render() {
 						files.length === 1
 							? files[0].name
 							: `${files.length} files selected`;
-				document.querySelector("#rail-file-text").textContent =
-					"Choose IFC file…";
 			});
 
 		const dirBtn = content.querySelector("#btn-structured-dir");

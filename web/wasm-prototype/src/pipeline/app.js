@@ -769,7 +769,16 @@ async function runConversionElectron() {
 			activeModules.has("neo-nquads-chunked-serializer");
 		const outputExt = hasNquads ? ".nq" : ".ttl";
 
-		const result = await window.electronAPI.runConversion({
+		// Read structured data file bytes if present (both IFC + structured data can coexist)
+	const structuredDataFiles = [];
+	if (state.structuredDataFiles?.length) {
+		for (const file of state.structureduredDataFiles) {
+			const data = await file.arrayBuffer();
+			structuredDataFiles.push({ name: file.name, data });
+		}
+	}
+
+	const result = await window.electronAPI.runConversion({
 			fileName: ifcFile.name,
 			fileData,
 			modules: [...activeModules],
@@ -778,6 +787,7 @@ async function runConversionElectron() {
 			outputStem,
 			outputExt,
 			inputFormat: state.inputFormat,
+			structuredDataFiles,
 		});
 
 		// Unsubscribe from progress events

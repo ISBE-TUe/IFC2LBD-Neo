@@ -270,6 +270,18 @@ ipcMain.handle("conversion:run", async (_event, request) => {
 		args.push("--input-format", "structured-data");
 	}
 
+	// Write structured data files to temp dir and pass --structured-data for each.
+	// This allows RML mapping alongside IFC conversion (both run in the same pipeline).
+	if (request.structuredDataFiles) {
+		for (const sdFile of request.structuredDataFiles) {
+			const sdPath = join(tempDir, sdFile.name);
+			if (sdFile.data) {
+				writeFileSync(sdPath, Buffer.from(sdFile.data));
+				args.push("--structured-data", sdPath);
+			}
+		}
+	}
+
 	for (const mod of request.modules || []) {
 		args.push("--module", mod);
 	}

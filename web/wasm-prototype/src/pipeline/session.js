@@ -166,9 +166,11 @@ function render() {
 		for (const mod of col.modules) {
 			const isStructured = mod.id === "neo-structured-data-import";
 			const isParse = mod.id === "parse";
+			// Both IFC and structured data can be active at the same time.
+			// IFC is always active (required). Structured data is a normal toggle.
 			const isActive =
-				(isParse && inputFormat !== "structured-data") ||
-				(isStructured && inputFormat === "structured-data") ||
+				isParse ||
+				(isStructured && activeModules.has(mod.id)) ||
 				(!isParse && !isStructured && activeModules.has(mod.id));
 			const isRequired =
 				mod.id === "parse" ||
@@ -246,17 +248,7 @@ function render() {
 			btn.addEventListener("click", (e) => {
 				e.stopPropagation();
 				const id = btn.getAttribute("data-toggle-id");
-				if (id === "neo-structured-data-import") {
-					// Toggling structured data import switches input format
-					const { inputFormat } = getState();
-					if (inputFormat === "structured-data") {
-						update({ inputFormat: "ifc", structuredDataFiles: null });
-					} else {
-						update({ inputFormat: "structured-data", ifcFile: null });
-					}
-				} else {
-					toggleModule(id);
-			}
+				toggleModule(id);
 			});
 		});
 
