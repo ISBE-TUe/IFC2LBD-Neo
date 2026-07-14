@@ -102,7 +102,8 @@ pub fn execute_rml_streaming(
                 for quad in quads {
                     let triple = convert_quad_to_triple(&quad);
                     batch.push(triple);
-                    if batch.len() >= batch_size && sender.send(std::mem::take(&mut batch)).is_err() {
+                    if batch.len() >= batch_size && sender.send(std::mem::take(&mut batch)).is_err()
+                    {
                         return;
                     }
                 }

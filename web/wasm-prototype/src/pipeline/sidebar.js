@@ -71,6 +71,14 @@ function render() {
       <h3 class="detail-title">${displayName}</h3>
     </div>
 
+    ${
+			mod && !mod.wasmCompatible && !window.electronAPI?.isElectron
+				? `<div class="detail-section">
+      <div class="detail-row"><span class="detail-label" style="color: var(--accent-warm, #e8a838);">⚠ Not available in browser</span><span class="detail-value">This module requires filesystem access. Use the desktop app.</span></div>
+    </div>`
+				: ""
+		}
+
     <div class="detail-section">
       <div class="detail-row">
         <span class="detail-label">Stage</span>

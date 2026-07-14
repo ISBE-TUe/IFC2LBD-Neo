@@ -183,10 +183,12 @@ function render() {
 			const durationMs = status?.durationMs || 0;
 
 			const isSucceeded = statusStr === "success";
-			html += `<div class="session-cell ${isActive ? "active" : "inactive"} ${isSelected ? "selected" : ""} ${isRunning ? "running" : ""} ${isSucceeded ? "succeeded" : ""}" data-plugin-id="${mod.id}" id="cell-${mod.id}">`;
+			const isElectron = !!window.electronAPI?.isElectron;
+			const notInBrowser = !isElectron && mod.wasmCompatible === false;
+			html += `<div class="session-cell ${isActive ? "active" : "inactive"} ${isSelected ? "selected" : ""} ${isRunning ? "running" : ""} ${isSucceeded ? "succeeded" : ""} ${notInBrowser ? "disabled" : ""}" data-plugin-id="${mod.id}" id="cell-${mod.id}">`;
 
 			// Clickable circle (not for parse which is always required)
-			if (mod.id !== "parse" && !isRequired) {
+			if (mod.id !== "parse" && !isRequired && !notInBrowser) {
 				html += `<button class="cell-circle ${isActive ? "on" : "off"} ${isRunning ? "pulse" : ""}" 
           style="color:${isActive ? statusColor : "#CCC"}" 
           data-toggle-id="${mod.id}">${statusIcon}</button>`;

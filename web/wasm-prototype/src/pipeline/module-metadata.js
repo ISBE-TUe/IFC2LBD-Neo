@@ -133,6 +133,7 @@ export const MODULES = [
 		"RML mapping for structured data",
 		"Optional",
 		["rml_mapping"],
+		{ wasmCompatible: false },
 	),
 
 	// Postprocess

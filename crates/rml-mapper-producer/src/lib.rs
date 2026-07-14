@@ -56,7 +56,7 @@ impl PipelinePlugin for RmlMapperProducerPlugin {
             conflicts_with: vec![],
             failure_policy: FailurePolicy::Required,
             parallelism: ParallelismMode::ParallelByBatch,
-            wasm_compatible: true,
+            wasm_compatible: false,
             named_graph_slug: Some(GRAPH_SLUG),
             needs_full_graph: false,
         }
