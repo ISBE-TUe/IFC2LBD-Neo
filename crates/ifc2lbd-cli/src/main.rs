@@ -445,14 +445,13 @@ fn main() -> anyhow::Result<()> {
 
     // IfcOWL channel: only needed for N-Quads (merged into LBD output thread).
     // For Turtle, IfcOWL triples go directly to the main LBD channel (joined layout).
-    let (ifcowl_sender, mut ifcowl_receiver) = if emit_ifcowl
-        && output_format == OutputFormat::Nquads
-    {
-        let (sender, receiver) = crossbeam::channel::bounded(SERIALIZER_CHANNEL_CAPACITY);
-        (Some(sender), Some(receiver))
-    } else {
-        (None, None)
-    };
+    let (ifcowl_sender, mut ifcowl_receiver) =
+        if emit_ifcowl && output_format == OutputFormat::Nquads {
+            let (sender, receiver) = crossbeam::channel::bounded(SERIALIZER_CHANNEL_CAPACITY);
+            (Some(sender), Some(receiver))
+        } else {
+            (None, None)
+        };
 
     let lbd_base_uri = base_options.base_uri.clone();
     let lbd_graph_iri_thread = lbd_graph_iri.clone();
@@ -494,8 +493,8 @@ fn main() -> anyhow::Result<()> {
         None
     };
     let lbd_session = session.clone();
-    let lbd_separate = output_format == OutputFormat::Turtle
-        && settings.turtle_layout == TurtleLayout::Separate;
+    let lbd_separate =
+        output_format == OutputFormat::Turtle && settings.turtle_layout == TurtleLayout::Separate;
     let lbd_thread = thread::spawn(move || -> anyhow::Result<()> {
         if lbd_separate {
             // Separate layout: no main LBD file — each graph writes to its own file
@@ -720,9 +719,7 @@ fn main() -> anyhow::Result<()> {
     //   Turtle Separate: each named graph → its own .ttl file (like WASM)
     //   Turtle Joined:   all triples → single .ttl via converter_lbd_sender
     //   N-Quads:         IfcOWL → ifcowl_sender, rest → converter_lbd_sender
-    if output_format == OutputFormat::Turtle
-        && settings.turtle_layout == TurtleLayout::Separate
-    {
+    if output_format == OutputFormat::Turtle && settings.turtle_layout == TurtleLayout::Separate {
         // Separate: group batches by graph slug, write each to its own file.
         let compress = settings.compress_output;
         let gz_ext = if compress { ".gz" } else { "" };
@@ -735,7 +732,11 @@ fn main() -> anyhow::Result<()> {
             // Graph IRIs are constructed as {base_uri_trimmed}{slug} (no slash
             // separator — see producer plugins). Strip the base to get the slug.
             let slug = iri.strip_prefix(base_trimmed).unwrap_or(iri);
-            let slug = if slug.is_empty() { "other".to_string() } else { slug.to_string() };
+            let slug = if slug.is_empty() {
+                "other".to_string()
+            } else {
+                slug.to_string()
+            };
             batches_by_slug
                 .entry(slug.clone())
                 .or_default()

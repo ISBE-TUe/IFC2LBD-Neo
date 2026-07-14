@@ -165,13 +165,13 @@ function render() {
 		html += `<div class="session-column" data-stage="${col.key}">`;
 		for (const mod of col.modules) {
 			const isStructured = mod.id === "neo-structured-data-import";
+			const isParse = mod.id === "parse";
 			const isActive =
-				mod.id === "parse" ||
+				(isParse && inputFormat !== "structured-data") ||
 				(isStructured && inputFormat === "structured-data") ||
-				activeModules.has(mod.id);
+				(!isParse && !isStructured && activeModules.has(mod.id));
 			const isRequired =
 				mod.id === "parse" ||
-				mod.id === "neo-structured-data-import" ||
 				mod.id === "neo-file-export";
 			const status = stageStatuses[mod.id];
 			const statusStr = status?.status || "idle";
@@ -185,7 +185,7 @@ function render() {
 			const isSucceeded = statusStr === "success";
 			html += `<div class="session-cell ${isActive ? "active" : "inactive"} ${isSelected ? "selected" : ""} ${isRunning ? "running" : ""} ${isSucceeded ? "succeeded" : ""}" data-plugin-id="${mod.id}" id="cell-${mod.id}">`;
 
-			// Clickable circle (not for parse/required)
+			// Clickable circle (not for parse which is always required)
 			if (mod.id !== "parse" && !isRequired) {
 				html += `<button class="cell-circle ${isActive ? "on" : "off"} ${isRunning ? "pulse" : ""}" 
           style="color:${isActive ? statusColor : "#CCC"}" 
@@ -246,7 +246,17 @@ function render() {
 			btn.addEventListener("click", (e) => {
 				e.stopPropagation();
 				const id = btn.getAttribute("data-toggle-id");
-				toggleModule(id);
+				if (id === "neo-structured-data-import") {
+					// Toggling structured data import switches input format
+					const { inputFormat } = getState();
+					if (inputFormat === "structured-data") {
+						update({ inputFormat: "ifc", structuredDataFiles: null });
+					} else {
+						update({ inputFormat: "structured-data", ifcFile: null });
+					}
+				} else {
+					toggleModule(id);
+			}
 			});
 		});
 
