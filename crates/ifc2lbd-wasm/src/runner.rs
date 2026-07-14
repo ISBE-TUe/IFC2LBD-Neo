@@ -105,13 +105,10 @@ fn set_structured_data_from_request(request: &ConversionRequest) {
     }
 
     // RML mapping from module options
-    let rml_mapping = request
-        .module_options
-        .iter()
-        .find_map(|opt| {
-            let opt = opt.strip_prefix("neo-rml-mapper.rml_mapping=")?;
-            Some(opt.to_string())
-        });
+    let rml_mapping = request.module_options.iter().find_map(|opt| {
+        let opt = opt.strip_prefix("neo-rml-mapper.rml_mapping=")?;
+        Some(opt.to_string())
+    });
     if let Some(turtle) = rml_mapping {
         CURRENT_RML_CONFIG.with(|cell| {
             cell.borrow_mut()
@@ -452,8 +449,19 @@ impl PipelineRunner {
         emit_stage_event(sink, "parse", "Preprocess", "running", 0, 0, 0, None)
             .map_err(|e| WasmApiError::Serialization(e.to_string()))?;
         let parse_t0 = now_ms();
-        let step = parse_step_bytes(input)?;
-        let model = build_model(&step)?;
+        // Skip IFC parsing in structured-data-only mode (no IFC file)
+        let (step, model) = if request.input_format.as_deref() == Some("structured-data") {
+            (StepFile::default(), ifc_model::IfcModel::default())
+        } else {
+        let (step, model) = if request.input_format.as_deref() == Some("structured-data") {
+            (StepFile::default(), ifc_model::IfcModel::default())
+        } else {
+            let step = parse_step_bytes(input)?;
+            let model = build_model(&step)?;
+            (step, model)
+        };
+            (step, model)
+        };
         let parse_ms = now_ms() - parse_t0;
         emit_stage_event(sink, "parse", "Preprocess", "success", parse_ms, 0, 0, None)
             .map_err(|e| WasmApiError::Serialization(e.to_string()))?;

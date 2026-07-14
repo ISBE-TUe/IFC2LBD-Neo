@@ -879,19 +879,16 @@ async function runConversion() {
 		return runConversionElectron();
 	}
 
-	// ── Browser WASM path (existing) ─────────────────────────────────────────
+	// ── Browser WASm path (existing) ─────────────────────────────────────────
 
-	// Check for input
-	if (state.inputFormat === "structured-data") {
-		if (!state.structuredDataFiles || !state.structuredDataFiles.length) {
-			log("No structured data files selected.");
-			return;
-		}
-	} else {
-		if (!state.ifcFile) {
-			log("No file selected.");
-			return;
-		}
+	// Check for input: need either an IFC file or structured data files (or both)
+	const hasStructuredData =
+		state.structuredDataFiles && state.structuredDataFiles.length > 0;
+	const hasIfc = !!state.ifcFile;
+
+	if (!hasIfc && !hasStructuredData) {
+		log("No file selected.");
+		return;
 	}
 
 	update({ running: true });
@@ -929,8 +926,8 @@ async function runConversion() {
 			}
 		}
 
-		if (state.inputFormat === "structured-data") {
-			// Structured-data-only mode (no IFC)
+		if (!hasIfc && hasStructuredData) {
+			// Structured-data-only mode (no IFC file)
 			input = sdFileBuffers[0].data; // first buffer for compatibility
 			requestPayload = {
 				moduleIds: getBackendModuleIds(),
@@ -946,7 +943,7 @@ async function runConversion() {
 				})),
 			};
 		} else {
-			// Existing IFC path
+			// IFC path (with optional structured data alongside)
 			const ifcFile = getState().ifcFile;
 			const ifcFileBytes = new Uint8Array(await ifcFile.arrayBuffer());
 			input = ifcFileBytes;
