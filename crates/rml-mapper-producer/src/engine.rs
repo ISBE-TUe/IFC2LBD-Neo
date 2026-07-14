@@ -90,31 +90,54 @@ pub fn execute_rml_streaming(
     let mut executor =
         Executor::new(mapping_doc, work_dir, StrictMode::BestEffort).with_output_sender(quad_tx);
 
-    // Spawn a thread to convert Quads to Triples
-    let sender = triple_sender.clone();
-    let converter = std::thread::spawn(move || {
+    // On native: spawn a thread to convert Quads to Triples (parallel with executor).
+    // On WASM: std::thread::spawn is not supported — run executor first, then
+    // drain the channel inline (sequential, but correct).
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let sender = triple_sender.clone();
+        let converter = std::thread::spawn(move || {
+            let mut batch = Vec::with_capacity(batch_size);
+            for quads in quad_rx {
+                for quad in quads {
+                    let triple = convert_quad_to_triple(&quad);
+                    batch.push(triple);
+                    if batch.len() >= batch_size && sender.send(std::mem::take(&mut batch)).is_err() {
+                        return;
+                    }
+                }
+            }
+            if !batch.is_empty() {
+                let _ = sender.send(batch);
+            }
+        });
+
+        executor.execute().map_err(|e| format!("execute: {e}"))?;
+        drop(executor);
+        converter
+            .join()
+            .map_err(|_| "converter thread panicked".to_string())?;
+    }
+
+    #[cfg(target_family = "wasm")]
+    {
+        executor.execute().map_err(|e| format!("execute: {e}"))?;
+        drop(executor);
+        drop(quad_tx);
         let mut batch = Vec::with_capacity(batch_size);
         for quads in quad_rx {
             for quad in quads {
                 let triple = convert_quad_to_triple(&quad);
                 batch.push(triple);
-                if batch.len() >= batch_size && sender.send(std::mem::take(&mut batch)).is_err() {
-                    return;
+                if batch.len() >= batch_size {
+                    let _ = triple_sender.send(std::mem::take(&mut batch));
                 }
             }
         }
         if !batch.is_empty() {
-            let _ = sender.send(batch);
+            let _ = triple_sender.send(batch);
         }
-    });
-
-    executor.execute().map_err(|e| format!("execute: {e}"))?;
-
-    // Drop the executor to close the quad channel, signaling the converter thread.
-    drop(executor);
-    converter
-        .join()
-        .map_err(|_| "converter thread panicked".to_string())?;
+    }
 
     Ok(())
 }
