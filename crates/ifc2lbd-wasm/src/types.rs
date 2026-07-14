@@ -57,6 +57,9 @@ pub struct ConversionRequest {
 pub struct StructuredDataFileMeta {
     pub name: String,
     pub size: u64,
+    /// File bytes — present when sent from JS (structured data alongside IFC).
+    #[serde(default)]
+    pub data: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, Serialize)]

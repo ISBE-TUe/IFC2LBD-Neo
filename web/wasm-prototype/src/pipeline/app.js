@@ -919,20 +919,19 @@ async function runConversion() {
 		let input;
 		let requestPayload;
 
-		if (state.inputFormat === "structured-data") {
-			// Read all structured data files
-			const files = getState().structuredDataFiles;
-			const fileBuffers = [];
-			for (const file of files) {
+		// Read structured data file bytes (always, when present — both IFC + structured data can coexist)
+		const sdFiles = getState().structuredDataFiles;
+		const sdFileBuffers = [];
+		if (sdFiles?.length) {
+			for (const file of sdFiles) {
 				const bytes = new Uint8Array(await file.arrayBuffer());
-				fileBuffers.push({ name: file.name, data: bytes });
+				sdFileBuffers.push({ name: file.name, data: bytes });
 			}
-			// For planExecution: use total size
-			const totalBytes = fileBuffers.reduce(
-				(sum, f) => sum + f.data.byteLength,
-				0,
-			);
-			input = fileBuffers[0].data; // first buffer for compatibility
+		}
+
+		if (state.inputFormat === "structured-data") {
+			// Structured-data-only mode (no IFC)
+			input = sdFileBuffers[0].data; // first buffer for compatibility
 			requestPayload = {
 				moduleIds: getBackendModuleIds(),
 				moduleOptions: moduleOptionsArr,
@@ -940,12 +939,12 @@ async function runConversion() {
 				outputStem,
 				executionMode: "auto",
 				inputFormat: "structured-data",
-				structuredDataFiles: fileBuffers.map((f) => ({
+				structuredDataFiles: sdFileBuffers.map((f) => ({
 					name: f.name,
 					size: f.data.byteLength,
+					data: f.data,
 				})),
 			};
-			// Note: actual file bytes will be sent separately via transferables
 		} else {
 			// Existing IFC path
 			const ifcFile = getState().ifcFile;
@@ -957,6 +956,11 @@ async function runConversion() {
 				baseUri,
 				outputStem,
 				executionMode: "auto",
+				structuredDataFiles: sdFileBuffers.map((f) => ({
+					name: f.name,
+					size: f.data.byteLength,
+					data: f.data,
+				})),
 			};
 		}
 		const plan = resolvePlan(moduleIds, moduleOptionsArr);

@@ -78,13 +78,48 @@ fn is_ifcowl_graph(iri: &str) -> bool {
 }
 
 // Thread-local storage for structured data + RML config.
-// Set in run_to_sink() when input_format == "structured-data",
+// Set in run_to_sink() / run_memory() from the ConversionRequest,
 // read by the RML mapper producer via PipelineContext.
 thread_local! {
     static CURRENT_STRUCTURED_DATA: std::cell::RefCell<Option<std::sync::Arc<StructuredDataInput>>> =
         const { std::cell::RefCell::new(None) };
     static CURRENT_RML_CONFIG: std::cell::RefCell<Option<std::sync::Arc<RmlMappingConfig>>> =
         const { std::cell::RefCell::new(None) };
+}
+
+/// Set thread-local structured data + RML config from the conversion request.
+///
+/// Called at the start of run_to_sink / run_memory. Structured data files may
+/// be provided alongside IFC (both active simultaneously). RML mapping content
+/// comes from the `neo-rml-mapper.rml_mapping` module option.
+fn set_structured_data_from_request(request: &ConversionRequest) {
+    // Structured data files (with bytes sent from JS)
+    let files: Vec<(String, Vec<u8>)> = request
+        .structured_data_files
+        .iter()
+        .filter_map(|f| f.data.as_ref().map(|d| (f.name.clone(), d.clone())))
+        .collect();
+    if !files.is_empty() {
+        let sd = std::sync::Arc::new(StructuredDataInput::from_raw(files));
+        CURRENT_STRUCTURED_DATA.with(|cell| cell.borrow_mut().replace(sd));
+    }
+
+    // RML mapping from module options
+    let rml_mapping = request
+        .module_options
+        .iter()
+        .find_map(|opt| {
+            let opt = opt.strip_prefix("neo-rml-mapper.rml_mapping=")?;
+            Some(opt.to_string())
+        });
+    if let Some(turtle) = rml_mapping {
+        CURRENT_RML_CONFIG.with(|cell| {
+            cell.borrow_mut()
+                .replace(std::sync::Arc::new(RmlMappingConfig {
+                    mapping_turtle: turtle,
+                }));
+        });
+    }
 }
 
 fn resolve_nquads_graph_iri(
@@ -288,6 +323,9 @@ impl PipelineRunner {
             .clone()
             .unwrap_or_else(|| DEFAULT_BASE_URI.to_string());
 
+        // Set thread-local structured data + RML config for the RML mapper producer.
+        set_structured_data_from_request(request);
+
         let (mode, estimated_peak_mb, feasibility_check_mb, reason) =
             select_execution_mode(input.len() as u64, request, &settings);
         warnings.push(format!(
@@ -390,6 +428,10 @@ impl PipelineRunner {
             .base_uri
             .clone()
             .unwrap_or_else(|| DEFAULT_BASE_URI.to_string());
+
+        // Set thread-local structured data + RML config for the RML mapper producer.
+        // Structured data files may be provided alongside IFC (both active simultaneously).
+        set_structured_data_from_request(request);
 
         let (mode, estimated_peak_mb, feasibility_check_mb, reason) =
             select_execution_mode(input.len() as u64, request, &settings);
