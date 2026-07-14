@@ -967,7 +967,7 @@ dependencies = [
 
 [[package]]
 name = "fragments-core"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "flatbuffers 25.12.19",
  "flate2",
@@ -983,7 +983,7 @@ dependencies = [
 
 [[package]]
 name = "fragments-schema"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "flatbuffers 25.12.19",
  "flatbuffers-build",
@@ -1585,7 +1585,7 @@ dependencies = [
 
 [[package]]
 name = "ifc-geometry"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -1629,7 +1629,7 @@ dependencies = [
 
 [[package]]
 name = "ifc-model"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "ifc-schema",
  "ifc-step",
@@ -1641,14 +1641,14 @@ dependencies = [
 
 [[package]]
 name = "ifc-schema"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "smol_str",
 ]
 
 [[package]]
 name = "ifc-step"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "criterion",
  "memmap2",
@@ -1660,7 +1660,7 @@ dependencies = [
 
 [[package]]
 name = "ifc2lbd-cli"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "anyhow",
  "clap",
@@ -1700,7 +1700,7 @@ dependencies = [
 
 [[package]]
 name = "ifc2lbd-wasm"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "console_error_panic_hook",
  "crossbeam",
@@ -1845,7 +1845,7 @@ dependencies = [
 
 [[package]]
 name = "lbd-converter"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "crossbeam",
  "flate2",
@@ -1872,7 +1872,7 @@ dependencies = [
 
 [[package]]
 name = "lbd-geometry"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "ifc-model",
  "ifc-step",
@@ -1886,11 +1886,11 @@ dependencies = [
 
 [[package]]
 name = "lbd-ontology"
-version = "0.2.3"
+version = "0.2.4"
 
 [[package]]
 name = "lbd-pipeline"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "crossbeam",
  "lbd-ontology",
@@ -1902,7 +1902,7 @@ dependencies = [
 
 [[package]]
 name = "lbd-serializer"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "crossbeam",
  "lbd-ontology",
@@ -1914,7 +1914,7 @@ dependencies = [
 
 [[package]]
 name = "lbd-topology"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "ifc-model",
  "ifc-schema",
@@ -2385,7 +2385,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "ontology-mapper-producer"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "lbd-converter",
  "lbd-ontology",
@@ -2466,7 +2466,7 @@ dependencies = [
 
 [[package]]
 name = "owl-reasoner"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "lbd-ontology",
  "oxiri",
@@ -2713,7 +2713,7 @@ dependencies = [
 
 [[package]]
 name = "plugin-geometry-preprocess"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "ifc-geometry",
  "ifc-model",
@@ -2725,7 +2725,7 @@ dependencies = [
 
 [[package]]
 name = "plugin-geometry-producer"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -2749,7 +2749,7 @@ dependencies = [
 
 [[package]]
 name = "plugin-property-preprocess"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "ifc-model",
  "lbd-converter",
@@ -2761,7 +2761,7 @@ dependencies = [
 
 [[package]]
 name = "plugin-qto-preprocess"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "ifc-model",
  "ifc-schema",
@@ -2776,14 +2776,14 @@ dependencies = [
 
 [[package]]
 name = "plugin-template-export"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "lbd-pipeline",
 ]
 
 [[package]]
 name = "plugin-template-postprocess"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "lbd-ontology",
  "lbd-pipeline",
@@ -2791,14 +2791,14 @@ dependencies = [
 
 [[package]]
 name = "plugin-template-preprocess"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "lbd-pipeline",
 ]
 
 [[package]]
 name = "plugin-template-producer"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "crossbeam",
  "lbd-ontology",
@@ -2807,7 +2807,7 @@ dependencies = [
 
 [[package]]
 name = "plugin-topology-full"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "anyhow",
  "ifc-model",
@@ -3121,7 +3121,7 @@ dependencies = [
 
 [[package]]
 name = "rml-mapper-producer"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "crossbeam",
  "lbd-converter",
@@ -3768,7 +3768,7 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "structured-data"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "serde",
 ]
@@ -3878,7 +3878,7 @@ dependencies = [
 
 [[package]]
 name = "tessellated-model"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "ifc-geometry",
 ]

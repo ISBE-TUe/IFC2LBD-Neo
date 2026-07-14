@@ -4,7 +4,7 @@
 //! Parses flags and module options, wires together parsing, modeling, conversion, and serialization.
 
 use std::collections::{HashMap, HashSet};
-use std::io::BufWriter;
+use std::io::{BufWriter, Write};
 use std::path::Path;
 use std::path::PathBuf;
 use std::thread;
@@ -18,7 +18,8 @@ use lbd_converter::{list_embedded_profiles, score_profile_for_model, ConvertOpti
 use lbd_serializer::{
     serialize_lbd_batches_incremental_to_writer, serialize_lbd_batches_to_writer,
     serialize_nquads_batches_to_writer, serialize_nquads_merged_batches_to_writer,
-    serialize_turtle_batches_to_writer,
+    serialize_turtle_batch_raw_to_writer, serialize_turtle_batches_to_writer,
+    serialize_turtle_grouped_to_writer, write_turtle_prefixes_for_stream,
 };
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 
@@ -386,6 +387,7 @@ fn main() -> anyhow::Result<()> {
         .and_then(|s| s.to_str())
         .unwrap_or("model")
         .to_string();
+    let output_stem_clone = output_stem.clone();
     ctx.insert(std::sync::Arc::new(output_stem));
     if settings.compress_output {
         ctx.insert(std::sync::Arc::new(pipeline_plugins::CompressOutput(true)));
@@ -492,7 +494,15 @@ fn main() -> anyhow::Result<()> {
         None
     };
     let lbd_session = session.clone();
+    let lbd_separate = output_format == OutputFormat::Turtle
+        && settings.turtle_layout == TurtleLayout::Separate;
     let lbd_thread = thread::spawn(move || -> anyhow::Result<()> {
+        if lbd_separate {
+            // Separate layout: no main LBD file — each graph writes to its own file
+            // in the routing section below. Drain the receiver (already empty) and return.
+            while lbd_receiver.try_recv().is_ok() {}
+            return Ok(());
+        }
         match output_format {
             OutputFormat::Turtle => {
                 let sink = session::open_sink(&lbd_session, &lbd_filename_thread, lbd_mime, "data")
@@ -706,26 +716,82 @@ fn main() -> anyhow::Result<()> {
         tracing::info!("phase postprocess completed in {:.3}s", postprocess_dur);
     }
 
-    // Route batches to the appropriate serializer channel:
-    //   N-Quads: IfcOWL/alignment → ifcowl_sender (merged into LBD output thread)
-    //   Turtle:  IfcOWL/alignment → converter_lbd_sender (joined with LBD triples)
-    //   All other graphs          → converter_lbd_sender
-    let owl_sender = ifcowl_sender.clone();
-    for batch in all_batches {
-        let iri = batch.kind.iri();
-        let is_ifcowl = iri.ends_with("/ifcowl") || iri.ends_with("/alignment");
-        if is_ifcowl && owl_sender.is_some() {
-            if let Some(ref tx) = owl_sender {
-                let _ = tx.send(batch.triples);
-            }
-        } else {
-            let _ = converter_lbd_sender.send(batch.triples);
+    // Route batches to the serializer:
+    //   Turtle Separate: each named graph → its own .ttl file (like WASM)
+    //   Turtle Joined:   all triples → single .ttl via converter_lbd_sender
+    //   N-Quads:         IfcOWL → ifcowl_sender, rest → converter_lbd_sender
+    if output_format == OutputFormat::Turtle
+        && settings.turtle_layout == TurtleLayout::Separate
+    {
+        // Separate: group batches by graph slug, write each to its own file.
+        let compress = settings.compress_output;
+        let gz_ext = if compress { ".gz" } else { "" };
+        let instance_base = &base_options.base_uri;
+        let base_trimmed = instance_base.trim_end_matches('/');
+        let mut batches_by_slug: std::collections::HashMap<String, Vec<lbd_ontology::Triple>> =
+            std::collections::HashMap::new();
+        for batch in all_batches {
+            let iri = batch.kind.iri();
+            // Graph IRIs are constructed as {base_uri_trimmed}{slug} (no slash
+            // separator — see producer plugins). Strip the base to get the slug.
+            let slug = iri.strip_prefix(base_trimmed).unwrap_or(iri);
+            let slug = if slug.is_empty() { "other".to_string() } else { slug.to_string() };
+            batches_by_slug
+                .entry(slug.clone())
+                .or_default()
+                .extend(batch.triples);
         }
+        for (slug, triples) in &batches_by_slug {
+            let filename = format!("{output_stem_clone}_{slug}.ttl");
+            let sink = session::open_sink(&session, &filename, "text/turtle", "data")
+                .map_err(|e| anyhow::anyhow!("failed to open output sink for {slug}: {e}"))?;
+            let mut writer = BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, sink);
+            if turtle_grouping == TurtleGrouping::Sorted {
+                let mut sorted = triples.clone();
+                sorted.sort_unstable_by(|a, b| {
+                    a.subject
+                        .cmp(&b.subject)
+                        .then_with(|| a.predicate.cmp(&b.predicate))
+                });
+                serialize_turtle_grouped_to_writer(&sorted, &mut writer, Some(instance_base))
+                    .with_context(|| format!("failed to write Turtle to {filename}"))?;
+            } else {
+                write_turtle_prefixes_for_stream(&mut writer, Some(instance_base))
+                    .with_context(|| format!("failed to write prefixes to {filename}"))?;
+                for chunk in triples.chunks(base_options.stream_batch_size) {
+                    serialize_turtle_batch_raw_to_writer(chunk, &mut writer)
+                        .with_context(|| format!("failed to write Turtle to {filename}"))?;
+                }
+            }
+            writer.flush()?;
+            tracing::info!(
+                "module neo-turtle-serializer: wrote {} triples to {}",
+                triples.len(),
+                filename
+            );
+        }
+        // No channel-based serialization needed; skip the lbd_thread join below.
+        drop(converter_lbd_sender);
+        drop(ifcowl_sender);
+    } else {
+        // Joined Turtle or N-Quads: route to channels as before.
+        let owl_sender = ifcowl_sender.clone();
+        for batch in all_batches {
+            let iri = batch.kind.iri();
+            let is_ifcowl = iri.ends_with("/ifcowl") || iri.ends_with("/alignment");
+            if is_ifcowl && owl_sender.is_some() {
+                if let Some(ref tx) = owl_sender {
+                    let _ = tx.send(batch.triples);
+                }
+            } else {
+                let _ = converter_lbd_sender.send(batch.triples);
+            }
+        }
+        // Drop senders so serializer threads see EOF
+        drop(owl_sender);
+        drop(converter_lbd_sender);
+        drop(ifcowl_sender);
     }
-    // Drop senders so serializer threads see EOF
-    drop(owl_sender);
-    drop(converter_lbd_sender);
-    drop(ifcowl_sender);
 
     // Check for producer errors recorded by `start_next_producer`.
     let producer_errors = ctx.read_log_bundle().producer_errors;
@@ -1131,13 +1197,6 @@ fn validate_activation_plan_with_args(
             lbd_pipeline::FILE_EXPORT_ID,
             lbd_pipeline::LOG_EXPORT_ID,
             lbd_pipeline::STDOUT_EXPORT_ID,
-        );
-    }
-    if settings.output_format == OutputFormat::Turtle
-        && settings.turtle_layout == TurtleLayout::Separate
-    {
-        anyhow::bail!(
-            "`neo-turtle-serializer.layout=separate` is not implemented in CLI yet; use `joined`"
         );
     }
     Ok(())
