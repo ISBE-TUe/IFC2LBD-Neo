@@ -1,6 +1,6 @@
 {
   "name": "ifc2lbd-neo-desktop",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "IFC2LBD-Neo Desktop — IFC to LBD/RDF converter",
   "main": "src/main.js",
   "scripts": {

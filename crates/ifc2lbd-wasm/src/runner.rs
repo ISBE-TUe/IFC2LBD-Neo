@@ -119,6 +119,21 @@ fn set_structured_data_from_request(request: &ConversionRequest) {
     }
 }
 
+/// Insert structured data + RML config from thread-locals into a pipeline context.
+/// Called before wrapping ctx in Arc for producer dispatch.
+fn insert_structured_data_into_ctx(ctx: &mut PipelineContext) {
+    CURRENT_STRUCTURED_DATA.with(|cell| {
+        if let Some(sd) = cell.borrow().clone() {
+            ctx.insert(sd);
+        }
+    });
+    CURRENT_RML_CONFIG.with(|cell| {
+        if let Some(cfg) = cell.borrow().clone() {
+            ctx.insert(cfg);
+        }
+    });
+}
+
 fn resolve_nquads_graph_iri(
     normalized_base: &str,
     output_stem: &str,
@@ -453,13 +468,13 @@ impl PipelineRunner {
         let (step, model) = if request.input_format.as_deref() == Some("structured-data") {
             (StepFile::default(), ifc_model::IfcModel::default())
         } else {
-        let (step, model) = if request.input_format.as_deref() == Some("structured-data") {
-            (StepFile::default(), ifc_model::IfcModel::default())
-        } else {
-            let step = parse_step_bytes(input)?;
-            let model = build_model(&step)?;
-            (step, model)
-        };
+            let (step, model) = if request.input_format.as_deref() == Some("structured-data") {
+                (StepFile::default(), ifc_model::IfcModel::default())
+            } else {
+                let step = parse_step_bytes(input)?;
+                let model = build_model(&step)?;
+                (step, model)
+            };
             (step, model)
         };
         let parse_ms = now_ms() - parse_t0;
@@ -1187,6 +1202,7 @@ fn postprocess_to_sink(
         .collect();
     let preprocess_durations =
         run_preprocess_with_events(sink, &preprocess_ids, &registry, &mut ctx)?;
+    insert_structured_data_into_ctx(&mut ctx);
     let ctx = std::sync::Arc::new(ctx);
 
     // --- Spawn producers (keep TaggedBatch receivers — don't strip graph IRIs) ---
@@ -1733,6 +1749,7 @@ fn turtle_to_sink_joined(
         .collect();
     let preprocess_durations =
         run_preprocess_with_events(sink, &preprocess_ids, &registry, &mut ctx)?;
+    insert_structured_data_into_ctx(&mut ctx);
     let ctx = std::sync::Arc::new(ctx);
 
     // The context uses options without topology-disable (topology runs separately via
@@ -1933,6 +1950,7 @@ fn turtle_to_sink_separate(
         .collect();
     let preprocess_durations =
         run_preprocess_with_events(sink, &preprocess_ids, &registry, &mut ctx)?;
+    insert_structured_data_into_ctx(&mut ctx);
     let ctx = std::sync::Arc::new(ctx);
 
     let producer_ids = active_producer_ids_from_settings(settings);
@@ -2152,6 +2170,7 @@ fn nquads_to_sink(
         .collect();
     let preprocess_durations =
         run_preprocess_with_events(sink, &preprocess_ids, &registry, &mut ctx)?;
+    insert_structured_data_into_ctx(&mut ctx);
     let ctx = std::sync::Arc::new(ctx);
 
     let producer_ids = active_producer_ids_from_settings(settings);
@@ -2431,6 +2450,18 @@ fn run_geometry_pipeline(
         None,
     );
 
+    // Insert structured data + RML config into the pipeline context.
+    CURRENT_STRUCTURED_DATA.with(|cell| {
+        if let Some(sd) = cell.borrow().clone() {
+            ctx.insert(sd);
+        }
+    });
+    CURRENT_RML_CONFIG.with(|cell| {
+        if let Some(cfg) = cell.borrow().clone() {
+            ctx.insert(cfg);
+        }
+    });
+    insert_structured_data_into_ctx(&mut ctx);
     // Wrap in Arc for producers
     let ctx = std::sync::Arc::new(ctx);
 
