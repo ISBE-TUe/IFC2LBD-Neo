@@ -46,15 +46,19 @@ function render() {
 	const content = panelEl.querySelector("#detail-content");
 	if (!content) return;
 
-	if (!mod && !isParse) {
+	if (!mod && !isParse && !isStructuredImport) {
 		content.innerHTML =
 			'<div class="detail-empty">Select a pipeline node to view details.</div>';
 		return;
 	}
 
-	const displayName = isParse ? "Parse IFC" : mod.displayName;
-	const stage = isParse ? "Import" : mod.stage;
-	const rawOptionKeys = isParse ? [] : mod.optionKeys || [];
+	const displayName = isParse
+		? "Parse IFC"
+		: isStructuredImport
+			? "Parse Structured Data"
+			: mod.displayName;
+	const stage = isParse || isStructuredImport ? "Import" : mod.stage;
+	const rawOptionKeys = isParse || isStructuredImport ? [] : mod.optionKeys || [];
 	// output_stem is controlled by the global "Stem" field in the left rail
 	const optionKeys = rawOptionKeys.filter(
 		(k) => !(mod?.id === "neo-file-export" && k === "output_stem"),
@@ -110,7 +114,7 @@ function render() {
 		}
 
     ${
-			!isParse
+			!isParse && mod
 				? `
     <div class="detail-section">
       <div class="detail-section-title">METADATA</div>

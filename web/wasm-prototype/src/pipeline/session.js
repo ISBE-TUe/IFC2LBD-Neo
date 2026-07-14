@@ -172,9 +172,7 @@ function render() {
 				isParse ||
 				(isStructured && activeModules.has(mod.id)) ||
 				(!isParse && !isStructured && activeModules.has(mod.id));
-			const isRequired =
-				mod.id === "parse" ||
-				mod.id === "neo-file-export";
+			const isRequired = mod.id === "parse" || mod.id === "neo-file-export";
 			const status = stageStatuses[mod.id];
 			const statusStr = status?.status || "idle";
 			const isSelected = selectedPluginId === mod.id;

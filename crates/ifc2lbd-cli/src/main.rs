@@ -423,7 +423,8 @@ fn main() -> anyhow::Result<()> {
     }
     // Additional structured data files from --structured-data flag (loaded alongside IFC).
     if !args.structured_data.is_empty() {
-        let extra_files: Vec<(String, Vec<u8>)> = args.structured_data
+        let extra_files: Vec<(String, Vec<u8>)> = args
+            .structured_data
             .iter()
             .filter_map(|p| {
                 let name = p.file_name()?.to_string_lossy().to_string();
@@ -431,9 +432,13 @@ fn main() -> anyhow::Result<()> {
             })
             .collect();
         if !extra_files.is_empty() {
-            let sd = std::sync::Arc::new(structured_data::StructuredDataInput::from_raw(extra_files));
+            let sd =
+                std::sync::Arc::new(structured_data::StructuredDataInput::from_raw(extra_files));
             ctx.insert(sd);
-            tracing::info!("loaded {} structured data file(s) via --structured-data", args.structured_data.len());
+            tracing::info!(
+                "loaded {} structured data file(s) via --structured-data",
+                args.structured_data.len()
+            );
         }
     }
 

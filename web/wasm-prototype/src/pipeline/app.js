@@ -770,15 +770,15 @@ async function runConversionElectron() {
 		const outputExt = hasNquads ? ".nq" : ".ttl";
 
 		// Read structured data file bytes if present (both IFC + structured data can coexist)
-	const structuredDataFiles = [];
-	if (state.structuredDataFiles?.length) {
-		for (const file of state.structureduredDataFiles) {
-			const data = await file.arrayBuffer();
-			structuredDataFiles.push({ name: file.name, data });
+		const structuredDataFiles = [];
+		if (state.structuredDataFiles?.length) {
+			for (const file of state.structureduredDataFiles) {
+				const data = await file.arrayBuffer();
+				structuredDataFiles.push({ name: file.name, data });
+			}
 		}
-	}
 
-	const result = await window.electronAPI.runConversion({
+		const result = await window.electronAPI.runConversion({
 			fileName: ifcFile.name,
 			fileData,
 			modules: [...activeModules],
