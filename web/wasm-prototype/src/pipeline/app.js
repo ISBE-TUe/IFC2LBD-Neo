@@ -28,6 +28,7 @@ import {
 import "./pipeline.css";
 import {
 	getState,
+	getBackendModuleIds,
 	update,
 	updateStageStatus,
 	resetStageStatuses,
@@ -738,7 +739,7 @@ async function runConversionElectron() {
 		// via IPC and the main process writes them to a temp file.
 		const fileData = await ifcFile.arrayBuffer();
 
-		const plan = resolvePlanStatic([...activeModules], moduleOptionsArr);
+		const plan = resolvePlanStatic(getBackendModuleIds(), moduleOptionsArr);
 		log(`Plan: ${plan.enabledIds.join(", ")}`);
 		log(`Running via native CLI (Electron sidecar)...`);
 
@@ -781,7 +782,7 @@ async function runConversionElectron() {
 		const result = await window.electronAPI.runConversion({
 			fileName: ifcFile.name,
 			fileData,
-			modules: [...activeModules],
+			modules: getBackendModuleIds(),
 			moduleOptions: moduleOptionsArr,
 			baseUri,
 			outputStem,
@@ -906,7 +907,7 @@ async function runConversion() {
 	try {
 		const { activeModules, moduleOptions, baseUri } = getState();
 		const outputStem = resolveOutputStem();
-		const moduleIds = [...activeModules];
+		const moduleIds = getBackendModuleIds();
 		const moduleOptionsArr = [];
 		for (const [pluginId, opts] of Object.entries(moduleOptions)) {
 			if (!activeModules.has(pluginId)) continue;
@@ -933,7 +934,7 @@ async function runConversion() {
 			);
 			input = fileBuffers[0].data; // first buffer for compatibility
 			requestPayload = {
-				moduleIds: [...activeModules],
+				moduleIds: getBackendModuleIds(),
 				moduleOptions: moduleOptionsArr,
 				baseUri,
 				outputStem,
@@ -951,7 +952,7 @@ async function runConversion() {
 			const ifcFileBytes = new Uint8Array(await ifcFile.arrayBuffer());
 			input = ifcFileBytes;
 			requestPayload = {
-				moduleIds: [...activeModules],
+				moduleIds: getBackendModuleIds(),
 				moduleOptions: moduleOptionsArr,
 				baseUri,
 				outputStem,

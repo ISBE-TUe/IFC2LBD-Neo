@@ -89,6 +89,13 @@ const SERIALIZERS = [
 const GEO_PREPROCESS = "neo-geometry-preprocess";
 const GEO_PRODUCER = "neo-geometry-producer";
 
+/// IDs that are UI-only (not real backend plugins). Filtered before sending to the backend.
+const UI_ONLY_IDS = new Set(["neo-structured-data-import"]);
+
+export function getBackendModuleIds() {
+	return [...state.activeModules].filter((id) => !UI_ONLY_IDS.has(id));
+}
+
 export function toggleModule(id) {
 	const mods = new Set(state.activeModules);
 	if (mods.has(id)) {

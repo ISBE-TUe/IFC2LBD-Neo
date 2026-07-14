@@ -58,7 +58,8 @@ function render() {
 			? "Parse Structured Data"
 			: mod.displayName;
 	const stage = isParse || isStructuredImport ? "Import" : mod.stage;
-	const rawOptionKeys = isParse || isStructuredImport ? [] : mod.optionKeys || [];
+	const rawOptionKeys =
+		isParse || isStructuredImport ? [] : mod.optionKeys || [];
 	// output_stem is controlled by the global "Stem" field in the left rail
 	const optionKeys = rawOptionKeys.filter(
 		(k) => !(mod?.id === "neo-file-export" && k === "output_stem"),
