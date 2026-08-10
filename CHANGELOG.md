@@ -2,6 +2,24 @@
 
 All notable changes to IFC2LBD-Neo are documented in this file.
 
+## [0.6.3]
+
+### Fixed — a type's property set was inherited on top of the occurrence's own
+
+`IfcRelDefinesByType` attached every property set from an element's type to the
+element unconditionally, alongside the sets it already carried directly. IFC
+treats a type's property sets as **defaults that the occurrence overrides**, so
+inheriting both left one object with two same-named sets under two IRIs — and a
+property such as `IsExternal` appearing twice, with nothing to say which is in
+force.
+
+On a 155 MB IFC2X3 export: **3,703 objects** in that state — 1,589 of them
+`Pset_WallCommon` on walls, plus `Pset_DoorCommon` (376), `Pset_SlabCommon` (286)
+and twenty other sets. Now **0**.
+
+A type set whose name the occurrence already uses is no longer inherited. The
+same rule applies to type quantity sets.
+
 ## [0.6.2]
 
 ### Fixed — an IFC2X3 file got a second quantity set on every element

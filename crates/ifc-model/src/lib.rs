@@ -379,18 +379,52 @@ pub fn build_model(step: &StepFile) -> Result<IfcModel, ModelError> {
             continue;
         }
         for object_id in &rel.related_objects {
+            // A type's property sets are *defaults*. Where the occurrence
+            // carries a set of the same name, IFC says the occurrence's one
+            // applies and the type's does not — so inheriting both attaches two
+            // same-named sets to one object, under two IRIs, and a property such
+            // as `IsExternal` then appears twice with nothing to say which is
+            // in force. One IFC2X3 export had 2,536 objects in that state,
+            // 958 of them `Pset_WallCommon` on walls.
+            let own_set_names: std::collections::HashSet<&str> = property_sets_for_object
+                .get(object_id)
+                .into_iter()
+                .flatten()
+                .filter_map(|id| partial.property_sets.get(id))
+                .filter_map(|ps| ps.name.as_deref())
+                .collect();
+            let own_quantity_names: std::collections::HashSet<&str> = quantities_for_object
+                .get(object_id)
+                .into_iter()
+                .flatten()
+                .filter_map(|id| partial.element_quantities.get(id))
+                .filter_map(|q| q.name.as_deref())
+                .collect();
+
             for property_definition in &type_property_sets {
-                if partial.property_sets.contains_key(property_definition) {
-                    property_sets_for_object
-                        .entry(*object_id)
-                        .or_default()
-                        .push(*property_definition);
+                if let Some(ps) = partial.property_sets.get(property_definition) {
+                    let shadowed = ps
+                        .name
+                        .as_deref()
+                        .is_some_and(|n| own_set_names.contains(n));
+                    if !shadowed {
+                        property_sets_for_object
+                            .entry(*object_id)
+                            .or_default()
+                            .push(*property_definition);
+                    }
                 }
-                if partial.element_quantities.contains_key(property_definition) {
-                    quantities_for_object
-                        .entry(*object_id)
-                        .or_default()
-                        .push(*property_definition);
+                if let Some(q) = partial.element_quantities.get(property_definition) {
+                    let shadowed = q
+                        .name
+                        .as_deref()
+                        .is_some_and(|n| own_quantity_names.contains(n));
+                    if !shadowed {
+                        quantities_for_object
+                            .entry(*object_id)
+                            .or_default()
+                            .push(*property_definition);
+                    }
                 }
             }
         }
@@ -1145,5 +1179,51 @@ mod tests {
         let node = parse_spatial_node(&entity, SpatialType::Building);
         assert_eq!(node.elevation_of_ref_height, Some(12.34));
         assert_eq!(node.elevation_of_terrain, Some(56.78));
+    }
+
+    /// A type's property sets are defaults the occurrence overrides. Inheriting
+    /// one whose name the occurrence already uses gave the object two
+    /// same-named sets under two IRIs, so a property such as `IsExternal`
+    /// appeared twice with nothing to say which applied. One IFC2X3 export had
+    /// 3,703 objects in that state.
+    #[test]
+    fn a_type_property_set_does_not_shadow_the_occurrence_s_own() {
+        let src = b"ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION((''),'2;1');\n\
+FILE_NAME('','',(''),(''),'',' ','');\nFILE_SCHEMA(('IFC2X3'));\nENDSEC;\nDATA;\n\
+#1=IFCWALL('0wall00000000000000001',$,'W',$,$,$,$,$,$);\n\
+#2=IFCWALLTYPE('0type00000000000000001',$,'T',$,$,(#3),$,$,$,.NOTDEFINED.);\n\
+#3=IFCPROPERTYSET('0typeps000000000000001',$,'Pset_WallCommon',$,(#4));\n\
+#4=IFCPROPERTYSINGLEVALUE('IsExternal',$,IFCBOOLEAN(.F.),$);\n\
+#5=IFCPROPERTYSET('0instps00000000000001',$,'Pset_WallCommon',$,(#6));\n\
+#6=IFCPROPERTYSINGLEVALUE('IsExternal',$,IFCBOOLEAN(.T.),$);\n\
+#7=IFCPROPERTYSET('0other000000000000001',$,'Pset_WallExtra',$,(#8));\n\
+#8=IFCPROPERTYSINGLEVALUE('Foo',$,IFCBOOLEAN(.T.),$);\n\
+#9=IFCRELDEFINESBYPROPERTIES('0rel1000000000000001',$,$,$,(#1),#5);\n\
+#10=IFCRELDEFINESBYTYPE('0rel2000000000000001',$,$,$,(#1),#2);\n\
+#11=IFCRELDEFINESBYPROPERTIES('0rel3000000000000001',$,$,$,(#2),#7);\n\
+ENDSEC;\nEND-ISO-10303-21;\n";
+        let step = ifc_step::parse_step_bytes(src).expect("parse");
+        let model = build_model(&step).expect("model");
+        let wall = *model
+            .elements
+            .iter()
+            .find(|(_, e)| e.guid == "0wall00000000000000001")
+            .expect("wall")
+            .0;
+
+        let names: Vec<&str> = model
+            .property_sets_for_object
+            .get(&wall)
+            .expect("wall has property sets")
+            .iter()
+            .filter_map(|id| model.property_sets.get(id))
+            .filter_map(|ps| ps.name.as_deref())
+            .collect();
+
+        assert_eq!(
+            names.iter().filter(|n| **n == "Pset_WallCommon").count(),
+            1,
+            "the occurrence's own set must win outright, got {names:?}"
+        );
     }
 }
