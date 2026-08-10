@@ -6,6 +6,8 @@
 
 pub mod modules;
 
+mod beo_index;
+
 /// Compute approximate bounding boxes from STEP data (no mesh/OCC dependency).
 /// Used by the WASM bbox enricher for topology enrichment.
 pub use modules::bbox::compute_approximate_bboxes;
@@ -42,15 +44,15 @@ use lbd_ontology::{
     bot_contains_zone, bot_has_sub_element, bot_interface, bot_interface_of,
     bot_intersecting_element, bot_site, bot_space, bot_storey, bot_zone, express_has_boolean,
     express_has_double, express_has_integer, express_has_logical, express_has_string,
-    express_logical_value, furn_class, geo_as_wkt, geo_geometry, geo_wkt_literal,
-    lbd_has_bounding_box, lbd_project, list_has_contents, list_has_next,
+    express_logical_value, geo_as_wkt, geo_geometry, geo_wkt_literal,
+    dicp_construction_project, lbd_has_bounding_box, list_has_contents, list_has_next,
     opm_current_property_state, opm_has_property_state,
     opm_property, owl_imports, owl_object_property, owl_ontology, props_property,
-    prov_generated_at_time, rdf_li, rdf_seq, rdf_type, rdfs_comment, rdfs_label, schema_value,
-    smls_unit, unit_iri, Object, Triple, EXPRESS, XSD,
+    prov_generated_at_time, qudt_unit, rdf_li, rdf_seq, rdf_type, rdfs_comment, rdfs_label,
+    schema_value, unit_iri, Object, Triple, EXPRESS, XSD,
 };
 #[cfg(test)]
-use lbd_ontology::{bot_has_building, bot_has_site, owl_same_as};
+use lbd_ontology::{bot_has_building, owl_same_as, rdf_member};
 use lbd_topology::{
     build_topology, build_topology_with_enricher, IfcRelationEvidenceEnricher, TopologyEdgeKind,
     TopologyGraph, TopologyNodeKind,
@@ -1738,7 +1740,7 @@ where
     if let Some(unit) = unit {
         emit(Triple {
             subject: state_subject,
-            predicate: smls_unit(),
+            predicate: qudt_unit(),
             object: Object::Iri(unit),
         })?;
     }
@@ -2272,7 +2274,7 @@ fn lowercase_initial_ascii(value: &str) -> String {
 
 pub(crate) fn spatial_class(spatial_type: SpatialType) -> String {
     match spatial_type {
-        SpatialType::Project => lbd_project(),
+        SpatialType::Project => dicp_construction_project(),
         SpatialType::Site => bot_site(),
         SpatialType::Building => bot_building(),
         SpatialType::Storey => bot_storey(),
@@ -2429,11 +2431,32 @@ pub(crate) fn ifcowl_element_iri(base: &str, element: &ifc_model::ElementNode) -
     ifcowl_entity_iri(base, Some(&class_name), element.id)
 }
 
-pub(crate) fn lbd_product_class_iri(entity_name: &str, product_type: &str) -> String {
-    match entity_name {
-        "IFCFURNISHINGELEMENT" => furn_class(product_type),
-        _ => beo_class(product_type),
-    }
+/// BEO product-class IRI for a product type, when BEO actually declares it.
+///
+/// `None` means BEO has no class for this product type, so no product-class
+/// `rdf:type` should be emitted. The live case is `Furniture`
+/// (`IFCFURNISHINGELEMENT`, `IFCFURNITURE`, `IFCSYSTEMFURNITUREELEMENT`): BEO has
+/// no furniture concept, and the `furn:` vocabulary that used to serve it
+/// (`http://pi.pauwel.be/voc/furniture#`) is gone. Those elements keep
+/// `bot:Element` plus their ifcOWL and bSDD typing.
+pub(crate) fn lbd_product_class_iri(product_type: &str) -> Option<String> {
+    beo_index::beo_declares(product_type).then(|| beo_class(product_type))
+}
+
+/// BEO IRI for a predefined-type subclass such as `Railing-HANDRAIL`, when BEO
+/// declares it.
+///
+/// BEO ships the meaningful variants but not `NOTDEFINED`, which states that no
+/// subtype was given — that is the base class, not a subtype named NOTDEFINED.
+/// `USERDEFINED` is likewise undeclared, as is anything
+/// `ifc_model::element_predefined_type`'s catch-all arm misreads out of an
+/// unrelated attribute slot. All of them fall back to the base class here.
+pub(crate) fn lbd_predefined_type_class_iri(
+    product_type: &str,
+    predefined_type: &str,
+) -> Option<String> {
+    let local_name = format!("{product_type}-{predefined_type}");
+    beo_index::beo_declares(&local_name).then(|| beo_class(&local_name))
 }
 
 fn canonical_ifc_entity_local_name(entity_name: &str) -> String {
@@ -2803,6 +2826,7 @@ mod tests {
     use super::*;
     use ifc_model::build_model;
     use ifc_step::{parse_step_bytes, parse_step_file};
+    use std::convert::Infallible;
     use std::collections::HashMap;
     use std::collections::HashSet;
     use std::path::PathBuf;
@@ -2851,7 +2875,7 @@ mod tests {
         assert!(result
             .triples
             .iter()
-            .any(|triple| triple.predicate == bot_has_site()));
+            .any(|triple| triple.predicate == bot_contains_zone()));
         assert!(result
             .triples
             .iter()
@@ -2926,7 +2950,7 @@ mod tests {
                 && matches!(&triple.object, Object::TypedLiteral { value, .. } if !value.is_empty())
         }));
         assert!(result.triples.iter().any(|triple| {
-            triple.predicate == smls_unit()
+            triple.predicate == qudt_unit()
                 && matches!(&triple.object, Object::Iri(iri) if iri == "http://qudt.org/vocab/unit/M2")
         }));
         assert!(result.triples.iter().any(|triple| {
@@ -3457,5 +3481,209 @@ mod tests {
             triple.predicate == geo_as_wkt()
                 && matches!(&triple.object, Object::TypedLiteral { value, datatype } if value.starts_with("POLYHEDRALSURFACE Z") && datatype == &geo_wkt_literal())
         }));
+    }
+
+    // ── Vocabulary correctness ───────────────────────────────────────────────
+    //
+    // Every type and predicate the converter emits must be one some vocabulary
+    // actually describes. An undescribed term is silently harmful: the triples
+    // load and the counts look right, but nothing can resolve, subsume or target
+    // it. These tests pin the cases a coverage audit found in real models.
+
+    const TEST_BASE: &str = "https://example.test/base";
+
+    /// Wrap an inline STEP body in a minimal IFC4 envelope and build the model.
+    fn model_from_step(data: &[u8]) -> (IfcModel, ConvertOptions) {
+        let mut bytes =
+            Vec::from(&b"ISO-10303-21;\nHEADER;\nFILE_SCHEMA(('IFC4'));\nENDSEC;\nDATA;\n"[..]);
+        bytes.extend_from_slice(data);
+        bytes.extend_from_slice(b"ENDSEC;\n");
+
+        let step = parse_step_bytes(&bytes).unwrap();
+        let model = build_model(&step).unwrap();
+        let options = ConvertOptions {
+            base_uri: format!("{TEST_BASE}/"),
+            emit_ifcowl_links: false,
+            ..ConvertOptions::default()
+        };
+        (model, options)
+    }
+
+    fn beo_triples(data: &[u8]) -> Vec<Triple> {
+        let (model, options) = model_from_step(data);
+        let mut triples = Vec::new();
+        modules::beo::emit_beo(&model, &options, TEST_BASE, &mut |triple| {
+            triples.push(triple);
+            Ok::<(), Infallible>(())
+        })
+        .unwrap();
+        triples
+    }
+
+    fn bot_triples(data: &[u8]) -> Vec<Triple> {
+        let (model, options) = model_from_step(data);
+        let mut triples = Vec::new();
+        modules::bot::emit_bot(&model, &options, TEST_BASE, &mut |triple| {
+            triples.push(triple);
+            Ok::<(), Infallible>(())
+        })
+        .unwrap();
+        triples
+    }
+
+    fn emitted_types(triples: &[Triple]) -> Vec<&str> {
+        triples
+            .iter()
+            .filter(|triple| triple.predicate == rdf_type())
+            .filter_map(|triple| match &triple.object {
+                Object::Iri(iri) => Some(iri.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// §1 — `NOTDEFINED` means "no subtype stated", which is the base class, not
+    /// a subtype called NOTDEFINED. BEO does not declare `beo:Railing-NOTDEFINED`.
+    #[test]
+    fn beo_notdefined_predefined_type_falls_back_to_the_base_class() {
+        let triples =
+            beo_triples(b"#1=IFCRAILING('0railing00000000000000',$,'R',$,$,$,$,$,.NOTDEFINED.);\n");
+        let types = emitted_types(&triples);
+
+        assert_eq!(types, vec!["https://pi.pauwel.be/voc/buildingelement#Railing"]);
+        assert!(!types.iter().any(|iri| iri.contains("NOTDEFINED")));
+    }
+
+    /// §1 — the guard is an allowlist, not a `NOTDEFINED` denylist, so
+    /// `USERDEFINED` and any enum misread by `element_predefined_type`'s
+    /// catch-all arm are suppressed the same way.
+    #[test]
+    fn beo_userdefined_predefined_type_falls_back_to_the_base_class() {
+        let triples = beo_triples(
+            b"#1=IFCRAILING('0railing00000000000000',$,'R',$,$,$,$,$,.USERDEFINED.);\n",
+        );
+
+        assert_eq!(
+            emitted_types(&triples),
+            vec!["https://pi.pauwel.be/voc/buildingelement#Railing"]
+        );
+    }
+
+    /// §1 — variants BEO does declare are still emitted, alongside the base
+    /// class. The suffix pattern is right; only undeclared variants are wrong.
+    #[test]
+    fn beo_declared_predefined_type_variant_is_emitted_with_the_base_class() {
+        let triples =
+            beo_triples(b"#1=IFCRAILING('0railing00000000000000',$,'R',$,$,$,$,$,.HANDRAIL.);\n");
+        let types = emitted_types(&triples);
+
+        assert!(types.contains(&"https://pi.pauwel.be/voc/buildingelement#Railing-HANDRAIL"));
+        assert!(types.contains(&"https://pi.pauwel.be/voc/buildingelement#Railing"));
+        assert_eq!(types.len(), 2);
+    }
+
+    /// §3 — BEO has no furniture class, and `http://pi.pauwel.be/voc/furniture#`
+    /// is a dead host. Furnishing elements get no product-class type at all;
+    /// they keep `bot:Element` and their ifcOWL / bSDD typing.
+    #[test]
+    fn beo_emits_no_product_class_for_furnishing_elements() {
+        for body in [
+            &b"#1=IFCFURNISHINGELEMENT('0furnish0000000000000',$,'F',$,$,$,$,$);\n"[..],
+            &b"#1=IFCFURNITURE('0furniture000000000000',$,'F',$,$,$,$,$,.CHAIR.);\n"[..],
+            &b"#1=IFCSYSTEMFURNITUREELEMENT('0sysfurn00000000000000',$,'F',$,$,$,$,$);\n"[..],
+        ] {
+            let triples = beo_triples(body);
+            assert!(
+                triples.is_empty(),
+                "expected no BEO product class, got {triples:?}"
+            );
+        }
+    }
+
+    /// §3 — the retired `furn:` namespace must not appear anywhere in output.
+    #[test]
+    fn furniture_namespace_is_never_emitted() {
+        let triples =
+            beo_triples(b"#1=IFCFURNISHINGELEMENT('0furnish0000000000000',$,'F',$,$,$,$,$);\n");
+
+        assert!(!triples.iter().any(|triple| match &triple.object {
+            Object::Iri(iri) => iri.contains("voc/furniture"),
+            _ => false,
+        }));
+    }
+
+    /// A plain element with no predefined type is unaffected by the guard.
+    #[test]
+    fn beo_emits_the_base_class_when_no_predefined_type_is_present() {
+        let triples = beo_triples(b"#1=IFCWALL('0wall00000000000000000',$,'W',$,$,$,$,$);\n");
+
+        assert_eq!(
+            emitted_types(&triples),
+            vec!["https://pi.pauwel.be/voc/buildingelement#Wall"]
+        );
+    }
+
+    const PROJECT_AND_SITE: &[u8] =
+        b"#1=IFCPROJECT('0project00000000000000',$,'P',$,$,$,$,$,$);\n\
+          #2=IFCSITE('0site000000000000000000',$,'S',$,$,$,$,$,$,$,$,$,$,$);\n\
+          #3=IFCRELAGGREGATES('0rel0000000000000000000',$,$,$,#1,(#2));\n";
+
+    /// §4 — the root of every converted model was typed
+    /// `https://linkedbuildingdata.org/LBD#Project`, a namespace with no
+    /// vocabulary document behind it.
+    #[test]
+    fn project_root_is_typed_as_a_construction_project() {
+        let triples = bot_triples(PROJECT_AND_SITE);
+        let types = emitted_types(&triples);
+
+        assert!(types.contains(
+            &"https://w3id.org/digitalconstruction/0.5/Processes#ConstructionProject"
+        ));
+        assert!(!types.iter().any(|iri| iri.contains("linkedbuildingdata.org")));
+    }
+
+    /// §5 — BOT has no `hasSite` property. `bot:Site` is a `bot:Zone`, and zone
+    /// containment is `bot:containsZone`.
+    #[test]
+    fn project_to_site_link_uses_a_bot_property_that_exists() {
+        let triples = bot_triples(PROJECT_AND_SITE);
+
+        let project = spatial_resource_iri(TEST_BASE, SpatialType::Project, "0project00000000000000");
+        let site = spatial_resource_iri(TEST_BASE, SpatialType::Site, "0site000000000000000000");
+
+        assert!(triples.iter().any(|triple| {
+            triple.subject == project
+                && triple.predicate == bot_contains_zone()
+                && matches!(&triple.object, Object::Iri(iri) if iri == &site)
+        }));
+        assert!(!triples
+            .iter()
+            .any(|triple| triple.predicate.ends_with("#hasSite")));
+    }
+
+    /// §2 — `https://w3id.org/def/smls-owl#` returns 404, so the predicate
+    /// carrying the unit on every property state resolved to nothing.
+    #[test]
+    fn unit_predicate_is_qudt_not_the_dead_smls_vocabulary() {
+        assert_eq!(qudt_unit(), "http://qudt.org/schema/qudt/unit");
+        assert!(!qudt_unit().contains("smls"));
+    }
+
+    /// The prefix table is what the Turtle serializer writes as a header, so a
+    /// retired namespace left in it would keep appearing in every output file.
+    #[test]
+    fn prefix_table_carries_no_retired_namespaces() {
+        for (prefix, namespace) in lbd_ontology::PREFIXES {
+            assert!(
+                !namespace.contains("smls-owl") && !namespace.contains("voc/furniture"),
+                "retired namespace still registered under {prefix}: {namespace}"
+            );
+        }
+        assert!(lbd_ontology::PREFIXES
+            .iter()
+            .any(|(prefix, _)| *prefix == "qudt"));
+        assert!(lbd_ontology::PREFIXES
+            .iter()
+            .any(|(prefix, _)| *prefix == "dicp"));
     }
 }

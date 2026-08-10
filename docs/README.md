@@ -3,6 +3,8 @@
 ## Architecture
 
 - [Converter Pipeline](./converter-pipeline.md) — stage order, threading model, channel backpressure
+- [Vocabulary Fixes — Handoff](./vocabulary-fixes-handoff.md) — the cn3-pt1 audit that found terms resolving to nothing
+- [Vocabulary Fixes — Plan](./vocabulary-fixes-plan.md) — what was changed, where, and what remains open
 
 ## Plugin Development
 

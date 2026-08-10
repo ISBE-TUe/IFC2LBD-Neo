@@ -31,5 +31,18 @@ The following components are included under their respective licenses:
     under AGPL-3.0-only.  The combined work is distributed under both
     licenses where applicable.
 
+  ontologies/beo.ttl  (Building Element Ontology, "BEO")
+    Version: v0.1.0 (December 27th 2018)
+    License: Creative Commons Attribution 1.0 (CC BY 1.0)
+             https://creativecommons.org/licenses/by/1.0/
+    Author:  Pieter Pauwels
+    Source:  https://pi.pauwel.be/voc/buildingelement
+
+    Vendored unmodified for provenance.  The converter does not ship the
+    ontology itself; it embeds only the list of declared class names
+    (crates/lbd-converter/resources/beo_classes.txt), generated from this
+    file by scripts/build_beo_index.py, and consults it before emitting a
+    beo: type so that no undeclared IRI is ever produced.
+
 All other dependencies (Rust crates, npm packages) retain their
 original licenses as declared in Cargo.lock and package-lock.json.

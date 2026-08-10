@@ -9,7 +9,7 @@ use ifc_schema::SpatialType;
 use ifc_step::{decode_ifc_unicode, StepSchema, StepValue};
 use lbd_ontology::{
     opm_current_property_state, opm_has_property_state, opm_property, prov_generated_at_time,
-    rdf_type, rdfs_label, schema_value, smls_unit, Object, Triple, XSD,
+    rdf_type, rdfs_label, schema_value, qudt_unit, Object, Triple, XSD,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -2282,7 +2282,7 @@ fn emit_property(
             batch_size,
             Triple {
                 subject: state_subject,
-                predicate: smls_unit(),
+                predicate: qudt_unit(),
                 object: Object::Iri(unit),
             },
             triples,
@@ -2521,7 +2521,7 @@ fn emit_std_attr(
     if let Some(unit) = unit {
         push(batch, sender, batch_size, Triple {
             subject: state_iri,
-            predicate: smls_unit(),
+            predicate: qudt_unit(),
             object: Object::Iri(unit),
         }, triples)?;
     }

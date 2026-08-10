@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use crossbeam::channel::Sender;
 use ifc_model::IfcModel;
 use ifc_schema::SpatialType;
-use lbd_ontology::{bot_contains_element, bot_element, bot_has_building, bot_has_site, bot_has_space, bot_has_storey, owl_same_as, rdf_type, Object, Triple};
+use lbd_ontology::{bot_contains_element, bot_contains_zone, bot_element, bot_has_building, bot_has_space, bot_has_storey, owl_same_as, rdf_type, Object, Triple};
 
 use crate::{
     baseline_containment_closure, element_resource_iri, ifcowl_element_iri, ifcowl_spatial_iri,
@@ -45,7 +45,7 @@ where
         })?;
     }
 
-    // Spatial hierarchy predicates (bot:hasSite, bot:hasBuilding, etc.)
+    // Spatial hierarchy predicates (bot:containsZone, bot:hasBuilding, etc.)
     let mut parent_ids: Vec<_> = model.children_of.keys().copied().collect();
     parent_ids.sort_unstable();
     for parent_id in parent_ids {
@@ -61,7 +61,9 @@ where
                 continue;
             };
             let predicate = match (parent.spatial_type, child.spatial_type) {
-                (SpatialType::Project, SpatialType::Site) => Some(bot_has_site()),
+                // BOT has no `hasSite` property. `bot:Site` is a `bot:Zone`, and
+                // zone containment is `bot:containsZone`.
+                (SpatialType::Project, SpatialType::Site) => Some(bot_contains_zone()),
                 (SpatialType::Site, SpatialType::Building) => Some(bot_has_building()),
                 (SpatialType::Building, SpatialType::Storey) => Some(bot_has_storey()),
                 (SpatialType::Storey, SpatialType::Space) => Some(bot_has_space()),

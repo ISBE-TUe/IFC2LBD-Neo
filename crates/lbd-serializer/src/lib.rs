@@ -577,14 +577,14 @@ mod tests {
         let ttl = serialize_turtle_to_string(&[Triple {
             subject: "https://example.test/project/1".to_string(),
             predicate: rdf_type(),
-            object: Object::Iri("https://linkedbuildingdata.org/LBD#Project".to_string()),
+            object: Object::Iri("https://w3id.org/digitalconstruction/0.5/Processes#ConstructionProject".to_string()),
         }])
         .unwrap();
 
-        assert!(ttl.contains("@prefix lbd:"));
+        assert!(ttl.contains("@prefix dicp:"));
         assert!(!ttl.contains("@prefix bot:"));
         assert!(ttl.contains("<https://example.test/project/1>"));
-        assert!(ttl.contains("a lbd:Project ."));
+        assert!(ttl.contains("a dicp:ConstructionProject ."));
     }
 
     #[test]
@@ -593,7 +593,7 @@ mod tests {
             Triple {
                 subject: "https://example.test/project/1".to_string(),
                 predicate: rdf_type(),
-                object: Object::Iri("https://linkedbuildingdata.org/LBD#Project".to_string()),
+                object: Object::Iri("https://w3id.org/digitalconstruction/0.5/Processes#ConstructionProject".to_string()),
             },
             Triple {
                 subject: "https://example.test/project/1".to_string(),
@@ -602,14 +602,14 @@ mod tests {
             },
             Triple {
                 subject: "https://example.test/project/1".to_string(),
-                predicate: "https://w3id.org/bot#hasSite".to_string(),
+                predicate: "https://w3id.org/bot#containsZone".to_string(),
                 object: Object::Iri("https://example.test/site/2".to_string()),
             },
         ])
         .unwrap();
 
-        assert!(ttl.contains("a lbd:Project, bot:Site ;"));
-        assert!(ttl.contains("bot:hasSite <https://example.test/site/2> ."));
+        assert!(ttl.contains("a dicp:ConstructionProject, bot:Site ;"));
+        assert!(ttl.contains("bot:containsZone <https://example.test/site/2> ."));
     }
 
     #[test]
@@ -619,7 +619,7 @@ mod tests {
             .send(vec![Triple {
                 subject: "https://example.test/project/1".to_string(),
                 predicate: rdf_type(),
-                object: Object::Iri("https://linkedbuildingdata.org/LBD#Project".to_string()),
+                object: Object::Iri("https://w3id.org/digitalconstruction/0.5/Processes#ConstructionProject".to_string()),
             }])
             .unwrap();
         drop(sender);
@@ -628,7 +628,7 @@ mod tests {
         serialize_turtle_batches_to_writer(receiver, &mut buffer, None).unwrap();
         let ttl = String::from_utf8(buffer).unwrap();
 
-        assert!(ttl.contains("@prefix lbd:"));
+        assert!(ttl.contains("@prefix dicp:"));
         assert!(ttl.contains("<https://example.test/project/1>"));
     }
 
@@ -640,11 +640,11 @@ mod tests {
                 Triple {
                     subject: "https://example.test/base/project_1".to_string(),
                     predicate: rdf_type(),
-                    object: Object::Iri("https://linkedbuildingdata.org/LBD#Project".to_string()),
+                    object: Object::Iri("https://w3id.org/digitalconstruction/0.5/Processes#ConstructionProject".to_string()),
                 },
                 Triple {
                     subject: "https://example.test/base/project_1".to_string(),
-                    predicate: "https://w3id.org/bot#hasSite".to_string(),
+                    predicate: "https://w3id.org/bot#containsZone".to_string(),
                     object: Object::Iri("https://example.test/base/site_2".to_string()),
                 },
             ])
@@ -658,8 +658,8 @@ mod tests {
 
         assert!(ttl.contains("@prefix inst: <https://example.test/base/> ."));
         assert!(ttl.contains("inst:project_1"));
-        assert!(ttl.contains("a lbd:Project ;"));
-        assert!(ttl.contains("bot:hasSite inst:site_2 ."));
+        assert!(ttl.contains("a dicp:ConstructionProject ;"));
+        assert!(ttl.contains("bot:containsZone inst:site_2 ."));
     }
 
     #[test]
@@ -667,12 +667,12 @@ mod tests {
         let ttl = serialize_turtle_to_string(&[
             Triple {
                 subject: "https://example.test/s".to_string(),
-                predicate: "https://w3id.org/bot#hasSite".to_string(),
+                predicate: "https://w3id.org/bot#containsZone".to_string(),
                 object: Object::Iri("https://example.test/o".to_string()),
             },
             Triple {
                 subject: "https://example.test/s".to_string(),
-                predicate: "https://w3id.org/bot#hasSite".to_string(),
+                predicate: "https://w3id.org/bot#containsZone".to_string(),
                 object: Object::Iri("https://example.test/o".to_string()),
             },
         ])
@@ -689,7 +689,7 @@ mod tests {
             .send(vec![Triple {
                 subject: "https://example.test/project/1".to_string(),
                 predicate: rdf_type(),
-                object: Object::Iri("https://linkedbuildingdata.org/LBD#Project".to_string()),
+                object: Object::Iri("https://w3id.org/digitalconstruction/0.5/Processes#ConstructionProject".to_string()),
             }])
             .unwrap();
         drop(sender);
@@ -700,7 +700,7 @@ mod tests {
         let nq = String::from_utf8(buffer).unwrap();
 
         assert!(nq.contains(
-            "<https://example.test/project/1> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <https://linkedbuildingdata.org/LBD#Project> <https://example.test/g/lbd> ."
+            "<https://example.test/project/1> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <https://w3id.org/digitalconstruction/0.5/Processes#ConstructionProject> <https://example.test/g/lbd> ."
         ));
     }
 

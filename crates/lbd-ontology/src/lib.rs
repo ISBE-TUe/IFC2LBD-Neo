@@ -4,9 +4,18 @@ pub const BOT: &str = "https://w3id.org/bot#";
 pub const TOPO: &str = "https://w3id.org/ifc2lbd/topology#";
 pub const LBD: &str = "https://linkedbuildingdata.org/LBD#";
 pub const BEO: &str = "https://pi.pauwel.be/voc/buildingelement#";
-pub const FURN: &str = "http://pi.pauwel.be/voc/furniture#";
 pub const PROPS: &str = "http://lbd.arch.rwth-aachen.de/props#";
+/// QUDT **schema** — the vocabulary that defines `qudt:unit`, the predicate
+/// carrying a unit on a property state.
+///
+/// Distinct from [`UNIT`], which holds the unit *individuals* that are this
+/// predicate's objects. Both are needed; they are not interchangeable.
+pub const QUDT: &str = "http://qudt.org/schema/qudt/";
 pub const UNIT: &str = "http://qudt.org/vocab/unit/";
+/// Digital Construction Processes ontology — supplies `dicp:ConstructionProject`
+/// for the root node of a converted model. BOT has no project concept of its own
+/// (its hierarchy starts at `bot:Site`), which is why an external term is needed.
+pub const DICP: &str = "https://w3id.org/digitalconstruction/0.5/Processes#";
 pub const LIST: &str = "https://w3id.org/list#";
 pub const EXPRESS: &str = "https://w3id.org/express#";
 pub const OPM: &str = "https://w3id.org/opm#";
@@ -16,7 +25,6 @@ pub const BSDDM: &str = "https://w3id.org/ifc2lbd/bsdd-meta#";
 pub const OMG: &str = "https://w3id.org/omg#";
 pub const GEO: &str = "http://www.opengis.net/ont/geosparql#";
 pub const SCHEMA: &str = "http://schema.org/";
-pub const SMLS: &str = "https://w3id.org/def/smls-owl#";
 pub const PROV: &str = "http://www.w3.org/ns/prov#";
 pub const OWL: &str = "http://www.w3.org/2002/07/owl#";
 pub const RDF: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
@@ -27,10 +35,11 @@ pub const PREFIXES: [(&str, &str); 22] = [
     ("bot", BOT),
     ("topo", TOPO),
     ("beo", BEO),
-    ("furn", FURN),
     ("lbd", LBD),
     ("props", PROPS),
+    ("qudt", QUDT),
     ("unit", UNIT),
+    ("dicp", DICP),
     ("list", LIST),
     ("express", EXPRESS),
     ("opm", OPM),
@@ -40,7 +49,6 @@ pub const PREFIXES: [(&str, &str); 22] = [
     ("omg", OMG),
     ("geo", GEO),
     ("schema", SCHEMA),
-    ("smls", SMLS),
     ("prov", PROV),
     ("owl", OWL),
     ("rdf", RDF),
@@ -126,8 +134,13 @@ pub fn lbd_has_quantity_set() -> String {
     format!("{LBD}hasQuantitySet")
 }
 
-pub fn lbd_project() -> String {
-    format!("{LBD}Project")
+/// Type of the root node of a converted model.
+///
+/// Replaces the former `lbd:Project`, whose namespace
+/// (`https://linkedbuildingdata.org/LBD#`) has no vocabulary document behind it —
+/// the root of every model was typed with an IRI nothing could resolve.
+pub fn dicp_construction_project() -> String {
+    format!("{DICP}ConstructionProject")
 }
 
 pub fn lbd_has_bounding_box() -> String {
@@ -190,10 +203,6 @@ pub fn beo_class(local_name: &str) -> String {
     format!("{BEO}{local_name}")
 }
 
-pub fn furn_class(local_name: &str) -> String {
-    format!("{FURN}{local_name}")
-}
-
 pub fn props_property(local_name: &str) -> String {
     format!("{PROPS}{local_name}")
 }
@@ -250,8 +259,14 @@ pub fn schema_applicable_type() -> String {
     format!("{SCHEMA}applicableType")
 }
 
-pub fn smls_unit() -> String {
-    format!("{SMLS}unit")
+/// Predicate carrying the unit of a property state.
+///
+/// Replaces the former `smls:unit`: `https://w3id.org/def/smls-owl#` is gone
+/// (404), so the predicate resolved to nothing. QUDT is maintained, resolvable,
+/// and the standard answer to this question. The object is a unit individual from
+/// the [`UNIT`] namespace, e.g. `unit:MilliM`.
+pub fn qudt_unit() -> String {
+    format!("{QUDT}unit")
 }
 
 pub fn prov_generated_at_time() -> String {
@@ -288,10 +303,6 @@ pub fn express_has_logical() -> String {
 
 pub fn express_logical_value(value: bool) -> String {
     format!("{EXPRESS}{}", if value { "TRUE" } else { "FALSE" })
-}
-
-pub fn bot_has_site() -> String {
-    format!("{BOT}hasSite")
 }
 
 pub fn bot_has_building() -> String {

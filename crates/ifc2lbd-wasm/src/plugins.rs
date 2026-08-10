@@ -235,7 +235,7 @@ impl PipelinePlugin for BeoProducerPlugin {
             id: BEO_PRODUCER_ID,
             display_name: "BEO",
             stage: PipelineStage::Produce,
-            description: "Generates BEO / FURN product-class type triples for IFC elements.",
+            description: "Generates BEO product-class type triples for IFC elements.",
             inputs: vec!["ifc-model"],
             outputs: vec!["beo-triples"],
             requires: vec![],
