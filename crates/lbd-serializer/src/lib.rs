@@ -506,12 +506,30 @@ fn escape_literal(value: &str) -> String {
 }
 
 fn is_valid_prefixed_local(local: &str) -> bool {
-    let mut chars = local.chars();
-    match chars.next() {
-        Some(first) if first.is_ascii_alphabetic() || first == '_' => {}
+    let bytes = local.as_bytes();
+    match bytes.first() {
+        Some(b) if b.is_ascii_alphabetic() || *b == b'_' => {}
         _ => return false,
     }
-    chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
+    // Turtle's PN_LOCAL admits PLX, and PLX admits PERCENT = '%' HEX HEX.
+    // Element IRIs carry percent-escapes because an IFC GlobalId may contain a
+    // `$`, so without this the whole subject would fall back to an absolute IRI.
+    let mut i = 1;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.') {
+            i += 1;
+        } else if b == b'%'
+            && bytes
+                .get(i + 1..i + 3)
+                .is_some_and(|h| h.iter().all(u8::is_ascii_hexdigit))
+        {
+            i += 3;
+        } else {
+            return false;
+        }
+    }
+    true
 }
 
 fn ensure_trailing_slash(base: &str) -> String {

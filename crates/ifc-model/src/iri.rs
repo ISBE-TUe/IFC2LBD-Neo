@@ -21,17 +21,35 @@ fn canonical_guid_token(raw: &str) -> String {
     compress_uuid_string(raw).unwrap_or_else(|| raw.to_string())
 }
 
-/// Make a GUID token safe to embed in an IRI local name: IFC's `$` and any other
-/// non-`[A-Za-z0-9_]` character become `_`.
+/// Make a GUID token safe to embed in an IRI local name, **without losing
+/// information**.
+///
+/// IFC GlobalIds are base64 over a 64-character alphabet that includes *both*
+/// `_` and `$`. Rewriting `$` to `_` — which this did — is therefore not an
+/// escape but a collision: `…TZzX$` and `…TZzX_` are two different objects and
+/// both became `…TZzX_`. Everything hanging off them merged, so one RDF node
+/// ended up carrying two walls' quantity sets, two geometries and two
+/// containments. Measured on the corpus, that silently fused 527 objects in one
+/// model, 56 in another and 24 in a third.
+///
+/// Anything outside `[A-Za-z0-9_]` is now percent-escaped instead. `%` cannot
+/// occur in a GlobalId, so the mapping is injective, and standard
+/// percent-decoding recovers the original identifier.
 pub fn prefix_safe_guid_token(raw: &str) -> String {
-    canonical_guid_token(raw)
-        .chars()
-        .map(|ch| match ch {
-            '$' => '_',
-            _ if ch.is_ascii_alphanumeric() || ch == '_' => ch,
-            _ => '_',
-        })
-        .collect()
+    let mut out = String::new();
+    for ch in canonical_guid_token(raw).chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            out.push(ch);
+        } else {
+            // UTF-8 bytes, so a non-ASCII character escapes to several octets —
+            // the encoding a percent-escape is defined over.
+            let mut buf = [0u8; 4];
+            for byte in ch.encode_utf8(&mut buf).as_bytes() {
+                out.push_str(&format!("%{byte:02X}"));
+            }
+        }
+    }
+    out
 }
 
 /// `<prefix>_<safe_guid>` local name.
@@ -123,11 +141,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn prefix_safe_guid_token_rewrites_ifc_special_chars() {
+    fn prefix_safe_guid_token_escapes_ifc_special_chars() {
         assert_eq!(
             prefix_safe_guid_token("2O2Fr$t4X7Zf8NOew3FNtn"),
-            "2O2Fr_t4X7Zf8NOew3FNtn"
+            "2O2Fr%24t4X7Zf8NOew3FNtn"
         );
+    }
+
+    /// The defect this escaping exists for. `_` and `$` are both letters of the
+    /// GlobalId alphabet, so two objects can differ only there; folding `$` onto
+    /// `_` fused them into one RDF resource.
+    #[test]
+    fn dollar_and_underscore_do_not_collide() {
+        let a = prefix_safe_guid_token("3LF03GdXv2GhSTK1xTZzX$");
+        let b = prefix_safe_guid_token("3LF03GdXv2GhSTK1xTZzX_");
+        assert_ne!(a, b, "distinct GlobalIds must not share a token");
+        assert_eq!(a, "3LF03GdXv2GhSTK1xTZzX%24");
+        assert_eq!(b, "3LF03GdXv2GhSTK1xTZzX_");
+    }
+
+    /// Every token the whole 64-letter GlobalId alphabet can produce must be
+    /// distinct — the property that makes the IRI an identifier at all.
+    #[test]
+    fn the_whole_globalid_alphabet_maps_injectively() {
+        const ALPHABET: &str =
+            "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_$";
+        let mut seen = std::collections::HashSet::new();
+        for ch in ALPHABET.chars() {
+            // 22 chars so `canonical_guid_token` passes it straight through.
+            let guid: String = std::iter::once('0').chain(std::iter::repeat_n('0', 20)).chain(std::iter::once(ch)).collect();
+            assert!(
+                seen.insert(prefix_safe_guid_token(&guid)),
+                "collision on {ch:?}"
+            );
+        }
+        assert_eq!(seen.len(), 64);
     }
 
     #[test]

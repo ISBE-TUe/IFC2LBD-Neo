@@ -463,15 +463,26 @@ fn compute_for_element(
                         if single && needs(QuantityKind::Length) {
                             cv.length = Some(m.depth);
                         }
-                        // CrossSectionArea and OuterSurfaceArea are NOT
-                        // emitted. Measured against the quantities already in
-                        // real files they were right 0.6% and 1.6% of the time.
-                        // Whatever those fields hold in practice, it is not what
-                        // we compute, and a value that is wrong nearly every
-                        // time must not be written.
+                        // GrossSurfaceArea comes straight from IFC's own
+                        // formula for it — "perimeter * length + 2 * cross
+                        // section area" — which is exactly this total. 100%
+                        // correct over the corpus.
                         if single && needs(QuantityKind::GrossSurfaceArea) {
                             cv.gross_surface_area = Some(m.total_area);
                         }
+                        // OuterSurfaceArea and CrossSectionArea stay off, and
+                        // not for want of a formula: IFC defines the first as
+                        // the same total "not taking into account the end cap
+                        // areas", i.e. the lateral wrap, and the second as the
+                        // profile area. Both are computed here already. Emitting
+                        // them by those definitions scored 10.6% and 0.6%:
+                        // exporters write the *total* surface under
+                        // OuterSurfaceArea (89.6% against the tessellated
+                        // surface, still short of the bar), and one model stores
+                        // 1.5775 m2 as the CrossSectionArea of a mullion whose
+                        // profile is 0.0075 m2. Where the file and the standard
+                        // disagree this consistently, no value can be written
+                        // that is right for both.
                     }
                     "IFCWALL" | "IFCWALLSTANDARDCASE" => {
                         let h = inline_height.unwrap_or(m.height);
@@ -744,10 +755,26 @@ fn compute_for_element(
             .map(|m| m.extent[2])
             .filter(|h| *h > 0.0)
             .or(inline_height);
-        // Width: the opening profile's short span, which is the lining width
-        // whatever the wall's orientation. 100% over all 482, against 98.3%
-        // from `OverallWidth` alone.
-        let width = op_profile.map(|p| p.min_span).or(inline_width);
+        // Width: the opening profile spans the lining in elevation, so one of
+        // its two extents is the height and the other is the width. Which is
+        // which is *not* decided by taking the smaller — that is only the width
+        // for an opening taller than it is wide, and every window in the
+        // validation corpus happens to be, so the mistake would not have shown
+        // up there. A 2.0 x 1.6 m window would have reported 1.6 as its width.
+        //
+        // The height is already known independently, from the opening's own
+        // vertical extent, so the width is simply the span that is not it. No
+        // threshold is involved: whichever span sits further from the height is
+        // the other dimension.
+        let width = op_profile
+            .map(|p| match height {
+                Some(h) if (p.max_span - h).abs() < (p.min_span - h).abs() => p.min_span,
+                Some(_) => p.max_span,
+                // Without a height there is nothing to disambiguate against;
+                // the lining of a door or window is usually the taller way up.
+                None => p.min_span,
+            })
+            .or(inline_width);
 
         if let Some(h) = height {
             if needs(QuantityKind::Height) {

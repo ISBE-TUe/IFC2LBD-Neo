@@ -2,6 +2,41 @@
 
 All notable changes to IFC2LBD-Neo are documented in this file.
 
+## [0.6.1]
+
+### Fixed — element IRIs collided (**breaking**)
+
+Two different objects could share one RDF resource. IFC GlobalIds are base64 over
+a 64-letter alphabet that contains **both** `_` and `$`, and the IRI builder
+rewrote `$` to `_` — not an escape but a collision. `…TZzX$` and `…TZzX_` are two
+different walls and both became `…TZzX_`, so one node ended up carrying two
+walls' quantity sets, two geometries and two containments.
+
+Measured over the corpus, this silently fused **527 objects in Atlas**, 56 in
+model A and 24 in model C. It surfaced as a wall appearing to have two
+identically-named quantity sets, but the duplicate sets were the symptom: the
+node was two walls.
+
+`$` and anything else outside `[A-Za-z0-9_]` is now percent-escaped, which is
+injective (`%` cannot occur in a GlobalId) and decodes back to the real
+identifier by the ordinary rule. The Turtle writer accepts `%HH` in a prefixed
+name, as the grammar's `PLX` production allows, so output stays compact.
+
+**Breaking:** any element whose GlobalId contains `$` changes IRI, e.g.
+`inst:wall_2O2Fr_t4X7Zf8NOew3FNtn` → `inst:wall_2O2Fr%24t4X7Zf8NOew3FNtn`.
+Consumers must re-ingest. The geometry producer stamps the same IRI onto its 3D
+objects and shares the one implementation, so viewer links stay consistent.
+
+### Fixed — a window wider than it is tall reported the wrong `Width`
+
+The lining width was taken as the opening profile's *smaller* span, which is only
+the width for an opening taller than it is wide. Every window in the validation
+corpus is (174 of 174), so the corpus could not see it; a 2.0 × 1.6 m window
+would have reported 1.6 as its width, and `GrossArea` with it. The opening's
+height is already known independently from its vertical extent, so the width is
+now the span that is not the height — no threshold, and identical behaviour for
+the tall case.
+
 ## [0.6.0]
 
 ### Changed — QTO rebuild

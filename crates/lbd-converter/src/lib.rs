@@ -2915,8 +2915,11 @@ mod tests {
     // canonical_guid_token now lives in ifc_model::iri and is tested there.
 
     #[test]
-    fn test_prefix_safe_guid_token_rewrites_ifc_special_chars() {
-        assert_eq!(prefix_safe_guid_token("2O2Fr$t4X7Zf8NOew3FNtn"), "2O2Fr_t4X7Zf8NOew3FNtn");
+    fn test_prefix_safe_guid_token_escapes_ifc_special_chars() {
+        assert_eq!(
+            prefix_safe_guid_token("2O2Fr$t4X7Zf8NOew3FNtn"),
+            "2O2Fr%24t4X7Zf8NOew3FNtn"
+        );
     }
 
     #[test]
