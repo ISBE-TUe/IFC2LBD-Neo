@@ -6,25 +6,27 @@
 //!   `IfcPolygonalFaceSet`, `IfcFaceBasedSurfaceModel`. Volume and area are
 //!   *exactly* computable by the divergence theorem; no kernel is needed or
 //!   would help. See [`polyhedron`].
-//! * **Curved, swept and boolean** — extrusions, revolutions, sweeps, CSG.
-//!   These need a real B-rep kernel to be exact, because tessellation can never
-//!   reproduce `πr²h`. Handled via OCCT (not yet wired up here).
+//! * **Analytic** — an `IfcExtrudedAreaSolid`'s volume is `profile area x
+//!   perpendicular sweep`, in closed form, from a profile whose own area is
+//!   closed form. Nothing is tessellated and nothing is chorded: a profile
+//!   containing an arc is refused rather than approximated by its chords.
+//!
+//! Curved, boolean and swept bodies that neither path can measure exactly are
+//! handled by the caller, which tessellates them and applies an enclosure bound
+//! to the result.
 //!
 //! Everything in this crate refuses rather than approximates: a computation
 //! that cannot be exact returns `Err`, and the caller emits nothing.
 
-#[cfg(feature = "occt")]
-pub mod occt;
-#[cfg(feature = "occt")]
-pub mod occt_build;
-
 pub mod curve;
 pub mod extrusion;
 pub mod ifc_faces;
+pub mod plan_obb;
 pub mod polyhedron;
 pub mod profile;
 
 pub use extrusion::{metrics_for_extrusion, ExtrusionMetrics};
+pub use plan_obb::{min_area_rect, PlanObb};
 pub use ifc_faces::faces_for_solid;
 pub use profile::{metrics as profile_metrics, ProfileMetrics};
 pub use polyhedron::{metrics as polyhedron_metrics, Face, PolyhedronError, PolyhedronMetrics};

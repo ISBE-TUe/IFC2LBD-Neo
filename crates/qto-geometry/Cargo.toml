@@ -6,17 +6,7 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
-[features]
-# OFF by default. cadrum links a prebuilt OpenCASCADE, and building for
-# wasm32-unknown-unknown needs a wasi-sdk C++ toolchain that the repo's own
-# WASM image does not yet carry (cadrum ships one:
-# ghcr.io/lzpel/cross-wasm32-unknown-unknown). Enabling this by default would
-# break `docker compose run build` until that image is updated.
-default = []
-occt = ["dep:cadrum"]
-
 [dependencies]
-cadrum = { version = "0.8", default-features = false, optional = true }
 ifc-step = { workspace = true }
 ifc-lite-geometry = { workspace = true }
 nalgebra = { workspace = true }

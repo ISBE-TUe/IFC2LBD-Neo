@@ -32,8 +32,6 @@ pub enum Rejection {
     NonPositive,
     /// `NetVolume` exceeded `GrossVolume`; subtracting openings cannot add volume.
     NetExceedsGross,
-    /// The model's units could not be resolved, so no scale is trustworthy.
-    UnresolvableUnits,
 }
 
 impl Rejection {
@@ -42,7 +40,6 @@ impl Rejection {
             Self::NotFinite => "not-finite",
             Self::NonPositive => "non-positive",
             Self::NetExceedsGross => "net-exceeds-gross",
-            Self::UnresolvableUnits => "unresolvable-units",
         }
     }
 }

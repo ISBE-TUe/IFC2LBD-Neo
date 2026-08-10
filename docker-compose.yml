@@ -3,12 +3,6 @@
 # Two services, one image (built from ./Dockerfile):
 #
 #   check   →  cargo check for the WASM crate (fast, no output files)
-#
-# The QTO `occt` feature needs a wasm32 C++ toolchain. This image carries
-# wasi-sdk for that; cadrum also publishes a ready-made cross image
-# (ghcr.io/lzpel/cross-wasm32-unknown-unknown) if you would rather not rebuild
-# this one — note it is amd64-only, so Apple Silicon needs
-# `--platform linux/amd64`.
 #   build   →  full release build + wasm-bindgen post-processing
 #              writes artifacts to web/wasm-prototype/src/wasm/
 #

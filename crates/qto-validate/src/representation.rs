@@ -46,21 +46,6 @@ pub enum RepresentationType {
     None,
 }
 
-impl RepresentationType {
-    /// Whether a closed-form exact volume is available in principle, ignoring
-    /// whether any current backend implements it.
-    pub fn exact_is_possible_without_brep_kernel(self) -> bool {
-        matches!(
-            self,
-            Self::ExtrudedAnalyticProfile
-                | Self::ExtrudedArbitraryProfile
-                | Self::FacetedBrep
-                | Self::Tessellated
-                | Self::SurfaceModel
-        )
-    }
-}
-
 impl fmt::Display for RepresentationType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {

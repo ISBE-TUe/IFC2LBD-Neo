@@ -56,18 +56,17 @@ struct Args {
     #[arg(long, default_value_t = 0.001)]
     tolerance: f64,
 
-    /// Skip Tier-3 mesh volume (much faster on large models).
-    #[arg(long)]
-    no_mesh: bool,
+
 }
 
 fn main() {
     let args = Args::parse();
+
     let mut report = Report::new(args.tolerance);
 
     for path in &args.files {
         eprintln!("── {} ─────────────", path.display());
-        match score_file(path, &args) {
+        match score_file(path) {
             Ok(comparisons) => {
                 eprintln!("   {} comparable quantities", comparisons.len());
                 report.add(path.display().to_string(), comparisons);
@@ -98,8 +97,10 @@ struct Authored {
     value: f64,
 }
 
-fn score_file(path: &PathBuf, args: &Args) -> Result<Vec<Comparison>, String> {
+fn score_file(path: &PathBuf) -> Result<Vec<Comparison>, String> {
     let step = parse_step_file(path).map_err(|e| format!("parse failed: {e:?}"))?;
+    // The plugin tessellates through ifc-lite, which parses the raw text itself.
+    let raw = std::fs::read_to_string(path).map_err(|e| format!("read failed: {e}"))?;
     let model = IfcModel::from_step_file(&step).map_err(|e| format!("model build failed: {e:?}"))?;
 
     let scales = units::scales_for(&model)?;
@@ -127,7 +128,7 @@ fn score_file(path: &PathBuf, args: &Args) -> Result<Vec<Comparison>, String> {
 
     // `step` is moved into the pipeline context from here on; all reads of it
     // (classification above) must already have happened.
-    let computed = recompute_with_quantities_stripped(step, &model, args)?;
+    let computed = recompute_with_quantities_stripped(step, &model, raw)?;
 
     let mut out = Vec::with_capacity(authored.len());
     for a in authored {
@@ -185,20 +186,6 @@ fn looks_like_unit_error(authored: f64, computed: f64, unit_factor: f64) -> bool
     let ratio = computed / authored;
     // Within 1% of the factor, in either direction.
     (ratio / (1.0 / unit_factor) - 1.0).abs() < 0.01 || (ratio * unit_factor - 1.0).abs() < 0.01
-}
-
-/// Depth-first search for a key anywhere in a JSON tree.
-fn find_key<'a>(v: &'a serde_json::Value, key: &str) -> Option<&'a serde_json::Value> {
-    match v {
-        serde_json::Value::Object(m) => {
-            if let Some(found) = m.get(key) {
-                return Some(found);
-            }
-            m.values().find_map(|x| find_key(x, key))
-        }
-        serde_json::Value::Array(a) => a.iter().find_map(|x| find_key(x, key)),
-        _ => None,
-    }
 }
 
 /// Relative error, falling back to absolute when the authored value is ~zero.
@@ -264,7 +251,7 @@ fn numeric_value(v: Option<&StepValue>) -> Option<f64> {
 fn recompute_with_quantities_stripped(
     step: StepFile,
     model: &IfcModel,
-    args: &Args,
+    raw: String,
 ) -> Result<BTreeMap<(EntityId, String), f64>, String> {
     let mut stripped = model.clone();
     stripped.quantities_for_object.clear();
@@ -273,23 +260,13 @@ fn recompute_with_quantities_stripped(
 
     let mut ctx = PipelineContext::new(ResourceLimits::default());
     ctx.insert(Arc::new(step));
+    ctx.insert(Arc::new(plugin_geometry_preprocess::IFCContent(Arc::new(raw))));
     ctx.insert(Arc::new(stripped));
-    ctx.insert(Arc::new(QtoOptions {
-        compute_mesh_volume: !args.no_mesh,
-    }));
+    ctx.insert(Arc::new(QtoOptions));
 
     QtoPreprocessPlugin
         .preprocess(&mut ctx)
         .map_err(|e| format!("qto preprocess failed: {e:?}"))?;
-
-    // Surface the plugin's own run log, so a backend that is compiled in but
-    // never used is visible instead of silently idle.
-    let bundle = ctx.read_log_bundle();
-    if let Ok(v) = serde_json::to_value(&bundle) {
-        if let Some(o) = find_key(&v, "occt") {
-            eprintln!("   occt: {o}");
-        }
-    }
 
     let result = ctx
         .get::<IfcModel>()

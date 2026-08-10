@@ -3,7 +3,26 @@
 Replace the QTO module with a geometry-driven implementation whose values are
 exact, including opening subtractions and non-trivial forms.
 
-Status: **research + design. Nothing implemented.**
+Status: **implemented and superseded.** Kept for the measurements and the
+reasoning; the CHANGELOG's "QTO rebuild" section records what was actually built
+and what the numbers came out at.
+
+Two of this document's conclusions did not survive contact with the corpus, and
+the code follows the corpus:
+
+- **§4–§5's OpenCASCADE backend was built, measured and removed.** It exists in
+  the git history behind the `occt` feature. The premise — that booleans,
+  half-space clipping and circular sweeps need a B-rep kernel — was right about
+  the geometry and wrong about the remedy: `ifc-lite` already evaluates all three
+  into triangles, and measuring that mesh under an enclosure bound answers them
+  without a C++ toolchain, a prebuilt OCCT, or a second code path for the web
+  target. Across the corpus OCCT was asked for a measurement zero times.
+- **§3's "exact or nothing, per representation" framing** was too narrow. The
+  representation says what kind of solid it is, not whether the solid can be
+  measured; a tessellation with a *proof-carrying* bound on the result covers far
+  more ground at higher precision than per-representation arithmetic did
+  (45.4% / 97.7% against 25.1% / 92.2%). The governing rule in §0 is unchanged
+  and is what the bound enforces.
 
 ---
 

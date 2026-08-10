@@ -9,7 +9,6 @@ publish = false
 
 [features]
 default = []
-occt = ["plugin-qto-preprocess/occt"]
 
 [dependencies]
 ifc-step = { workspace = true }
@@ -17,6 +16,7 @@ ifc-model = { workspace = true }
 ifc-schema = { workspace = true }
 lbd-pipeline = { workspace = true }
 plugin-qto-preprocess = { workspace = true }
+plugin-geometry-preprocess = { workspace = true }
 smol_str = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true }

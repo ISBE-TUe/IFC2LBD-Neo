@@ -114,7 +114,6 @@ impl RejectionCounts {
             gate::Rejection::NotFinite => self.not_finite += 1,
             gate::Rejection::NonPositive => self.non_positive += 1,
             gate::Rejection::NetExceedsGross => self.net_exceeds_gross += 1,
-            gate::Rejection::UnresolvableUnits => {}
         }
     }
 
