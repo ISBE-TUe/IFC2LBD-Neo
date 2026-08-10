@@ -215,7 +215,7 @@ pub fn inject(
             None => {
                 let set_id = next_id;
                 next_id += 1;
-                let guid = compressed_guid();
+                let guid = deterministic_guid(model, report);
                 out.element_quantities.insert(
                     set_id,
                     ElementQuantity {
@@ -238,13 +238,91 @@ pub fn inject(
     (out, total_injected, rejections)
 }
 
-/// Generate a valid IFC compressed GUID (22-character base64-like string).
-fn compressed_guid() -> String {
-    let uuid = Uuid::new_v4().to_string();
-    ifc_model::compress_uuid_string(&uuid)
-        .unwrap_or_else(|| uuid[..22].to_string())
+/// A stable IFC GlobalId for a quantity set this module creates.
+///
+/// Derived from what the set *is* — the object it belongs to and its name —
+/// rather than drawn at random, because the GlobalId becomes the set's IRI
+/// (`<base>/qs_<guid>`). A random one made the converter non-reproducible: the
+/// same file yielded different IRIs on every run, so re-ingesting a model added
+/// a second `Qto_WallBaseQuantities` node beside the first instead of matching
+/// it, and a wall accumulated one more set per conversion.
+///
+/// UUIDv5 is a namespaced SHA-1, so this is stable across runs, machines and
+/// releases, and distinct for every (object, set) pair.
+fn deterministic_guid(model: &IfcModel, report: &MissingQuantityReport) -> String {
+    // A fixed namespace of this module's own, so these GUIDs cannot collide
+    // with any other v5 derivation elsewhere.
+    const NAMESPACE: Uuid = Uuid::from_u128(0x9d1f_4a3e_7c62_4d18_9b5e_2f8a_6c04_71e3);
+
+    let object_guid = model
+        .elements
+        .get(&report.element_id)
+        .map(|e| e.guid.as_str())
+        .or_else(|| {
+            model
+                .spatial_nodes
+                .get(&report.element_id)
+                .map(|n| n.guid.as_str())
+        })
+        .unwrap_or_default();
+
+    let seed = format!("{object_guid}|{}", report.qto_set_name);
+    let uuid = Uuid::new_v5(&NAMESPACE, seed.as_bytes()).to_string();
+    ifc_model::compress_uuid_string(&uuid).unwrap_or_else(|| uuid[..22].to_string())
 }
 
 fn max_entity_id(step: &StepFile) -> EntityId {
     step.entities.keys().copied().max().unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A created set's GlobalId becomes its IRI (`<base>/qs_<guid>`), so it must
+    /// depend only on what the set *is*. Drawing it at random made every
+    /// conversion of the same file emit different IRIs, so re-ingesting a model
+    /// piled up a second `Qto_WallBaseQuantities` beside the first each time.
+    #[test]
+    fn injected_set_guids_are_stable_and_distinct() {
+        // Two objects, distinguished only by their GlobalId — the input the
+        // derivation is supposed to depend on.
+        let step = ifc_step::parse_step_bytes(
+            b"ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION((\'\'),\'2;1\');\n\
+              FILE_NAME(\'\',\'\',(\'\'),(\'\'),\'\',\' \',\'\');\nFILE_SCHEMA((\'IFC4\'));\nENDSEC;\n\
+              DATA;\n\
+              #1=IFCWALL(\'2O2Fr$t4X7Zf8NOew3FNtn\',$,\'A\',$,$,$,$,$,$);\n\
+              #2=IFCWALL(\'3LF03GdXv2GhSTK1xTZzXp\',$,\'B\',$,$,$,$,$,$);\n\
+              ENDSEC;\nEND-ISO-10303-21;\n",
+        )
+        .expect("parse");
+        let model = IfcModel::from_step_file(&step).expect("model");
+        let id_of = |guid: &str| -> EntityId {
+            *model
+                .elements
+                .iter()
+                .find(|(_, e)| e.guid.as_str() == guid)
+                .expect("element")
+                .0
+        };
+        let (one, two) = (
+            id_of("2O2Fr$t4X7Zf8NOew3FNtn"),
+            id_of("3LF03GdXv2GhSTK1xTZzXp"),
+        );
+        let report = |id| MissingQuantityReport {
+            element_id: id,
+            entity_type: SmolStr::new("IFCWALL"),
+            qto_set_name: "Qto_WallBaseQuantities",
+            existing_set_id: None,
+            missing: Vec::new(),
+        };
+
+        let a1 = deterministic_guid(&model, &report(one));
+        let a2 = deterministic_guid(&model, &report(one));
+        let b = deterministic_guid(&model, &report(two));
+
+        assert_eq!(a1, a2, "the same set must always get the same GlobalId");
+        assert_ne!(a1, b, "different objects must not share one");
+        assert_eq!(a1.len(), 22, "must be a compressed IFC GlobalId: {a1}");
+    }
 }

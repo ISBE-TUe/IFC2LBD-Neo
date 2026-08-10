@@ -89,6 +89,19 @@ pub fn audit(model: &IfcModel) -> Vec<MissingQuantityReport> {
     reports
 }
 
+/// Is this the IFC2X3 spelling of a base quantity set?
+///
+/// IFC4 names the set after its class — `Qto_WallBaseQuantities` — but IFC2X3
+/// has no `Qto_` prefix and exporters write a bare `BaseQuantities` for every
+/// class. Matching only the IFC4 name meant the set was never found in a 2X3
+/// file, so the module added its own beside it: on one 96 MB ArchiCAD export
+/// that produced **3,342 new sets and 0 extensions**, leaving every element with
+/// two quantity sets under two IRIs, the authored quantities in one and the
+/// computed ones in the other.
+fn is_bare_base_quantities(name: &str) -> bool {
+    name.trim().eq_ignore_ascii_case("BaseQuantities")
+}
+
 /// Case-insensitive membership test.
 ///
 /// Exporters disagree on capitalisation — notably `GrossFootprintArea` (IFC4)
@@ -121,9 +134,16 @@ fn existing_quantities(
             Some(qs) => qs,
             None => continue,
         };
-        // Match by set name.
-        if qty_set.name.as_deref() == Some(set_name) {
-            found_set_id = Some(qty_set_id);
+        // Match by set name. Prefer the exact standard name, but fall back to
+        // the bare IFC2X3 spelling if that is all the file has.
+        match qty_set.name.as_deref() {
+            Some(actual) if actual.trim().eq_ignore_ascii_case(set_name) => {
+                found_set_id = Some(qty_set_id);
+            }
+            Some(actual) if found_set_id.is_none() && is_bare_base_quantities(actual) => {
+                found_set_id = Some(qty_set_id);
+            }
+            _ => {}
         }
         // Collect all existing quantity names (from all sets, not just matching ones),
         // so we don't re-emit a quantity that lives in any set for this object.

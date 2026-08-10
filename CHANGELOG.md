@@ -2,6 +2,36 @@
 
 All notable changes to IFC2LBD-Neo are documented in this file.
 
+## [0.6.2]
+
+### Fixed — an IFC2X3 file got a second quantity set on every element
+
+IFC4 names a quantity set after its class (`Qto_WallBaseQuantities`); IFC2X3 has
+no `Qto_` prefix and exporters write a bare `BaseQuantities` for every class. The
+audit compared the set name with an exact, case-sensitive `==`, so in a 2X3 file
+it never found the set that was already there and created its own beside it.
+
+Every affected element ended up with **two quantity-set nodes under two IRIs** —
+the authored quantities in one, the computed ones in the other — which is what a
+viewer shows as the same set twice. On a 96 MB ArchiCAD export: 3,342 sets
+created, **0** extended, and 2,226 elements carrying two sets. After the fix,
+2,226 extended and **0** elements with two sets; the 1,116 still created are
+elements that genuinely have no quantity set in the file.
+
+Set names are now matched trimmed and case-insensitively, and the bare IFC2X3
+spelling is accepted, preferring an exact `Qto_<Class>BaseQuantities` where both
+are present. The quantity-*name* comparison beside it was already
+case-insensitive; the set-name one never was.
+
+### Fixed — created quantity sets had a random identity
+
+A quantity set this module creates takes its GlobalId into its IRI
+(`<base>/qs_<guid>`), and that GlobalId was a fresh `Uuid::new_v4()` on every
+run. The same file therefore produced different set IRIs each conversion, so
+re-ingesting a model added new nodes instead of matching the existing ones. It is
+now derived (UUIDv5) from the object's GlobalId and the set name, so it is stable
+across runs, machines and releases, and distinct per (object, set).
+
 ## [0.6.1]
 
 ### Fixed — element IRIs collided (**breaking**)
