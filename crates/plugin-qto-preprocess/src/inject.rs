@@ -10,7 +10,9 @@ use smol_str::SmolStr;
 use uuid::Uuid;
 
 use crate::audit::MissingQuantityReport;
+use crate::gate;
 use crate::qto_names::QuantityKind;
+use crate::units::UnitScales;
 
 /// Computed values for a single element, produced by the geometry pipeline.
 #[derive(Debug, Default, Clone)]
@@ -32,6 +34,8 @@ pub struct ComputedValues {
     pub net_floor_area: Option<f64>,
     pub cross_section_area: Option<f64>,
     pub outer_surface_area: Option<f64>,
+    pub gross_surface_area: Option<f64>,
+    pub net_surface_area: Option<f64>,
     pub gross_perimeter: Option<f64>,
     pub perimeter: Option<f64>,
 }
@@ -56,36 +60,127 @@ impl ComputedValues {
             QuantityKind::NetFloorArea => self.net_floor_area,
             QuantityKind::CrossSectionArea => self.cross_section_area,
             QuantityKind::OuterSurfaceArea => self.outer_surface_area,
+            QuantityKind::GrossSurfaceArea => self.gross_surface_area,
+            QuantityKind::NetSurfaceArea => self.net_surface_area,
             QuantityKind::GrossPerimeter => self.gross_perimeter,
             QuantityKind::Perimeter => self.perimeter,
+
+            // Defined by bSDD for one or more IFC classes, but no compute tier
+            // produces them yet. `None` means "not computed", which the injector
+            // turns into an omission — the correct outcome under the project rule
+            // that a missing quantity beats a wrong one.
+            //
+            // Listed explicitly rather than caught by a wildcard so that adding a
+            // tier forces a deliberate decision here instead of silently
+            // continuing to omit.
+            QuantityKind::NetPerimeter
+            | QuantityKind::Thickness
+            | QuantityKind::Diameter
+            | QuantityKind::InnerDiameter
+            | QuantityKind::OuterDiameter
+            | QuantityKind::GrossHeight
+            | QuantityKind::NetHeight
+            | QuantityKind::EavesHeight
+            | QuantityKind::FinishCeilingHeight
+            | QuantityKind::FinishFloorHeight
+            | QuantityKind::PlanLength
+            | QuantityKind::Volume
+            | QuantityKind::GrossCrossSectionArea
+            | QuantityKind::NetCrossSectionArea
+            | QuantityKind::GrossCeilingArea
+            | QuantityKind::NetCeilingArea
+            | QuantityKind::GrossWallArea
+            | QuantityKind::NetWallArea
+            | QuantityKind::FootprintArea
+            | QuantityKind::TotalSurfaceArea
+            | QuantityKind::ProjectedArea
+            | QuantityKind::PlanArea
+            | QuantityKind::SignArea => None,
         }
+    }
+}
+
+/// Tally of values refused by the gate, for the run log.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RejectionCounts {
+    pub not_finite: u64,
+    pub non_positive: u64,
+    pub net_exceeds_gross: u64,
+}
+
+impl RejectionCounts {
+    fn record(&mut self, r: gate::Rejection) {
+        match r {
+            gate::Rejection::NotFinite => self.not_finite += 1,
+            gate::Rejection::NonPositive => self.non_positive += 1,
+            gate::Rejection::NetExceedsGross => self.net_exceeds_gross += 1,
+            gate::Rejection::UnresolvableUnits => {}
+        }
+    }
+
+    pub fn total(&self) -> u64 {
+        self.not_finite + self.non_positive + self.net_exceeds_gross
     }
 }
 
 /// Apply all reports + their computed values to a cloned model.
 ///
-/// Returns the augmented model and the total number of quantities injected.
+/// Values arrive in raw geometry units and are converted to the units the model
+/// declares before anything is written; see `gate`. Anything the gate refuses is
+/// dropped and counted rather than corrected.
+///
+/// Returns the augmented model, the number of quantities injected, and the
+/// rejection tally.
 pub fn inject(
     model: &IfcModel,
     step: &StepFile,
     reports: &[MissingQuantityReport],
     values: &[(usize, ComputedValues)], // (report_index, computed)
-) -> (IfcModel, u64) {
+    scales: &UnitScales,
+) -> (IfcModel, u64, RejectionCounts) {
     let mut out = model.clone();
     let mut next_id = max_entity_id(step) + 1;
     let mut total_injected: u64 = 0;
+    let mut rejections = RejectionCounts::default();
 
     for (report_idx, computed) in values {
         let report = &reports[*report_idx];
 
-        // Determine which missing quantities we actually have values for.
-        // Skip zero/negative results — they mean the geometry couldn't be computed
-        // and must never appear in production output as misleading zeros.
-        let injectable: Vec<(QuantityKind, f64)> = report
-            .missing
-            .iter()
-            .filter_map(|&kind| computed.get(kind).filter(|&v| v > 0.0).map(|v| (kind, v)))
-            .collect();
+        // Convert into the model's declared quantity units, then gate. A value
+        // that is geometrically right but expressed in raw geometry units is
+        // still wrong as written, so conversion happens before any check.
+        let mut injectable: Vec<(QuantityKind, f64)> = Vec::new();
+        for &kind in &report.missing {
+            let Some(raw) = computed.get(kind) else {
+                continue;
+            };
+            let value = gate::to_declared_unit(raw, kind, scales);
+            match gate::check_value(value) {
+                Ok(()) => injectable.push((kind, value)),
+                Err(r) => {
+                    rejections.record(r);
+                    tracing::debug!(
+                        element = %report.element_id,
+                        quantity = kind.ifc_name(),
+                        reason = r.as_str(),
+                        raw,
+                        "qto value refused"
+                    );
+                }
+            }
+        }
+
+        // Relations between an element's own quantities.
+        for (kind, r) in gate::check_consistency(&injectable) {
+            rejections.record(r);
+            tracing::debug!(
+                element = %report.element_id,
+                quantity = kind.ifc_name(),
+                reason = r.as_str(),
+                "qto value refused"
+            );
+            injectable.retain(|(k, _)| *k != kind);
+        }
 
         if injectable.is_empty() {
             continue;
@@ -141,7 +236,7 @@ pub fn inject(
         }
     }
 
-    (out, total_injected)
+    (out, total_injected, rejections)
 }
 
 /// Generate a valid IFC compressed GUID (22-character base64-like string).

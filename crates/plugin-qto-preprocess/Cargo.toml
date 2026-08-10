@@ -4,11 +4,19 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Forwarded to qto-geometry. Off by default: cadrum links a prebuilt
+# OpenCASCADE, and wasm32 needs a wasi-sdk toolchain the repo's WASM image does
+# not yet carry.
+default = []
+occt = ["qto-geometry/occt"]
+
 [dependencies]
 ifc-model = { workspace = true }
 ifc-step = { workspace = true }
 ifc-schema = { workspace = true }
 lbd-pipeline = { workspace = true }
+qto-geometry = { workspace = true }
 smol_str = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }

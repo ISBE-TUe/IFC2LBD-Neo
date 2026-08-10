@@ -19,6 +19,8 @@ members = [
   "crates/plugin-template-export",
   "crates/plugin-property-preprocess",
   "crates/plugin-qto-preprocess",
+  "crates/qto-geometry",
+  "crates/qto-validate",
   # Structured data + RML mapper
   "crates/structured-data",
   "crates/rml-mapper-lib",
@@ -39,7 +41,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 license = "AGPL-3.0-only"
 rust-version = "1.75"
@@ -111,6 +113,7 @@ lbd-serializer = { path = "crates/lbd-serializer" }
 plugin-topology-full = { path = "crates/plugin-topology-full" }
 plugin-property-preprocess = { path = "crates/plugin-property-preprocess" }
 plugin-qto-preprocess = { path = "crates/plugin-qto-preprocess" }
+qto-geometry = { path = "crates/qto-geometry" }
 # Geometry pipeline
 ifc-geometry = { path = "crates/ifc-geometry" }
 tessellated-model = { path = "crates/tessellated-model" }

@@ -29,7 +29,12 @@ pub fn audit(model: &IfcModel) -> Vec<MissingQuantityReport> {
 
     for (&element_id, element) in &model.elements {
         let entity_type = element.entity_name.to_uppercase();
-        let spec = qto_spec_for(&entity_type);
+        // No spec means bSDD defines no geometrically-derivable quantities for
+        // this class (MEP devices define only weight and count). Nothing should
+        // be computed or written for it.
+        let Some(spec) = qto_spec_for(&entity_type) else {
+            continue;
+        };
 
         // Collect names of quantities already present on this element.
         let (existing_set_id, existing_names) =
@@ -39,7 +44,7 @@ pub fn audit(model: &IfcModel) -> Vec<MissingQuantityReport> {
             .quantities
             .iter()
             .copied()
-            .filter(|kind| !existing_names.contains(kind.ifc_name()))
+            .filter(|kind| !has_quantity(&existing_names, kind.ifc_name()))
             .collect();
 
         if !missing.is_empty() {
@@ -59,14 +64,16 @@ pub fn audit(model: &IfcModel) -> Vec<MissingQuantityReport> {
             continue;
         }
         let entity_type = "IFCSPACE";
-        let spec = qto_spec_for(entity_type);
+        let Some(spec) = qto_spec_for(entity_type) else {
+            continue;
+        };
         let (existing_set_id, existing_names) =
             existing_quantities(model, node_id, spec.set_name);
         let missing: Vec<QuantityKind> = spec
             .quantities
             .iter()
             .copied()
-            .filter(|kind| !existing_names.contains(kind.ifc_name()))
+            .filter(|kind| !has_quantity(&existing_names, kind.ifc_name()))
             .collect();
         if !missing.is_empty() {
             reports.push(MissingQuantityReport {
@@ -80,6 +87,16 @@ pub fn audit(model: &IfcModel) -> Vec<MissingQuantityReport> {
     }
 
     reports
+}
+
+/// Case-insensitive membership test.
+///
+/// Exporters disagree on capitalisation — notably `GrossFootprintArea` (IFC4)
+/// versus bSDD IFC4x3's `GrossFootPrintArea`. A case-sensitive comparison would
+/// fail to see an authored quantity and add a second one beside it, which both
+/// duplicates data and overwrites nothing — the worst of both.
+fn has_quantity(existing: &HashSet<String>, name: &str) -> bool {
+    existing.iter().any(|e| e.eq_ignore_ascii_case(name))
 }
 
 /// Find any existing ElementQuantity named `set_name` linked to `object_id`,

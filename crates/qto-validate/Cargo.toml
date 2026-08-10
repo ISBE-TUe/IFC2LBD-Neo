@@ -1,0 +1,23 @@
+[package]
+name = "qto-validate"
+description = "Dev harness: scores QTO backends against the quantities already authored in IFC files"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[features]
+default = []
+occt = ["plugin-qto-preprocess/occt"]
+
+[dependencies]
+ifc-step = { workspace = true }
+ifc-model = { workspace = true }
+ifc-schema = { workspace = true }
+lbd-pipeline = { workspace = true }
+plugin-qto-preprocess = { workspace = true }
+smol_str = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

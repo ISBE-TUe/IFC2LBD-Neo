@@ -4,6 +4,50 @@ All notable changes to IFC2LBD-Neo are documented in this file.
 
 ## [Unreleased]
 
+### Changed — QTO rebuild
+
+The QTO module computed quantities nothing verified. Measured against the
+quantities already authored in six real models — 89,346 standard IFC quantities
+— it attempted 58.5% of them and got 37.5% of those right.
+
+It now computes 39.1% and gets **62.5%** right, and the values it does emit are
+correct far more often: `Length` 99.6%, `GrossArea` 100%, `Depth` 100%,
+`Perimeter` 99.5%, `GrossFootprintArea` 99.5%, `Width` 98.3%, `GrossVolume`
+93.8%. Coverage fell deliberately: an element whose geometry cannot be measured
+exactly now yields no quantity, because a wrong number is worse than a missing
+one for a consumer that calculates with it.
+
+- **Units are resolved.** Geometry is in `LENGTHUNIT` while quantities are in the
+  separately declared `AREAUNIT`/`VOLUMEUNIT`, and three of six corpus models mix
+  millimetre geometry with SI quantities. 45.1% of everything computed was
+  emitted unconverted — 10⁶ too large for areas, 10⁹ for volumes. Models whose
+  unit scale cannot be established (conversion-based/imperial) now emit nothing.
+- **Polyhedra are exact.** The divergence theorem is exact for a closed
+  polyhedron; the previous code fan-triangulated concave faces and discarded
+  inner bounds, over-reporting breps by a median 7.24%.
+- **Extrusions are exact**, and the extrusion *direction* is finally read.
+- **The bounding-box tier is gone.** It unioned points from unrelated coordinate
+  frames and produced a 0.05 m "Depth" for a 0.3 m slab, read off a cutting
+  plane's origin.
+- **Every quantity was audited against its bSDD definition.** Five were computed
+  correctly and labelled wrongly.
+- **All solids in a Body representation are summed**, not just the first.
+- **OpenCASCADE backend** behind the off-by-default `occt` feature, for booleans,
+  half-space clipping and circular sweeps.
+
+### Added
+
+- `crates/qto-validate` — scores QTO output against the quantities already in a
+  file, reporting coverage and accuracy separately, by quantity kind and
+  representation type.
+- `scripts/compare_ifcopenshell.py` — cross-checks against IfcOpenShell, which
+  distinguishes "our maths is wrong" from "the authored value means something
+  else". It found a real defect the authored oracle could not.
+- `.github/workflows/verify-qto.yml` — builds the `occt` feature on Linux, macOS,
+  Windows and wasm32, and asserts cadrum stays out of the default graph.
+- `wasi-sdk` in the WASM image, so the same geometry backend builds for the web
+  target.
+
 ### Changed — vocabulary (**breaking**)
 
 Every type and predicate the converter emitted is now one some resolvable
