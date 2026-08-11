@@ -1004,10 +1004,29 @@ fn normalize_ifc_entity(raw: &str) -> String {
 // Step value helpers
 // ---------------------------------------------------------------------------
 
+/// A property's value as an RDF object, or `None` where the file states no
+/// value at all.
+///
+/// An exporter that has nothing to say about a field still writes the field:
+/// MagiCAD emits `Manufacturer`, `Product code` and a dozen more as empty
+/// strings, and dimensional fields the same way. Passing those through produced
+/// a property whose `schema:value` is the empty literal — which a viewer with a
+/// length datatype renders as **`0.000 m`**, an authoritative-looking zero for a
+/// diameter nobody ever entered.
+///
+/// These are the same guards `quantity_value_object` applies on the property
+/// path; this one never had them, so the two modules disagreed about the same
+/// data. Emitting nothing is what "the file does not say" looks like in RDF.
 fn step_value_to_object(value: &StepValue) -> Option<Object> {
+    /// Empty, whitespace-only, or MSVC's textual NaN — all mean "not set".
+    fn meaningful(text: &str) -> Option<String> {
+        let trimmed = text.trim();
+        (!trimmed.is_empty() && trimmed != "-1.#IND").then(|| trimmed.to_string())
+    }
+
     match value {
-        StepValue::String(s) => Some(Object::Literal(decode_ifc_unicode(s))),
-        StepValue::Enum(s) => Some(Object::Literal(decode_ifc_unicode(s))),
+        StepValue::String(s) => meaningful(&decode_ifc_unicode(s)).map(Object::Literal),
+        StepValue::Enum(s) => meaningful(&decode_ifc_unicode(s)).map(Object::Literal),
         StepValue::Bool(v) => Some(Object::TypedLiteral {
             value: v.to_string(),
             datatype: format!("{XSD}boolean"),
@@ -1016,11 +1035,19 @@ fn step_value_to_object(value: &StepValue) -> Option<Object> {
             value: v.to_string(),
             datatype: format!("{XSD}integer"),
         }),
-        StepValue::Real(v) => Some(Object::TypedLiteral {
+        // A non-finite real is not a measurement.
+        StepValue::Real(v) => v.is_finite().then(|| Object::TypedLiteral {
             value: v.to_string(),
             datatype: format!("{XSD}decimal"),
         }),
-        StepValue::Typed { value, .. } => step_value_to_object(value),
+        // A value its own type forbids — `IfcPositiveLengthMeasure(0.)` — is the
+        // exporter's "not set", not a measurement. See
+        // `crate::violates_positive_constraint`.
+        StepValue::Typed { type_name, value } => {
+            (!crate::violates_positive_constraint(type_name, value))
+                .then(|| step_value_to_object(value))
+                .flatten()
+        }
         _ => None,
     }
 }
@@ -2762,5 +2789,47 @@ mod tests {
             400,
             "MAX_FUZZY_CANDIDATES changed — review performance implications"
         );
+    }
+
+    /// An exporter that has nothing to say about a field still writes the field.
+    /// Passing an empty value through produced a property whose `schema:value`
+    /// is the empty literal, which a viewer holding a length datatype renders as
+    /// `0.000 m` — an authoritative-looking zero for a diameter nobody entered.
+    #[test]
+    fn a_value_the_file_does_not_state_is_not_emitted() {
+        use ifc_step::StepValue;
+
+        for empty in [
+            StepValue::String(smol_str::SmolStr::new("")),
+            StepValue::String(smol_str::SmolStr::new("   ")),
+            StepValue::String(smol_str::SmolStr::new("-1.#IND")),
+            StepValue::Enum(smol_str::SmolStr::new("")),
+            StepValue::Real(f64::NAN),
+            StepValue::Real(f64::INFINITY),
+            // The measure wrappers these arrive in must not smuggle one past.
+            StepValue::Typed {
+                type_name: smol_str::SmolStr::new("IFCLENGTHMEASURE"),
+                value: Box::new(StepValue::String(smol_str::SmolStr::new(""))),
+            },
+            StepValue::Typed {
+                type_name: smol_str::SmolStr::new("IFCLENGTHMEASURE"),
+                value: Box::new(StepValue::Real(f64::NAN)),
+            },
+        ] {
+            assert!(
+                step_value_to_object(&empty).is_none(),
+                "must emit nothing for {empty:?}"
+            );
+        }
+    }
+
+    /// ...while a real zero is a real answer and must survive.
+    #[test]
+    fn a_stated_zero_is_still_a_value() {
+        use ifc_step::StepValue;
+        assert!(step_value_to_object(&StepValue::Real(0.0)).is_some());
+        assert!(step_value_to_object(&StepValue::Int(0)).is_some());
+        assert!(step_value_to_object(&StepValue::Bool(false)).is_some());
+        assert!(step_value_to_object(&StepValue::String(smol_str::SmolStr::new("0"))).is_some());
     }
 }

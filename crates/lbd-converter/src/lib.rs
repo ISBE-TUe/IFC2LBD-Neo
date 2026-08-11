@@ -2650,6 +2650,29 @@ fn enumerated_value_objects(property: &PropertyEnumeratedValue) -> Vec<Object> {
         .collect()
 }
 
+/// Does this value break the constraint its own IFC type declares?
+///
+/// `IfcPositiveLengthMeasure` is defined as strictly greater than zero
+/// (`WR1: SELF > 0.`), and the same holds for the other `Positive` measures.
+/// A `0.0` inside one is not a measurement of zero — it is schema-invalid, and
+/// exporters write it to mean "this field was never filled in". One MEP export
+/// carries 53,799 of them.
+///
+/// Passing them through produced properties reading `0.000 m` for a diameter
+/// nobody entered, indistinguishable from a real measurement. A zero in an
+/// ordinary measure — `IfcPowerMeasure(0.)` for a device drawing no power — is a
+/// genuine answer and is untouched, which is exactly the line the schema draws.
+pub(crate) fn violates_positive_constraint(type_name: &str, value: &StepValue) -> bool {
+    if !type_name.to_ascii_uppercase().contains("POSITIVE") {
+        return false;
+    }
+    match value {
+        StepValue::Real(v) => *v <= 0.0,
+        StepValue::Int(v) => *v <= 0,
+        _ => false,
+    }
+}
+
 fn quantity_value_object(value: Option<&StepValue>) -> Option<Object> {
     match value? {
         StepValue::String(value) => {
@@ -2682,7 +2705,11 @@ fn quantity_value_object(value: Option<&StepValue>) -> Option<Object> {
                 Some(Object::Literal(trimmed.to_string()))
             }
         }
-        StepValue::Typed { value, .. } => quantity_value_object(Some(value.as_ref())),
+        StepValue::Typed { type_name, value } => {
+            (!violates_positive_constraint(type_name, value))
+                .then(|| quantity_value_object(Some(value.as_ref())))
+                .flatten()
+        }
         _ => None,
     }
 }

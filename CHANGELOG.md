@@ -2,6 +2,33 @@
 
 All notable changes to IFC2LBD-Neo are documented in this file.
 
+## [0.7.2]
+
+### Fixed — properties nobody filled in were emitted as `0.000 m`
+
+An MEP export writes every field whether or not it has a value, using
+`IFCPOSITIVELENGTHMEASURE(0.)` to mean "not set". `IfcPositiveLengthMeasure` is
+defined as strictly greater than zero (`WR1: SELF > 0.`), so that value is
+schema-invalid — but it was passed straight through, and a viewer holding a
+length datatype renders it as an authoritative `0.000 m`. A photovoltaic panel
+reported a diameter, an inside diameter, an outside diameter, a height, a length
+and a width, all zero, none of them ever entered. One 146 MB model carried
+**53,799** such values.
+
+A non-positive value inside any `Ifc*Positive*` measure is now refused. A zero in
+an *ordinary* measure is untouched — `IfcPowerMeasure(0.)` on a device drawing no
+power is a real answer, and all 14,328 of those still come through. The schema
+draws the line, not a threshold.
+
+### Fixed — the bSDD module emitted values the property module dropped
+
+`modules/bsdd.rs` carried its own value converter which, unlike the one on the
+property path, passed through empty strings, whitespace, MSVC's `-1.#IND` and
+non-finite reals. The same file therefore produced different data depending on
+which module read it, and blank fields became properties with an empty
+`schema:value`. Both paths now apply the same guards, and the positive-measure
+rule above is shared between them rather than written twice.
+
 ## [0.7.1]
 
 ### Fixed — the schema was the wrong discriminator (regression in 0.7.0)
