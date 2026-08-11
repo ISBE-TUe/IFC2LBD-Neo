@@ -357,18 +357,7 @@ fn compute_for_element(
                 // every face, while the authored figure deducts where members
                 // meet: measured, 212 of 426 disagree and 74% of them by the
                 // same +1.5%, so it is a definitional difference, not noise.
-                // Not for bar-like members on IFC2X3. The tessellated boundary
-                // counts every face while that schema's exporters deduct where
-                // members meet: 212 of 426 disagree and 74% of them by the same
-                // +1.5%, a definitional difference rather than noise. On IFC4 the
-                // same measurement is right, so the schema is the discriminator.
-                let bar = matches!(
-                    entity_upper.as_str(),
-                    "IFCMEMBER" | "IFCMEMBERSTANDARDCASE" | "IFCBEAM" | "IFCBEAMSTANDARDCASE"
-                );
-                if !(bar && matches!(model.schema, ifc_step::StepSchema::Ifc2x3)) {
-                    cv.net_surface_area = Some(m.surface_area);
-                }
+                cv.net_surface_area = Some(m.surface_area);
             }
             // GrossSurfaceArea is NOT taken from the mesh. It measured 78.4%
             // there against 100% from the extrusion's closed-form total area,
@@ -378,15 +367,7 @@ fn compute_for_element(
             // plane is the plan. A window's GrossArea is its elevation, and
             // taking its shadow instead was wrong for every one of the 174 in
             // the corpus — the plan view of a window is its thickness.
-            // The plan-referenced areas hold on IFC4 (NetArea 99.5%, GrossArea
-            // 99.9%) but not on IFC2X3, where a slab's authored NetArea and
-            // NetVolume disagree with the projected footprint with no clustering
-            // (ratios 0.0 to 10.8 — the upper tail is that exporter writing
-            // square feet). 419 values, none recoverable by a rule.
-            let plan_ok = is_plan_referenced(&entity_upper)
-                && !(matches!(entity_upper.as_str(), "IFCSLAB" | "IFCSLABSTANDARDCASE")
-                    && matches!(model.schema, ifc_step::StepSchema::Ifc2x3));
-            if plan_ok && m.footprint_area() > 0.0 {
+            if is_plan_referenced(&entity_upper) && m.footprint_area() > 0.0 {
                 if needs(QuantityKind::GrossFootprintArea) && !has_openings(step, model, element_id) {
                     cv.gross_footprint_area = Some(m.footprint_area());
                 }
@@ -410,17 +391,12 @@ fn compute_for_element(
                 // extent, and only where the slab really does lie flat, so a
                 // slab modelled on edge cannot report its span as a thickness.
                 //
-                // Not on IFC2X3. The two schemas' exporters disagree about what
-                // the name means and no geometric test separates them: on IFC4
-                // it is the thickness and this is right 99.8% of the time over
-                // 1,310 values, while on IFC2X3 the authored figure is a plan
-                // dimension and this is right 0% of the time over 137. The
-                // schema is the only discriminator available, so it is the one
-                // used — a wrong value is not worth 137 of anything.
-                if !matches!(model.schema, ifc_step::StepSchema::Ifc2x3)
-                    && needs(QuantityKind::Width)
-                    && m.extent[2] <= m.sorted_extent()[0]
-                {
+                // Right 99.9% of the time over 1,355 values across both
+                // schemas. One exporter writes a plan dimension under this name
+                // instead (137 values); the schema does NOT separate them — a
+                // different IFC2X3 exporter in the corpus is right about it — so
+                // there is no gate here, only a known exception.
+                if needs(QuantityKind::Width) && m.extent[2] <= m.sorted_extent()[0] {
                     cv.width = Some(m.extent[2]);
                 }
                 // Perimeter of the plan outline, but only where that outline is
@@ -429,12 +405,8 @@ fn compute_for_element(
                 // rectangle's, is refused rather than under-reported.
                 // Perimeter of the plan outline, where that outline provably
                 // *is* its oriented rectangle. Right 100% of the time over 1,468
-                // values on IFC4, and only 71% on IFC2X3 with no clustering at
-                // all (ratios 0.009 to 1.002) — that schema's exporters measure
-                // an outline the mesh does not project. Withheld there.
-                if !matches!(model.schema, ifc_step::StepSchema::Ifc2x3)
-                    && needs(QuantityKind::Perimeter)
-                {
+                // values, including on IFC2X3.
+                if needs(QuantityKind::Perimeter) {
                     if let Some(p) = m.plan {
                         let box_area = p.min_side * p.max_side;
                         if box_area > 0.0

@@ -2,6 +2,31 @@
 
 All notable changes to IFC2LBD-Neo are documented in this file.
 
+## [0.7.1]
+
+### Fixed — the schema was the wrong discriminator (regression in 0.7.0)
+
+0.7.0 withheld slab `Width`, slab plan areas, slab `Perimeter` and member
+`NetSurfaceArea` on IFC2X3, on the reasoning that those conventions differ by
+schema. They do not — they differ by **exporter**. One IFC2X3 model in the corpus
+is right about all four, and the gate punished it for another vendor's
+convention.
+
+The cost, measured: about **5,300 correct values discarded** to avoid roughly 600
+wrong ones. `Perimeter` fell from 1,468 values at 100% correct to 12; `GrossArea`
+from 1,349 at 99.9% to 51; `NetArea` from 1,394 at 99.5% to 101; `Width` from
+1,355 at 99.9% to 51. Corpus A went from 42.7% coverage / 97.6% correct to
+29.7% / 96.6% — a refusal that lowers precision is refusing the wrong things.
+
+All four gates are reverted. The remaining disagreements on one vendor's files
+stand, and finding the actual discriminator — which is not the schema — is the
+open work.
+
+| | corpus A (2 IFC4, 3 IFC2X3) | corpus B (2 IFC2X3) |
+| --- | ---: | ---: |
+| 0.7.0 | 29.7% / 96.6% | 41.1% / 93.0% |
+| 0.7.1 | **42.7% / 97.6%** | **43.8% / 90.1%** |
+
 ## [0.7.0]
 
 ### Fixed — deprecated `*StandardCase` classes were skipped entirely
