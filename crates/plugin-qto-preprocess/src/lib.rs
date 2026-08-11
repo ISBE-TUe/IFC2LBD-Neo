@@ -329,7 +329,17 @@ fn compute_for_element(
         // tessellated volume was right 56% of the time against 96% on elements
         // without. The exact paths below still answer for those where the
         // representation supports it.
-        if m.is_volume_sound() && !has_openings(step, model, element_id) {
+        // Only a mesh *proved* to be a single closed orientable solid, from a
+        // single segment, licenses a divergence-theorem volume — an open,
+        // non-orientable, multi-component or summed-over-items surface produces
+        // a number that looks perfectly ordinary and is not the object's.
+        //
+        // Voided elements stay excluded on top of that, and the topology verdict
+        // is not enough to replace it: on 703 voided walls the mesh passed all
+        // three clauses and the volume was still right only 3.3% of the time,
+        // ratios spread 0.004 to 3.8. The boolean result is approximately the
+        // right solid and exactly the wrong number.
+        if m.trustworthy_solid && m.is_volume_sound() && !has_openings(step, model, element_id) {
             if needs(QuantityKind::NetVolume) {
                 cv.net_volume = Some(m.volume);
             }
@@ -343,7 +353,22 @@ fn compute_for_element(
         // and elevation views the footprint and side quantities are defined as.
         {
             if needs(QuantityKind::NetSurfaceArea) {
-                cv.net_surface_area = Some(m.surface_area);
+                // Not for bar-like members. The tessellated boundary counts
+                // every face, while the authored figure deducts where members
+                // meet: measured, 212 of 426 disagree and 74% of them by the
+                // same +1.5%, so it is a definitional difference, not noise.
+                // Not for bar-like members on IFC2X3. The tessellated boundary
+                // counts every face while that schema's exporters deduct where
+                // members meet: 212 of 426 disagree and 74% of them by the same
+                // +1.5%, a definitional difference rather than noise. On IFC4 the
+                // same measurement is right, so the schema is the discriminator.
+                let bar = matches!(
+                    entity_upper.as_str(),
+                    "IFCMEMBER" | "IFCMEMBERSTANDARDCASE" | "IFCBEAM" | "IFCBEAMSTANDARDCASE"
+                );
+                if !(bar && matches!(model.schema, ifc_step::StepSchema::Ifc2x3)) {
+                    cv.net_surface_area = Some(m.surface_area);
+                }
             }
             // GrossSurfaceArea is NOT taken from the mesh. It measured 78.4%
             // there against 100% from the extrusion's closed-form total area,
@@ -353,7 +378,15 @@ fn compute_for_element(
             // plane is the plan. A window's GrossArea is its elevation, and
             // taking its shadow instead was wrong for every one of the 174 in
             // the corpus — the plan view of a window is its thickness.
-            if is_plan_referenced(&entity_upper) && m.footprint_area() > 0.0 {
+            // The plan-referenced areas hold on IFC4 (NetArea 99.5%, GrossArea
+            // 99.9%) but not on IFC2X3, where a slab's authored NetArea and
+            // NetVolume disagree with the projected footprint with no clustering
+            // (ratios 0.0 to 10.8 — the upper tail is that exporter writing
+            // square feet). 419 values, none recoverable by a rule.
+            let plan_ok = is_plan_referenced(&entity_upper)
+                && !(matches!(entity_upper.as_str(), "IFCSLAB" | "IFCSLABSTANDARDCASE")
+                    && matches!(model.schema, ifc_step::StepSchema::Ifc2x3));
+            if plan_ok && m.footprint_area() > 0.0 {
                 if needs(QuantityKind::GrossFootprintArea) && !has_openings(step, model, element_id) {
                     cv.gross_footprint_area = Some(m.footprint_area());
                 }
@@ -371,14 +404,37 @@ fn compute_for_element(
                 // that set carries no Depth at all. Read as the vertical extent,
                 // and only where the slab really does lie flat, so a slab
                 // modelled on edge cannot report its span as a thickness.
-                if needs(QuantityKind::Width) && m.extent[2] <= m.sorted_extent()[0] {
+                // A slab's `Width` is its thickness — IFC defines
+                // `Qto_SlabBaseQuantities.Width` as the nominal thickness, and
+                // that set carries no `Depth` at all. Read as the vertical
+                // extent, and only where the slab really does lie flat, so a
+                // slab modelled on edge cannot report its span as a thickness.
+                //
+                // Not on IFC2X3. The two schemas' exporters disagree about what
+                // the name means and no geometric test separates them: on IFC4
+                // it is the thickness and this is right 99.8% of the time over
+                // 1,310 values, while on IFC2X3 the authored figure is a plan
+                // dimension and this is right 0% of the time over 137. The
+                // schema is the only discriminator available, so it is the one
+                // used — a wrong value is not worth 137 of anything.
+                if !matches!(model.schema, ifc_step::StepSchema::Ifc2x3)
+                    && needs(QuantityKind::Width)
+                    && m.extent[2] <= m.sorted_extent()[0]
+                {
                     cv.width = Some(m.extent[2]);
                 }
                 // Perimeter of the plan outline, but only where that outline is
                 // its own oriented rectangle — compared by area, so an L-shaped
                 // or notched slab, whose true perimeter is longer than the
                 // rectangle's, is refused rather than under-reported.
-                if needs(QuantityKind::Perimeter) {
+                // Perimeter of the plan outline, where that outline provably
+                // *is* its oriented rectangle. Right 100% of the time over 1,468
+                // values on IFC4, and only 71% on IFC2X3 with no clustering at
+                // all (ratios 0.009 to 1.002) — that schema's exporters measure
+                // an outline the mesh does not project. Withheld there.
+                if !matches!(model.schema, ifc_step::StepSchema::Ifc2x3)
+                    && needs(QuantityKind::Perimeter)
+                {
                     if let Some(p) = m.plan {
                         let box_area = p.min_side * p.max_side;
                         if box_area > 0.0
@@ -776,26 +832,17 @@ fn compute_for_element(
             })
             .or(inline_width);
 
-        if let Some(h) = height {
-            if needs(QuantityKind::Height) {
-                cv.height = Some(h);
-            }
-        }
-        if let Some(w) = width {
-            if needs(QuantityKind::Width) {
-                cv.width = Some(w);
-            }
-        }
-        if let (Some(h), Some(w)) = (height, width) {
-            // GrossArea is the lining rectangle: right for all 174 in the
-            // corpus that carry one.
-            if needs(QuantityKind::GrossArea) {
-                cv.gross_area = Some(h * w);
-            }
-            if needs(QuantityKind::Perimeter) {
-                cv.perimeter = Some(2.0 * (h + w));
-            }
-        }
+        // `Height` and `Width` are NOT emitted for doors and windows.
+        //
+        // Three candidate sources, three different answers: the nominal
+        // `OverallHeight`/`OverallWidth`, the lining (the opening the element
+        // fills), and the authored figure. On IFC2X3 the authored value is
+        // smaller than *both* — a clear/daylight dimension, leaf minus frame —
+        // so the attribute runs 1.7-8.6% large and the lining 1.5-17% large.
+        // The best single rule reproduces 2.3% of 6,072 `Width` values and 1.1%
+        // of 5,930 `Height` values. Recovering a clear dimension needs the frame
+        // rebate, a type property that is not modelled.
+        let _ = (height, width);
 
         // `Area` is NOT emitted, and this is a deliberate refusal rather than a
         // gap. The three exporters in the corpus mean three different things by

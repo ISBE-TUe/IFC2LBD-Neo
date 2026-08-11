@@ -44,6 +44,9 @@ pub struct MeshQuantities {
     /// projected area double-counts wherever two instances overlap in that view.
     /// Callers that need either use this to withhold instead.
     pub parts: u32,
+    /// Was this element's geometry *proved* to be a single closed orientable
+    /// solid? Only then does a divergence-theorem volume mean anything.
+    pub trustworthy_solid: bool,
     /// Minimum-area enclosing rectangle of the plan projection.
     ///
     /// This is what makes a dimension readable from a mesh at all: a wall at 30
@@ -100,6 +103,148 @@ impl MeshQuantities {
 
 }
 
+/// What the mesh's surface topology was proved to be.
+///
+/// A divergence-theorem volume is only meaningful over a closed, orientable,
+/// single-component surface, and none of the ways it fails look wrong in the
+/// output:
+///
+/// * **not closed** — over an open sheet the sum is not approximate but
+///   *arbitrary*: the boundary-loop flux scales with the distance to the
+///   reference point, so the "volume" is whatever you referenced it to.
+/// * **not orientable** — inconsistent winding silently cancels or doubles
+///   parts of the sum.
+/// * **several components** — two disjoint bodies in one shell, or a solid
+///   plus a stray sheet.
+#[derive(Debug, Clone, Copy)]
+struct Topology {
+    closed: bool,
+    orientable: bool,
+    single_component: bool,
+}
+
+impl Topology {
+    fn is_solid(&self) -> bool {
+        self.closed && self.orientable && self.single_component
+    }
+}
+
+/// Classify a triangle soup's topology.
+///
+/// Vertices are welded on a 10 µm grid first: the mesh arrives with positions
+/// duplicated per triangle corner in places, and an unwelded soup has *no*
+/// shared edges at all, which would read as "open" for every element and refuse
+/// everything.
+fn topology(tris: &[[[f64; 3]; 3]]) -> Topology {
+    use std::collections::HashMap;
+
+    const WELD: f64 = 1.0e5; // 1/10 µm, in metres
+    let key = |p: [f64; 3]| -> (i64, i64, i64) {
+        (
+            (p[0] * WELD).round() as i64,
+            (p[1] * WELD).round() as i64,
+            (p[2] * WELD).round() as i64,
+        )
+    };
+
+    let mut ids: HashMap<(i64, i64, i64), u32> = HashMap::new();
+    let mut corners: Vec<[u32; 3]> = Vec::with_capacity(tris.len());
+    for t in tris {
+        let mut c = [0u32; 3];
+        for (i, p) in t.iter().enumerate() {
+            let n = ids.len() as u32;
+            c[i] = *ids.entry(key(*p)).or_insert(n);
+        }
+        // A degenerate triangle shares vertices; it carries no area and its
+        // edges would corrupt the incidence counts.
+        if c[0] == c[1] || c[1] == c[2] || c[2] == c[0] {
+            continue;
+        }
+        corners.push(c);
+    }
+    if corners.is_empty() {
+        return Topology { closed: false, orientable: false, single_component: false };
+    }
+
+    // Undirected edge -> (incidences, count traversed low->high). A closed
+    // manifold edge has exactly two incidences; a consistently wound pair
+    // traverses it once in each direction, so exactly one of the two is
+    // low->high.
+    let mut edges: HashMap<(u32, u32), (u32, u32)> = HashMap::new();
+    for (ti, c) in corners.iter().enumerate() {
+        let _ = ti;
+        for (a, b) in [(c[0], c[1]), (c[1], c[2]), (c[2], c[0])] {
+            let (lo, hi, forward) = if a < b { (a, b, 1) } else { (b, a, 0) };
+            let e = edges.entry((lo, hi)).or_insert((0, 0));
+            e.0 += 1;
+            e.1 += forward;
+        }
+    }
+
+    let mut closed = true;
+    let mut orientable = true;
+    for (incidences, forward) in edges.values() {
+        if *incidences != 2 {
+            closed = false;
+        } else if *forward != 1 {
+            // Both traversals ran the same way round: the two triangles
+            // disagree about which side is out.
+            orientable = false;
+        }
+    }
+
+    // Connected components over triangles that share an edge, by union-find.
+    let mut parent: Vec<u32> = (0..corners.len() as u32).collect();
+    fn find(parent: &mut Vec<u32>, mut x: u32) -> u32 {
+        while parent[x as usize] != x {
+            parent[x as usize] = parent[parent[x as usize] as usize];
+            x = parent[x as usize];
+        }
+        x
+    }
+    let mut owner: HashMap<(u32, u32), u32> = HashMap::new();
+    for (ti, c) in corners.iter().enumerate() {
+        for (a, b) in [(c[0], c[1]), (c[1], c[2]), (c[2], c[0])] {
+            let k = if a < b { (a, b) } else { (b, a) };
+            match owner.get(&k) {
+                None => {
+                    owner.insert(k, ti as u32);
+                }
+                Some(&other) => {
+                    let (ra, rb) = (find(&mut parent, ti as u32), find(&mut parent, other));
+                    if ra != rb {
+                        parent[ra as usize] = rb;
+                    }
+                }
+            }
+        }
+    }
+    let roots: std::collections::HashSet<u32> =
+        (0..corners.len() as u32).map(|i| find(&mut parent, i)).collect();
+
+    Topology { closed, orientable, single_component: roots.len() == 1 }
+}
+
+/// Is the transform's linear part a rotation — i.e. does it preserve lengths,
+/// areas and volumes?
+///
+/// Column-major 4x4; the placement columns are `world[0..3]`, `[4..7]`, `[8..11]`.
+/// Orthonormal columns with unit determinant magnitude is exactly the condition
+/// under which measuring in the local frame gives the same answer as measuring
+/// in world space.
+fn is_rigid(world: &[f64; 16]) -> bool {
+    let col = |i: usize| [world[i * 4], world[i * 4 + 1], world[i * 4 + 2]];
+    let (x, y, z) = (col(0), col(1), col(2));
+    let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    const TOL: f64 = 1e-9;
+    (dot(x, x) - 1.0).abs() < TOL
+        && (dot(y, y) - 1.0).abs() < TOL
+        && (dot(z, z) - 1.0).abs() < TOL
+        && dot(x, y).abs() < TOL
+        && dot(x, z).abs() < TOL
+        && dot(y, z).abs() < TOL
+}
+
 /// Tessellate the given elements and measure each one.
 ///
 /// Keyed by STEP entity id. Elements whose geometry does not close are absent
@@ -141,6 +286,7 @@ pub fn measure_all(
             };
             acc.volume += m.volume;
             acc.surface_area += m.surface_area;
+            acc.trustworthy_solid = m.trustworthy_solid;
             for i in 0..3 {
                 acc.shadow[i] += m.shadow[i];
                 lo[i] = lo[i].min(l[i]);
@@ -148,7 +294,12 @@ pub fn measure_all(
             }
             acc.parts += 1;
         }
-        if acc.parts > 0 && acc.volume > 0.0 {
+        // Exactly one segment, and that segment proved a solid. Summing volume
+        // across an element's items is how a confidently wrong number arises:
+        // the items overlap, so the sum exceeds the object — and the result
+        // still looks like an ordinary volume.
+        acc.trustworthy_solid &= acc.parts == 1;
+        if acc.parts > 0 {
             acc.extent = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
             acc.plan = qto_geometry::min_area_rect(&plan_pts);
 
@@ -199,6 +350,28 @@ fn measure_mesh(
         ]
     };
 
+    // Volume and surface area are invariant under a rigid transform, so measure
+    // them in the mesh's OWN frame and use the world-placed copy only for the
+    // things that genuinely depend on where and how the object sits: extents,
+    // shadows and the plan rectangle.
+    //
+    // Measuring them in world space made identical geometry measure differently:
+    // the positions are `f32`, so the same object placed at two coordinates
+    // quantises differently and copy-pasted elements reported volumes and
+    // surface areas that disagreed in the 5th-6th significant digit. In the
+    // local frame the arithmetic is bit-identical for identical input.
+    //
+    // A transform that is not rigid — a scaled mapped item — does change both,
+    // so those fall back to measuring in world space.
+    let rigid = is_rigid(world);
+    let local = |i: usize| -> [f64; 3] {
+        [
+            mesh.positions[i * 3] as f64,
+            mesh.positions[i * 3 + 1] as f64,
+            mesh.positions[i * 3 + 2] as f64,
+        ]
+    };
+
     let faces: Vec<Face> = mesh
         .indices
         .chunks_exact(3)
@@ -212,12 +385,46 @@ fn measure_mesh(
         })
         .collect();
 
-    // Reuses the exact polyhedral measurement, including its closure check: a
-    // mesh whose edges do not pair up does not bound a volume, and no number is
-    // produced for it.
-    let base = polyhedron::metrics(&faces).ok()?;
+    // The topology verdict, over the same triangles everything else is measured
+    // on.
+    let tris: Vec<[[f64; 3]; 3]> =
+        faces.iter().map(|f| [f.outer[0], f.outer[1], f.outer[2]]).collect();
+    let topo = topology(&tris);
 
-    // Shadow areas and extents, from the same transformed triangles.
+    // Volume needs a closed orientable shell; **nothing else does**. Surface
+    // area, the three shadows, the extents and the plan rectangle are all
+    // perfectly well defined over an open mesh.
+    //
+    // This used to bail out of the whole measurement when the polyhedral volume
+    // was refused, so one unclosed shell took eight quantities with it — every
+    // wall in an IFC2X3 ArchiCAD model produced no Height, no footprint, no side
+    // area and no perimeter for exactly that reason: 9,240 values on 1,155 walls,
+    // all of them computable, none of them emitted.
+    // The frame the invariant quantities are measured in.
+    let body: Vec<Face> = if rigid {
+        mesh.indices
+            .chunks_exact(3)
+            .filter_map(|t| {
+                let (a, b, c) = (t[0] as usize, t[1] as usize, t[2] as usize);
+                let n = mesh.positions.len() / 3;
+                (a < n && b < n && c < n).then(|| Face {
+                    outer: vec![local(a), local(b), local(c)],
+                    inner: vec![],
+                })
+            })
+            .collect()
+    } else {
+        faces.clone()
+    };
+
+    let volume = if topo.is_solid() {
+        polyhedron::metrics(&body).map(|m| m.volume).unwrap_or(0.0)
+    } else {
+        0.0
+    };
+
+    // Shadow areas, surface area and extents, from the same transformed
+    // triangles.
     let mut twice_shadow = [0.0f64; 3];
     let mut lo = [f64::MAX; 3];
     let mut hi = [f64::MIN; 3];
@@ -230,6 +437,12 @@ fn measure_mesh(
         twice_shadow[0] += (u[1] * v[2] - u[2] * v[1]).abs();
         twice_shadow[1] += (u[2] * v[0] - u[0] * v[2]).abs();
         twice_shadow[2] += (u[0] * v[1] - u[1] * v[0]).abs();
+        // |u x v| / 2 is the triangle's area; the cross product's components
+        // are already to hand as the shadow terms.
+        let cx = u[1] * v[2] - u[2] * v[1];
+        let cy = u[2] * v[0] - u[0] * v[2];
+        let cz = u[0] * v[1] - u[1] * v[0];
+
         for p in [a, b, c] {
             for i in 0..3 {
                 lo[i] = lo[i].min(p[i]);
@@ -239,9 +452,23 @@ fn measure_mesh(
         }
     }
 
+    // Surface area, in the same invariant frame as the volume.
+    let surface_area: f64 = body
+        .iter()
+        .map(|f| {
+            let (a, b, c) = (f.outer[0], f.outer[1], f.outer[2]);
+            let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+            let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+            let cx = u[1] * v[2] - u[2] * v[1];
+            let cy = u[2] * v[0] - u[0] * v[2];
+            let cz = u[0] * v[1] - u[1] * v[0];
+            (cx * cx + cy * cy + cz * cz).sqrt() * 0.5
+        })
+        .sum();
+
     let m = MeshQuantities {
-        volume: base.volume,
-        surface_area: base.surface_area,
+        volume,
+        surface_area,
         // Halved once for the doubled area vector, again because a closed
         // surface covers its own shadow twice.
         shadow: [
@@ -251,6 +478,7 @@ fn measure_mesh(
         ],
         extent: [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]],
         parts: 1,
+        trustworthy_solid: topo.is_solid(),
         plan: None,
     };
     Some((m, lo, hi))
@@ -268,6 +496,7 @@ mod tests {
             shadow: [3.0 * 4.0, 2.0 * 4.0, 2.0 * 3.0],
             extent: [2.0, 3.0, 4.0],
             parts: 1,
+            trustworthy_solid: true,
             plan: None,
         }
     }

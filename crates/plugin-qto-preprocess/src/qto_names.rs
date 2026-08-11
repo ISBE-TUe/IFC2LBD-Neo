@@ -250,12 +250,32 @@ fn spec_table() -> &'static SpecTable {
 /// count. Nothing should be computed or written for those.
 pub fn qto_spec_for(entity_name: &str) -> Option<QtoSpec> {
     let key = entity_name.trim().to_ascii_lowercase();
-    spec_table()
-        .get(key.as_str())
-        .map(|(set_name, quantities)| QtoSpec {
-            set_name,
-            quantities: quantities.clone(),
-        })
+    let table = spec_table();
+    let found = table.get(key.as_str()).or_else(|| {
+        // `IfcWallStandardCase` is a wall and carries `Qto_WallBaseQuantities`
+        // like any other. The generated table comes from the bSDD IFC4x3 index,
+        // where these subtypes no longer exist — they were folded back into
+        // their base class — but IFC2X3 and IFC4 files are full of them:
+        // essentially every wall in an ArchiCAD IFC2X3 export is an
+        // `IfcWallStandardCase`.
+        //
+        // Missing them did not degrade those elements, it skipped them
+        // outright: no report, no geometry, not one quantity. In one 155 MB
+        // model that was 1,155 walls x 8 quantities = 9,240 values never
+        // attempted.
+        for suffix in ["standardcase", "elementedcase"] {
+            if let Some(base) = key.strip_suffix(suffix) {
+                if let Some(spec) = table.get(base) {
+                    return Some(spec);
+                }
+            }
+        }
+        None
+    })?;
+    Some(QtoSpec {
+        set_name: found.0,
+        quantities: found.1.clone(),
+    })
 }
 
 #[cfg(test)]
@@ -339,5 +359,38 @@ mod tests {
     #[test]
     fn unknown_classes_have_no_spec() {
         assert!(qto_spec_for("IFCNOTATHING").is_none());
+    }
+
+    /// IFC2X3 and IFC4 are full of the deprecated `*StandardCase` /
+    /// `*ElementedCase` subtypes — essentially every wall in an ArchiCAD IFC2X3
+    /// export is an `IfcWallStandardCase` — and IFC4x3, which the generated
+    /// table comes from, folded them all back into their base class. Missing
+    /// them skipped those elements outright rather than degrading them.
+    #[test]
+    fn deprecated_case_subtypes_resolve_to_their_base_class() {
+        for (subtype, base) in [
+            ("IFCWALLSTANDARDCASE", "IFCWALL"),
+            ("IFCWALLELEMENTEDCASE", "IFCWALL"),
+            ("IFCSLABSTANDARDCASE", "IFCSLAB"),
+            ("IFCSLABELEMENTEDCASE", "IFCSLAB"),
+            ("IFCDOORSTANDARDCASE", "IFCDOOR"),
+            ("IFCWINDOWSTANDARDCASE", "IFCWINDOW"),
+            ("IFCBEAMSTANDARDCASE", "IFCBEAM"),
+            ("IFCCOLUMNSTANDARDCASE", "IFCCOLUMN"),
+            ("IFCMEMBERSTANDARDCASE", "IFCMEMBER"),
+            ("IFCPLATESTANDARDCASE", "IFCPLATE"),
+        ] {
+            let sub = qto_spec_for(subtype)
+                .unwrap_or_else(|| panic!("{subtype} must resolve"));
+            let b = qto_spec_for(base).expect("base class");
+            assert_eq!(sub.set_name, b.set_name, "{subtype}");
+            assert_eq!(sub.quantities, b.quantities, "{subtype}");
+        }
+    }
+
+    /// The fallback must not invent a spec for a class that genuinely has none.
+    #[test]
+    fn the_fallback_does_not_manufacture_specs() {
+        assert!(qto_spec_for("IFCNOTATHINGSTANDARDCASE").is_none());
     }
 }

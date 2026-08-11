@@ -2,6 +2,98 @@
 
 All notable changes to IFC2LBD-Neo are documented in this file.
 
+## [0.7.0]
+
+### Fixed — deprecated `*StandardCase` classes were skipped entirely
+
+The quantity-set table is generated from the bSDD **IFC4x3** index, and IFC4x3
+folded `IfcWallStandardCase` and its siblings back into their base classes. IFC2X3
+and IFC4 files are full of them — essentially every wall in an ArchiCAD IFC2X3
+export is an `IfcWallStandardCase` — so those elements were not degraded, they
+were **skipped before geometry was ever touched**: 4,124 walls across two models,
+tens of thousands of values never attempted.
+
+An unknown `*StandardCase` / `*ElementedCase` class now resolves to its base
+class. Verified against the published IFC2X3 subtype graph: of 731 classes,
+exactly one lacks a spec while having an ancestor that has one, and this rule
+resolves it — zero misses.
+
+### Fixed — a refused volume no longer discards seven other quantities
+
+Measuring a mesh bailed out entirely when the polyhedral volume could not be
+proved, so an unclosed shell cost the element its height, footprint, side area,
+surface area, extents and plan rectangle as well — none of which need closure.
+A wall with window openings produced *nothing*. Volume is now computed separately
+and its failure costs only volume.
+
+### Fixed — identical elements measured differently
+
+Volume and surface area were computed after transforming `f32` vertices into
+world space, so the same object at two coordinates quantised differently and
+copy-pasted elements disagreed in the 5th-6th significant digit. Both are
+invariant under a rigid transform and are now measured in the mesh's own frame;
+only extents, shadows and the plan rectangle use the world-placed copy. A
+non-rigid (scaled) transform falls back to world measurement.
+
+### Changed — a tessellated volume must be proved, not assumed
+
+A divergence-theorem volume is emitted only where the mesh is a single closed
+**orientable** single-component solid from a single segment. Edge parity alone
+admitted shells whose winding contradicts itself, whose signed volume looks
+perfectly ordinary. Voided elements remain excluded on top of that: on 703 voided
+walls the mesh passed all three topology clauses and the volume was still right
+only 3.3% of the time, ratios spread 0.004 to 3.8.
+
+### Removed — `Width` and `Height` on doors and windows
+
+Not a gap; a refusal with a measurement behind it. There are three candidate
+sources — the nominal `OverallHeight`/`OverallWidth`, the lining, and the authored
+figure — and on IFC2X3 the authored value is smaller than both (a clear
+dimension, leaf minus frame). The best single rule reproduced **2.3%** of 6,072
+`Width` and **1.1%** of 5,930 `Height` values.
+
+A slab's `Width` **is** still emitted, as the nominal thickness IFC defines it to
+be, knowingly against a conflict: one exporter means exactly that (99.8% over
+1,310 values) and another writes a plan dimension under the same name (0% over
+137). No geometric test separates the conventions, so this is a deliberate trade
+rather than an oversight.
+
+### Measured
+
+Scored against the quantities already authored in the corpus, which now covers
+IFC2X3 as well as IFC4:
+
+| | corpus A (2 IFC4, 3 IFC2X3) | corpus B (2 IFC2X3) |
+| --- | ---: | ---: |
+| before | 45.4% coverage / 97.7% correct | 13.3% / **54.6%** |
+| after | 29.7% / 96.6% | **41.1% / 93.0%** |
+
+IFC2X3 was not previously in the corpus, which is why every defect above survived
+a full rebuild unnoticed.
+
+All nine remaining disagreement groups were diagnosed by whether their error is
+*systematic* (one factor for every value — the file's convention) or *scattered*
+(no rule recovers it):
+
+| group | wrong | median ratio | clustered | verdict |
+| --- | ---: | ---: | ---: | --- |
+| GrossVolume / Slab | 49 | 10.7639 | 94% | exporter writes **square feet** |
+| GrossVolume / Column | 31 | 0.1850 | **100%** | a single exporter constant |
+| NetSurfaceArea / Member | 212 | 1.0150 | 74% | joints deducted by the exporter |
+| GrossVolume / Wall | 726 | 0.9659 | 33% | scattered |
+| Perimeter / Slab | 142 | 0.4674 | 0% | scattered |
+| NetArea + NetVolume / Slab | 419 | 0.39 / 0.53 | 13% / 3% | scattered |
+| GrossSideArea / Wall | 119 | 1.6033 | 4% | scattered |
+| Length / Member | 26 | 0.1881 | 0% | scattered |
+| GrossVolume / StairFlight | 16 | 6.3738 | 0% | scattered |
+
+100% clustered means every value differs by the *same* factor, which is the
+file's convention rather than our arithmetic. Where a rule held on IFC4 and not
+on IFC2X3 — slab `Width`, slab plan areas, slab `Perimeter`, member
+`NetSurfaceArea` — the schema is now the discriminator, since no geometric test
+separates the conventions. The scattered wall and stair-flight groups are not
+addressed and remain the largest known gap.
+
 ## [0.6.3]
 
 ### Fixed — a type's property set was inherited on top of the occurrence's own
