@@ -56,6 +56,7 @@ pub(crate) struct QuadChunkWriter {
     bytes_per_chunk: u64,
     min_chunk_count: u64,
     core_chunk_count: u64,
+    compress_output: bool,
     current_index: usize,
     current_file: Option<BufWriter<Box<dyn Write + Send>>>,
     current_bytes: u64,
@@ -86,6 +87,7 @@ impl QuadChunkWriter {
         bytes_per_chunk: usize,
         min_chunk_count: usize,
         core_count_override: Option<usize>,
+        compress_output: bool,
     ) -> anyhow::Result<Self> {
         let available_cores = std::thread::available_parallelism()
             .map(|n| n.get())
@@ -105,6 +107,7 @@ impl QuadChunkWriter {
             bytes_per_chunk: bytes_per_chunk as u64,
             min_chunk_count: min_chunk_count as u64,
             core_chunk_count,
+            compress_output,
             current_index: 0,
             current_file: None,
             current_bytes: 0,
@@ -158,7 +161,7 @@ impl QuadChunkWriter {
         };
         let manifest_json = serde_json::to_string_pretty(&manifest)
             .context("failed to serialize quad chunk manifest JSON")?;
-        let mut sink = session::open_sink(
+        let mut sink = session::open_staged_sink(
             &self.session,
             &manifest_filename,
             "application/json",
@@ -169,6 +172,20 @@ impl QuadChunkWriter {
             .with_context(|| format!("failed to write manifest {manifest_filename}"))?;
         sink.flush()
             .with_context(|| format!("failed to flush manifest {manifest_filename}"))?;
+        drop(sink);
+        session::commit_staged_sink(&self.session, &manifest_filename).map_err(|e| {
+            anyhow::anyhow!("failed to publish chunk manifest {manifest_filename}: {e}")
+        })?;
+        tracing::info!(
+            "published N-Quads chunk manifest {} ({} chunks, {} lines)",
+            if self.compress_output {
+                format!("{manifest_filename}.gz")
+            } else {
+                manifest_filename
+            },
+            self.manifest_entries.len(),
+            self.total_lines
+        );
         Ok(())
     }
 
@@ -219,7 +236,7 @@ impl QuadChunkWriter {
 
     fn open_next_chunk_file(&mut self) -> anyhow::Result<()> {
         let file_name = format!("{}.part-{:03}.nq", self.chunk_prefix, self.current_index);
-        let sink = session::open_sink(
+        let sink = session::open_staged_sink(
             &self.session,
             &file_name,
             "application/n-quads",
@@ -236,13 +253,23 @@ impl QuadChunkWriter {
     fn close_current_file(&mut self) -> anyhow::Result<()> {
         if let Some(mut file) = self.current_file.take() {
             file.flush()?;
-            let file_name = format!(
+            drop(file);
+            let logical_file_name = format!(
                 "{}.part-{:03}.nq",
                 self.chunk_prefix,
                 self.current_index - 1
             );
+            session::commit_staged_sink(&self.session, &logical_file_name).map_err(|e| {
+                anyhow::anyhow!("failed to publish quad chunk {logical_file_name}: {e}")
+            })?;
+            tracing::info!(
+                "published N-Quads chunk {} ({} lines, {} uncompressed bytes)",
+                self.published_file_name(&logical_file_name),
+                self.current_lines,
+                self.current_bytes
+            );
             self.manifest_entries.push(QuadChunkEntry {
-                file: file_name,
+                file: self.published_file_name(&logical_file_name),
                 bytes: self.current_bytes,
                 lines: self.current_lines,
             });
@@ -268,11 +295,15 @@ impl QuadChunkWriter {
             let mut writers: Vec<BufWriter<Box<dyn Write + Send>>> =
                 Vec::with_capacity(file_names.len());
             for file_name in &file_names {
-                let sink =
-                    session::open_sink(&session, file_name, "application/n-quads", "chunk-data")
-                        .map_err(|e| {
-                            anyhow::anyhow!("failed to open quad chunk sink {file_name}: {}", e)
-                        })?;
+                let sink = session::open_staged_sink(
+                    &session,
+                    file_name,
+                    "application/n-quads",
+                    "chunk-data",
+                )
+                .map_err(|e| {
+                    anyhow::anyhow!("failed to open quad chunk sink {file_name}: {}", e)
+                })?;
                 writers.push(BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, sink));
             }
             for msg in receiver {
@@ -327,9 +358,18 @@ impl QuadChunkWriter {
                 .map_err(|_| anyhow::anyhow!("core chunk writer thread panicked"))??;
         }
         for idx in 0..self.core_bytes.len() {
-            let file_name = format!("{}.part-{:03}.nq", self.chunk_prefix, idx);
+            let logical_file_name = format!("{}.part-{:03}.nq", self.chunk_prefix, idx);
+            session::commit_staged_sink(&self.session, &logical_file_name).map_err(|e| {
+                anyhow::anyhow!("failed to publish quad chunk {logical_file_name}: {e}")
+            })?;
+            tracing::info!(
+                "published N-Quads chunk {} ({} lines, {} uncompressed bytes)",
+                self.published_file_name(&logical_file_name),
+                self.core_lines[idx],
+                self.core_bytes[idx]
+            );
             self.manifest_entries.push(QuadChunkEntry {
-                file: file_name,
+                file: self.published_file_name(&logical_file_name),
                 bytes: self.core_bytes[idx],
                 lines: self.core_lines[idx],
             });
@@ -361,6 +401,14 @@ impl QuadChunkWriter {
             self.flush_core_buffer(idx)?;
         }
         Ok(())
+    }
+
+    fn published_file_name(&self, logical_file_name: &str) -> String {
+        if self.compress_output {
+            format!("{logical_file_name}.gz")
+        } else {
+            logical_file_name.to_string()
+        }
     }
 }
 

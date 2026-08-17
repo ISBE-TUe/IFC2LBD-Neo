@@ -214,7 +214,7 @@ impl ProducerPlugin for BotProducerPlugin {
 
         let (raw_sender, raw_receiver) =
             crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
-        let graph_iri = BatchKind::new(format!("{}bot", options.base_uri.trim_end_matches('/')));
+        let graph_iri = BatchKind::new(format!("{}/bot", options.base_uri.trim_end_matches('/')));
         forward_as_tagged(raw_receiver, graph_iri, sender.clone());
 
         let bot_config = ctx
@@ -310,7 +310,7 @@ impl ProducerPlugin for BeoProducerPlugin {
 
         let (raw_sender, raw_receiver) =
             crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
-        let graph_iri = BatchKind::new(format!("{}beo", options.base_uri.trim_end_matches('/')));
+        let graph_iri = BatchKind::new(format!("{}/beo", options.base_uri.trim_end_matches('/')));
         forward_as_tagged(raw_receiver, graph_iri, sender.clone());
 
         stream_beo(&model, &options, &raw_sender)
@@ -361,7 +361,7 @@ impl ProducerPlugin for BsddProducerPlugin {
 
         let (raw_sender, raw_receiver) =
             crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
-        let graph_iri = BatchKind::new(format!("{}bsdd", options.base_uri.trim_end_matches('/')));
+        let graph_iri = BatchKind::new(format!("{}/bsdd", options.base_uri.trim_end_matches('/')));
         forward_as_tagged(raw_receiver, graph_iri, sender.clone());
 
         let cache = ctx.get::<BsddMatchCache>();
@@ -431,7 +431,7 @@ impl ProducerPlugin for PropsOpmProducerPlugin {
 
         let (raw_sender, raw_receiver) =
             crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
-        let graph_iri = BatchKind::new(format!("{}props", options.base_uri.trim_end_matches('/')));
+        let graph_iri = BatchKind::new(format!("{}/props", options.base_uri.trim_end_matches('/')));
         forward_as_tagged(raw_receiver, graph_iri, sender.clone());
 
         stream_props_opm(&model, &options, &raw_sender)
@@ -485,7 +485,7 @@ impl ProducerPlugin for OmgFogProducerPlugin {
 
         let (raw_sender, raw_receiver) =
             crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
-        let graph_iri = BatchKind::new(format!("{}omg", options.base_uri.trim_end_matches('/')));
+        let graph_iri = BatchKind::new(format!("{}/omg", options.base_uri.trim_end_matches('/')));
         forward_as_tagged(raw_receiver, graph_iri, sender.clone());
 
         stream_omg_fog(&model, &options, &raw_sender)
@@ -544,7 +544,8 @@ impl ProducerPlugin for IfcowlProducerPlugin {
 
         let (ifcowl_sender, ifcowl_receiver) =
             crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
-        let graph_iri = BatchKind::new(format!("{}ifcowl", options.base_uri.trim_end_matches('/')));
+        let graph_iri =
+            BatchKind::new(format!("{}/ifcowl", options.base_uri.trim_end_matches('/')));
         forward_as_tagged(ifcowl_receiver, graph_iri, sender.clone());
 
         lbd_converter::modules::ifcowl::stream_ifcowl(

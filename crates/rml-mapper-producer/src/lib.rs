@@ -82,7 +82,7 @@ impl ProducerPlugin for RmlMapperProducerPlugin {
             .ok_or_else(|| ProducerError::Conversion("No ConvertOptions in context".into()))?;
 
         let graph_iri = BatchKind::new(format!(
-            "{}{}",
+            "{}/{}",
             options.base_uri.trim_end_matches('/'),
             GRAPH_SLUG,
         ));

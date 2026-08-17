@@ -332,6 +332,9 @@ Export plugins decide **where** output bytes go. One export plugin may be active
 
 The orchestrator calls `start_session()` once. The returned `ExportSession` then handles:
 - `open_sink()` — called per output file (one per serialiser chunk)
+- `open_staged_sink()` / `commit_staged_sink()` — optional atomic publication
+  for completed streaming chunks; the default delegates to `open_sink()` and
+  makes commit a no-op
 - `accept_derived_file()` — called once per sidecar file emitted by producers
 - `finalize()` — called after all writes are done; returns an audit summary
 
@@ -345,6 +348,19 @@ pub trait ExportSession: Send {
         mime_type: &str,
         role: &str,
     ) -> Result<Box<dyn std::io::Write + Send>, ExportError>;
+
+    fn open_staged_sink(
+        &mut self,
+        filename: &str,
+        mime_type: &str,
+        role: &str,
+    ) -> Result<Box<dyn std::io::Write + Send>, ExportError> {
+        self.open_sink(filename, mime_type, role)
+    }
+
+    fn commit_staged_sink(&mut self, filename: &str) -> Result<(), ExportError> {
+        Ok(())
+    }
 
     fn accept_derived_file(&mut self, file: DerivedFile) -> Result<(), ExportError>;
 

@@ -209,7 +209,7 @@ impl ProducerPlugin for BotProducerPlugin {
         })?;
         let (raw_sender, raw_receiver) =
             crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
-        let graph_iri = BatchKind::new(format!("{}bot", options.base_uri.trim_end_matches('/')));
+        let graph_iri = BatchKind::new(format!("{}/bot", options.base_uri.trim_end_matches('/')));
         forward_as_tagged(raw_receiver, graph_iri, sender.clone());
         let bot_config = ctx
             .get::<lbd_topology::BotConfig>()
@@ -296,7 +296,7 @@ impl ProducerPlugin for BeoProducerPlugin {
         })?;
         let (raw_sender, raw_receiver) =
             crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
-        let graph_iri = BatchKind::new(format!("{}beo", options.base_uri.trim_end_matches('/')));
+        let graph_iri = BatchKind::new(format!("{}/beo", options.base_uri.trim_end_matches('/')));
         forward_as_tagged(raw_receiver, graph_iri, sender.clone());
         stream_beo(&model, &options, &raw_sender)
             .map(|_| ())
@@ -361,7 +361,7 @@ impl ProducerPlugin for BsddProducerPlugin {
         })?;
         let (raw_sender, raw_receiver) =
             crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
-        let graph_iri = BatchKind::new(format!("{}bsdd", options.base_uri.trim_end_matches('/')));
+        let graph_iri = BatchKind::new(format!("{}/bsdd", options.base_uri.trim_end_matches('/')));
         forward_as_tagged(raw_receiver, graph_iri, sender.clone());
         let cache = ctx.get::<BsddMatchCache>();
         let (_, dedup_stats) =
@@ -403,7 +403,7 @@ impl ProducerPlugin for PropsOpmProducerPlugin {
         })?;
         let (raw_sender, raw_receiver) =
             crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
-        let graph_iri = BatchKind::new(format!("{}props", options.base_uri.trim_end_matches('/')));
+        let graph_iri = BatchKind::new(format!("{}/props", options.base_uri.trim_end_matches('/')));
         forward_as_tagged(raw_receiver, graph_iri, sender.clone());
         stream_props_opm(&model, &options, &raw_sender)
             .map(|_| ())
@@ -449,7 +449,7 @@ impl ProducerPlugin for OmgFogProducerPlugin {
         })?;
         let (raw_sender, raw_receiver) =
             crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
-        let graph_iri = BatchKind::new(format!("{}omg", options.base_uri.trim_end_matches('/')));
+        let graph_iri = BatchKind::new(format!("{}/omg", options.base_uri.trim_end_matches('/')));
         forward_as_tagged(raw_receiver, graph_iri, sender.clone());
         stream_omg_fog(&model, &options, &raw_sender)
             .map(|_| ())
@@ -495,7 +495,8 @@ impl ProducerPlugin for IfcowlProducerPlugin {
         })?;
         let (ifcowl_sender, ifcowl_receiver) =
             crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
-        let graph_iri = BatchKind::new(format!("{}ifcowl", options.base_uri.trim_end_matches('/')));
+        let graph_iri =
+            BatchKind::new(format!("{}/ifcowl", options.base_uri.trim_end_matches('/')));
         forward_as_tagged(ifcowl_receiver, graph_iri, sender.clone());
         lbd_converter::modules::ifcowl::stream_ifcowl(
             &step,
@@ -619,6 +620,7 @@ impl ExportPlugin for FileExportPlugin {
             output_dir,
             compress,
             opened: Vec::new(),
+            staged: Vec::new(),
             derived: Vec::new(),
         }))
     }
@@ -628,6 +630,7 @@ struct CliFileExportSession {
     output_dir: PathBuf,
     compress: bool,
     opened: Vec<(String, String, String)>, // (filename, mime_type, role)
+    staged: Vec<(String, String, String)>, // (logical, temporary, final)
     derived: Vec<ExportFileSummary>,
 }
 
@@ -658,6 +661,56 @@ impl ExportSession for CliFileExportSession {
         }
     }
 
+    fn open_staged_sink(
+        &mut self,
+        filename: &str,
+        mime_type: &str,
+        role: &str,
+    ) -> Result<Box<dyn Write + Send>, ExportError> {
+        let actual_filename = if self.compress {
+            format!("{filename}.gz")
+        } else {
+            filename.to_string()
+        };
+        let temporary_filename = format!(".{actual_filename}.partial");
+        let path = self.output_dir.join(&temporary_filename);
+        let file = File::create(&path)
+            .map_err(|e| ExportError::Export(format!("cannot create {}: {e}", path.display())))?;
+        self.opened.push((
+            actual_filename.clone(),
+            mime_type.to_string(),
+            role.to_string(),
+        ));
+        self.staged
+            .push((filename.to_string(), temporary_filename, actual_filename));
+        if self.compress {
+            Ok(Box::new(GzEncoder::new(
+                BufWriter::new(file),
+                Compression::fast(),
+            )))
+        } else {
+            Ok(Box::new(BufWriter::new(file)))
+        }
+    }
+
+    fn commit_staged_sink(&mut self, filename: &str) -> Result<(), ExportError> {
+        let index = self
+            .staged
+            .iter()
+            .position(|(logical, _, _)| logical == filename)
+            .ok_or_else(|| ExportError::Export(format!("unknown staged sink {filename}")))?;
+        let (_, temporary_filename, actual_filename) = self.staged.remove(index);
+        let temporary_path = self.output_dir.join(&temporary_filename);
+        let final_path = self.output_dir.join(&actual_filename);
+        std::fs::rename(&temporary_path, &final_path).map_err(|e| {
+            ExportError::Export(format!(
+                "cannot publish {} as {}: {e}",
+                temporary_path.display(),
+                final_path.display()
+            ))
+        })
+    }
+
     fn accept_derived_file(&mut self, file: DerivedFile) -> Result<(), ExportError> {
         let path = self.output_dir.join(&file.filename);
         std::fs::write(&path, &file.bytes)
@@ -672,6 +725,12 @@ impl ExportSession for CliFileExportSession {
     }
 
     fn finalize(self: Box<Self>) -> Result<Vec<ExportFileSummary>, ExportError> {
+        if !self.staged.is_empty() {
+            return Err(ExportError::Export(format!(
+                "{} staged output sink(s) were not committed",
+                self.staged.len()
+            )));
+        }
         let mut summaries = self.derived;
         for (filename, mime_type, role) in &self.opened {
             let path = self.output_dir.join(filename);
@@ -717,6 +776,7 @@ impl ExportPlugin for LogExportPlugin {
         Ok(Box::new(CliLogExportSession {
             output_dir,
             opened: Vec::new(),
+            staged: Vec::new(),
             derived: Vec::new(),
             logs,
         }))
@@ -726,6 +786,7 @@ impl ExportPlugin for LogExportPlugin {
 struct CliLogExportSession {
     output_dir: PathBuf,
     opened: Vec<(String, String, String)>,
+    staged: Vec<(String, String)>, // (temporary, final)
     derived: Vec<ExportFileSummary>,
     logs: lbd_pipeline::PipelineLogBundle,
 }
@@ -748,6 +809,43 @@ impl ExportSession for CliLogExportSession {
         Ok(Box::new(BufWriter::new(file)))
     }
 
+    fn open_staged_sink(
+        &mut self,
+        filename: &str,
+        mime_type: &str,
+        role: &str,
+    ) -> Result<Box<dyn Write + Send>, ExportError> {
+        let temporary_filename = format!(".{filename}.partial");
+        let path = self.output_dir.join(&temporary_filename);
+        let file = File::create(&path)
+            .map_err(|e| ExportError::Export(format!("cannot create {}: {e}", path.display())))?;
+        self.opened.push((
+            filename.to_string(),
+            mime_type.to_string(),
+            role.to_string(),
+        ));
+        self.staged.push((temporary_filename, filename.to_string()));
+        Ok(Box::new(BufWriter::new(file)))
+    }
+
+    fn commit_staged_sink(&mut self, filename: &str) -> Result<(), ExportError> {
+        let index = self
+            .staged
+            .iter()
+            .position(|(_, final_name)| final_name == filename)
+            .ok_or_else(|| ExportError::Export(format!("unknown staged sink {filename}")))?;
+        let (temporary_filename, final_filename) = self.staged.remove(index);
+        let temporary_path = self.output_dir.join(&temporary_filename);
+        let final_path = self.output_dir.join(&final_filename);
+        std::fs::rename(&temporary_path, &final_path).map_err(|e| {
+            ExportError::Export(format!(
+                "cannot publish {} as {}: {e}",
+                temporary_path.display(),
+                final_path.display()
+            ))
+        })
+    }
+
     fn accept_derived_file(&mut self, file: DerivedFile) -> Result<(), ExportError> {
         let path = self.output_dir.join(&file.filename);
         std::fs::write(&path, &file.bytes)
@@ -762,6 +860,12 @@ impl ExportSession for CliLogExportSession {
     }
 
     fn finalize(self: Box<Self>) -> Result<Vec<ExportFileSummary>, ExportError> {
+        if !self.staged.is_empty() {
+            return Err(ExportError::Export(format!(
+                "{} staged output sink(s) were not committed",
+                self.staged.len()
+            )));
+        }
         let mut summaries = self.derived;
         for (filename, mime_type, role) in &self.opened {
             let path = self.output_dir.join(filename);
@@ -887,9 +991,13 @@ impl Write for CountingStdoutWriter {
 
 #[cfg(test)]
 mod tests {
-    use lbd_pipeline::PipelineStage;
+    use std::io::{Read, Write};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::built_in_registry;
+    use flate2::read::GzDecoder;
+    use lbd_pipeline::{ExportSession, PipelineStage};
+
+    use super::{built_in_registry, CliFileExportSession};
 
     #[test]
     fn built_in_registry_exposes_expected_stage_counts() {
@@ -913,5 +1021,47 @@ mod tests {
         );
         // File, Log, Stdout
         assert_eq!(registry.manifests_for_stage(PipelineStage::Export).len(), 3);
+    }
+
+    #[test]
+    fn staged_file_sink_is_hidden_until_commit() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let output_dir = std::env::temp_dir().join(format!("ifc2lbd-staged-sink-{unique}"));
+        std::fs::create_dir_all(&output_dir).expect("mkdir");
+        let mut session = CliFileExportSession {
+            output_dir: output_dir.clone(),
+            compress: true,
+            opened: Vec::new(),
+            staged: Vec::new(),
+            derived: Vec::new(),
+        };
+
+        let mut sink = session
+            .open_staged_sink("part-000.nq", "application/n-quads", "chunk-data")
+            .expect("open staged sink");
+        sink.write_all(b"<s> <p> <o> <g> .\n").expect("write");
+        drop(sink);
+
+        let temporary = output_dir.join(".part-000.nq.gz.partial");
+        let published = output_dir.join("part-000.nq.gz");
+        assert!(temporary.exists());
+        assert!(!published.exists());
+
+        session
+            .commit_staged_sink("part-000.nq")
+            .expect("commit staged sink");
+        assert!(!temporary.exists());
+        assert!(published.exists());
+
+        let mut decoded = String::new();
+        GzDecoder::new(std::fs::File::open(&published).expect("open gzip"))
+            .read_to_string(&mut decoded)
+            .expect("decode gzip");
+        assert_eq!(decoded, "<s> <p> <o> <g> .\n");
+
+        std::fs::remove_dir_all(output_dir).ok();
     }
 }

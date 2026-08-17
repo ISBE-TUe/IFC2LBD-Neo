@@ -137,10 +137,19 @@ Named graph IRIs are derived from `--base-uri`: `{base-uri}/{slug}`.
 
 | Option             | Values                       | Default     |
 | ------------------ | ---------------------------- | ----------- |
-| `chunking`         | `none`, `lines`, `bytes`     | `lines`     |
+| `chunking`         | `none`, `lines`, `bytes`, `cores` | `lines` |
 | `chunk_size_lines` | integer                      | `2000000`   |
 | `chunk_size_bytes` | integer                      | `268435456` |
 | `chunk_prefix`     | string                       | `out`       |
+
+With `lines` or `bytes`, the CLI streams producer batches into the serializer
+and atomically publishes each completed chunk while conversion is still
+running, provided no postprocessor is active. Consumers may watch for newly
+visible `*.nq` / `*.nq.gz` files and begin loading them immediately; hidden
+`.partial` files are never complete and must not be consumed. The manifest is
+published last and acts as the completion marker. `cores` keeps all target
+files open and therefore publishes them together at finalization rather than
+progressively.
 
 ### `neo-bsdd-producer`
 

@@ -16,10 +16,9 @@ use ifc_model::build_model;
 use ifc_step::parse_step_file;
 use lbd_converter::{list_embedded_profiles, score_profile_for_model, ConvertOptions, IfcowlMode};
 use lbd_serializer::{
-    serialize_lbd_batches_incremental_to_writer, serialize_lbd_batches_to_writer,
-    serialize_nquads_batches_to_writer, serialize_nquads_merged_batches_to_writer,
-    serialize_turtle_batch_raw_to_writer, serialize_turtle_batches_to_writer,
-    serialize_turtle_grouped_to_writer, write_turtle_prefixes_for_stream,
+    serialize_turtle_batch_raw_to_writer, serialize_turtle_batch_to_writer,
+    serialize_turtle_batches_to_writer, serialize_turtle_grouped_to_writer, write_nquads_batch,
+    write_turtle_prefixes_for_stream,
 };
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 
@@ -411,12 +410,6 @@ fn main() -> anyhow::Result<()> {
         "lbd",
         settings.nquads.graph_naming,
     );
-    let ifcowl_graph_iri = resolve_nquads_graph_iri(
-        &normalized_base,
-        &lbd_filename,
-        "ifcowl",
-        settings.nquads.graph_naming,
-    );
     ctx.insert(std::sync::Arc::new(OutputDir(output_dir.clone())));
     // Insert the output stem so the geometry producer can name sidecar files
     // (e.g. "duplex.frag" instead of "model.frag").
@@ -510,22 +503,12 @@ fn main() -> anyhow::Result<()> {
     let ctx = std::sync::Arc::new(ctx);
 
     let (converter_lbd_sender, converter_lbd_receiver) =
-        crossbeam::channel::bounded(SERIALIZER_CHANNEL_CAPACITY);
+        crossbeam::channel::bounded::<lbd_pipeline::TaggedBatch>(SERIALIZER_CHANNEL_CAPACITY);
     let lbd_receiver = converter_lbd_receiver;
-
-    // IfcOWL channel: only needed for N-Quads (merged into LBD output thread).
-    // For Turtle, IfcOWL triples go directly to the main LBD channel (joined layout).
-    let (ifcowl_sender, mut ifcowl_receiver) =
-        if emit_ifcowl && output_format == OutputFormat::Nquads {
-            let (sender, receiver) = crossbeam::channel::bounded(SERIALIZER_CHANNEL_CAPACITY);
-            (Some(sender), Some(receiver))
-        } else {
-            (None, None)
-        };
 
     let lbd_base_uri = base_options.base_uri.clone();
     let lbd_graph_iri_thread = lbd_graph_iri.clone();
-    let ifcowl_graph_iri_thread = ifcowl_graph_iri.clone();
+    let nquads_graph_naming = settings.nquads.graph_naming;
     let lbd_filename_thread = lbd_filename.clone();
     let lbd_mime: &'static str = match output_format {
         OutputFormat::Turtle => "text/turtle",
@@ -536,32 +519,23 @@ fn main() -> anyhow::Result<()> {
     let quad_chunk_size_bytes = settings.nquads.chunk_size_bytes;
     let quad_chunk_prefix = settings.nquads.chunk_prefix.clone();
     let quad_chunk_min_count = settings.nquads.chunk_min_count;
-    let ifcowl_chunk_core_count =
-        chunk_writer::resolve_effective_core_chunk_count_for_estimated_bytes(
-            settings.nquads.chunking,
-            settings.nquads.chunk_core_count,
-            settings.nquads.chunk_min_count,
-            input_file_size_bytes.saturating_mul(IFCOWL_TO_NQ_ESTIMATE_MULTIPLIER),
-        );
+    let chunk_compress_output = settings.compress_output;
     let lbd_chunk_core_count = chunk_writer::resolve_effective_core_chunk_count_for_estimated_bytes(
         settings.nquads.chunking,
         settings.nquads.chunk_core_count,
         settings.nquads.chunk_min_count,
-        input_file_size_bytes.saturating_mul(LBD_TO_NQ_ESTIMATE_MULTIPLIER),
+        input_file_size_bytes.saturating_mul(if emit_ifcowl {
+            IFCOWL_TO_NQ_ESTIMATE_MULTIPLIER
+        } else {
+            LBD_TO_NQ_ESTIMATE_MULTIPLIER
+        }),
     );
     if settings.nquads.chunking == chunk_writer::QuadChunkingMode::Cores {
         tracing::info!(
-            "core chunk targets (auto): ifcowl={}, lbd={}",
-            ifcowl_chunk_core_count.unwrap_or(1),
+            "core chunk targets (auto): output={}",
             lbd_chunk_core_count.unwrap_or(1),
         );
     }
-    // For N-Quads format, merge IfcOWL batches into the LBD output thread.
-    let merged_ifcowl_receiver = if output_format == OutputFormat::Nquads {
-        ifcowl_receiver.take()
-    } else {
-        None
-    };
     let lbd_session = session.clone();
     let lbd_separate =
         output_format == OutputFormat::Turtle && settings.turtle_layout == TurtleLayout::Separate;
@@ -576,19 +550,28 @@ fn main() -> anyhow::Result<()> {
             OutputFormat::Turtle => {
                 let sink = session::open_sink(&lbd_session, &lbd_filename_thread, lbd_mime, "data")
                     .map_err(|e| anyhow::anyhow!("failed to open LBD output sink: {}", e))?;
-                let writer = BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, sink);
+                let mut writer = BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, sink);
                 if turtle_grouping == TurtleGrouping::Sorted {
-                    serialize_lbd_batches_to_writer(lbd_receiver, writer, &lbd_base_uri)
+                    let mut triples = Vec::new();
+                    for mut batch in lbd_receiver {
+                        triples.append(&mut batch.triples);
+                    }
+                    serialize_turtle_grouped_to_writer(&triples, &mut writer, Some(&lbd_base_uri))
                         .with_context(|| {
                             format!("failed to write Turtle to {lbd_filename_thread}")
                         })?;
                 } else {
-                    serialize_lbd_batches_incremental_to_writer(
-                        lbd_receiver,
-                        writer,
-                        &lbd_base_uri,
-                    )
-                    .with_context(|| format!("failed to write Turtle to {lbd_filename_thread}"))?;
+                    write_turtle_prefixes_for_stream(&mut writer, Some(&lbd_base_uri))?;
+                    for batch in lbd_receiver {
+                        serialize_turtle_batch_to_writer(
+                            &batch.triples,
+                            &mut writer,
+                            Some(&lbd_base_uri),
+                        )
+                        .with_context(|| {
+                            format!("failed to write Turtle to {lbd_filename_thread}")
+                        })?;
+                    }
                 }
             }
             OutputFormat::Nquads => {
@@ -601,57 +584,20 @@ fn main() -> anyhow::Result<()> {
                         quad_chunk_size_bytes,
                         quad_chunk_min_count,
                         lbd_chunk_core_count,
+                        chunk_compress_output,
                     )?;
-                    let mut ifcowl_chunk_writer = if merged_ifcowl_receiver.is_some() {
-                        Some(chunk_writer::QuadChunkWriter::new(
-                            lbd_session.clone(),
-                            format!("{}-ifcowl", quad_chunk_prefix),
-                            quad_chunking_mode,
-                            quad_chunk_size_lines,
-                            quad_chunk_size_bytes,
-                            quad_chunk_min_count,
-                            ifcowl_chunk_core_count,
-                        )?)
-                    } else {
-                        None
-                    };
-
-                    let ifcowl_thread = if let Some(ifcowl_receiver) = merged_ifcowl_receiver {
-                        let ifcowl_graph = ifcowl_graph_iri_thread.clone();
-                        let mut writer = ifcowl_chunk_writer
-                            .take()
-                            .ok_or_else(|| anyhow::anyhow!("missing IfcOWL chunk writer"))?;
-                        Some(thread::spawn(move || -> anyhow::Result<()> {
-                            serialize_nquads_batches_to_writer(
-                                ifcowl_receiver,
-                                &mut writer,
-                                &ifcowl_graph,
-                            )
-                            .context("failed to write IfcOWL chunked N-Quads output")?;
-                            writer
-                                .finish()
-                                .context("failed to finalize IfcOWL quad chunk manifest")?;
-                            Ok(())
-                        }))
-                    } else {
-                        None
-                    };
-
-                    serialize_nquads_batches_to_writer(
-                        lbd_receiver,
-                        &mut lbd_chunk_writer,
-                        &lbd_graph_iri_thread,
-                    )
-                    .context("failed to write LBD chunked N-Quads output")?;
+                    for batch in lbd_receiver {
+                        let graph_iri = nquads_batch_graph_iri(
+                            &batch,
+                            nquads_graph_naming,
+                            &lbd_graph_iri_thread,
+                        );
+                        write_nquads_batch(&mut lbd_chunk_writer, &batch.triples, graph_iri)
+                            .context("failed to write chunked N-Quads output")?;
+                    }
                     lbd_chunk_writer
                         .finish()
-                        .context("failed to finalize LBD quad chunk manifest")?;
-
-                    if let Some(handle) = ifcowl_thread {
-                        handle.join().map_err(|_| {
-                            anyhow::anyhow!("IfcOWL chunk writer thread panicked")
-                        })??;
-                    }
+                        .context("failed to finalize N-Quads chunk manifest")?;
                 } else {
                     let sink =
                         session::open_sink(&lbd_session, &lbd_filename_thread, lbd_mime, "data")
@@ -659,26 +605,15 @@ fn main() -> anyhow::Result<()> {
                                 anyhow::anyhow!("failed to open LBD output sink: {}", e)
                             })?;
                     let mut writer = BufWriter::with_capacity(SERIALIZER_BUFFER_BYTES, sink);
-                    if let Some(ifcowl_receiver) = merged_ifcowl_receiver {
-                        serialize_nquads_merged_batches_to_writer(
-                            lbd_receiver,
-                            ifcowl_receiver,
-                            &mut writer,
+                    for batch in lbd_receiver {
+                        let graph_iri = nquads_batch_graph_iri(
+                            &batch,
+                            nquads_graph_naming,
                             &lbd_graph_iri_thread,
-                            &ifcowl_graph_iri_thread,
-                        )
-                        .with_context(|| {
-                            format!("failed to write N-Quads to {lbd_filename_thread}")
-                        })?;
-                    } else {
-                        serialize_nquads_batches_to_writer(
-                            lbd_receiver,
-                            &mut writer,
-                            &lbd_graph_iri_thread,
-                        )
-                        .with_context(|| {
-                            format!("failed to write N-Quads to {lbd_filename_thread}")
-                        })?;
+                        );
+                        write_nquads_batch(&mut writer, &batch.triples, graph_iri).with_context(
+                            || format!("failed to write N-Quads to {lbd_filename_thread}"),
+                        )?;
                     }
                 }
             }
@@ -690,6 +625,51 @@ fn main() -> anyhow::Result<()> {
     // the main LBD channel (joined layout). The separate sidecar was a stub
     // that only contained prefix declarations with no actual triples.
     let ifcowl_thread: Option<thread::JoinHandle<anyhow::Result<()>>> = None;
+
+    let postprocess_ids: Vec<String> = activation_plan
+        .enabled_ids
+        .iter()
+        .filter_map(|id| built_in_registry.plugin(id).map(|p| p.manifest()))
+        .filter(|m| m.stage == lbd_pipeline::PipelineStage::Postprocess)
+        .map(|m| m.id.to_string())
+        .collect();
+    let stream_chunk_batches = output_format == OutputFormat::Nquads
+        && quad_chunking_mode != chunk_writer::QuadChunkingMode::None
+        && postprocess_ids.is_empty();
+    let producer_stream_sender = stream_chunk_batches.then(|| converter_lbd_sender.clone());
+
+    let active_serializer_ids: Vec<String> = activation_plan
+        .enabled_ids
+        .iter()
+        .filter_map(|id| built_in_registry.plugin(id).map(|p| p.manifest()))
+        .filter(|m| m.stage == lbd_pipeline::PipelineStage::Serialize)
+        .map(|m| m.id.to_string())
+        .collect();
+    let streaming_serializer_start = stream_chunk_batches.then(Instant::now);
+    if stream_chunk_batches {
+        for id in &active_serializer_ids {
+            tracing::info!("module {}: running", id);
+        }
+        match quad_chunking_mode {
+            chunk_writer::QuadChunkingMode::Lines | chunk_writer::QuadChunkingMode::Bytes => {
+                tracing::info!(
+                    "progressive N-Quads enabled: finalized chunks publish during production"
+                );
+            }
+            chunk_writer::QuadChunkingMode::Cores => tracing::info!(
+                "streaming N-Quads enabled; cores-mode chunks publish together at finalization"
+            ),
+            chunk_writer::QuadChunkingMode::None => {}
+        }
+    } else if output_format == OutputFormat::Nquads
+        && quad_chunking_mode != chunk_writer::QuadChunkingMode::None
+        && !postprocess_ids.is_empty()
+    {
+        tracing::info!(
+            "progressive N-Quads disabled because postprocessing is active: {}",
+            postprocess_ids.join(", ")
+        );
+    }
 
     let producer_start = Instant::now();
     // Emit "running" for each producer so the UI shows active modules
@@ -719,20 +699,11 @@ fn main() -> anyhow::Result<()> {
     // requires the full triple set before mapping).  When no postprocess is
     // active, we could stream directly, but collecting is simpler and the
     // CLI has no memory constraints like WASM.
-    let mut all_batches: Vec<lbd_pipeline::TaggedBatch> = Vec::new();
-    for (id, rx) in producer_receivers {
-        let mut triple_count = 0usize;
-        for batch in rx {
-            triple_count += batch.triples.len();
-            all_batches.push(batch);
-        }
-        tracing::info!(
-            "module {}: success {:.3}s ({} triples)",
-            id,
-            producer_start.elapsed().as_secs_f64(),
-            triple_count
-        );
-    }
+    let mut all_batches = drain_producer_receivers(
+        producer_receivers,
+        producer_start,
+        producer_stream_sender.clone(),
+    )?;
 
     // Phase 2: IfcOWL runs alone — full rayon pool available, main thread
     // dedicated to draining its receiver. No deadlock possible.
@@ -743,29 +714,15 @@ fn main() -> anyhow::Result<()> {
             &ctx,
             SERIALIZER_CHANNEL_CAPACITY,
         );
-        for (id, rx) in ifcowl_receivers {
-            let mut triple_count = 0usize;
-            for batch in rx {
-                triple_count += batch.triples.len();
-                all_batches.push(batch);
-            }
-            tracing::info!(
-                "module {}: success {:.3}s ({} triples)",
-                id,
-                producer_start.elapsed().as_secs_f64(),
-                triple_count
-            );
-        }
+        all_batches.extend(drain_producer_receivers(
+            ifcowl_receivers,
+            producer_start,
+            producer_stream_sender.clone(),
+        )?);
     }
+    drop(producer_stream_sender);
 
     // Run postprocess plugins (e.g. ontology mapper) on the collected batches.
-    let postprocess_ids: Vec<String> = activation_plan
-        .enabled_ids
-        .iter()
-        .filter_map(|id| built_in_registry.plugin(id).map(|p| p.manifest()))
-        .filter(|m| m.stage == lbd_pipeline::PipelineStage::Postprocess)
-        .map(|m| m.id.to_string())
-        .collect();
     if !postprocess_ids.is_empty() {
         let postprocess_start = Instant::now();
         for id in &postprocess_ids {
@@ -788,20 +745,23 @@ fn main() -> anyhow::Result<()> {
     // Route batches to the serializer:
     //   Turtle Separate: each named graph → its own .ttl file (like WASM)
     //   Turtle Joined:   all triples → single .ttl via converter_lbd_sender
-    //   N-Quads:         IfcOWL → ifcowl_sender, rest → converter_lbd_sender
-    if output_format == OutputFormat::Turtle && settings.turtle_layout == TurtleLayout::Separate {
+    //   N-Quads:         every TaggedBatch retains its producer graph IRI
+    if stream_chunk_batches {
+        debug_assert!(all_batches.is_empty());
+        drop(converter_lbd_sender);
+    } else if output_format == OutputFormat::Turtle
+        && settings.turtle_layout == TurtleLayout::Separate
+    {
         // Separate: group batches by graph slug, write each to its own file.
-        let compress = settings.compress_output;
-        let gz_ext = if compress { ".gz" } else { "" };
         let instance_base = &base_options.base_uri;
         let base_trimmed = instance_base.trim_end_matches('/');
         let mut batches_by_slug: std::collections::HashMap<String, Vec<lbd_ontology::Triple>> =
             std::collections::HashMap::new();
         for batch in all_batches {
             let iri = batch.kind.iri();
-            // Graph IRIs are constructed as {base_uri_trimmed}{slug} (no slash
-            // separator — see producer plugins). Strip the base to get the slug.
+            // Graph IRIs are constructed as {base_uri_trimmed}/{slug}.
             let slug = iri.strip_prefix(base_trimmed).unwrap_or(iri);
+            let slug = slug.trim_start_matches('/');
             let slug = if slug.is_empty() {
                 "other".to_string()
             } else {
@@ -843,25 +803,13 @@ fn main() -> anyhow::Result<()> {
         }
         // No channel-based serialization needed; skip the lbd_thread join below.
         drop(converter_lbd_sender);
-        drop(ifcowl_sender);
     } else {
-        // Joined Turtle or N-Quads: route to channels as before.
-        let owl_sender = ifcowl_sender.clone();
+        // Joined Turtle or N-Quads: retain each batch's producer graph tag.
         for batch in all_batches {
-            let iri = batch.kind.iri();
-            let is_ifcowl = iri.ends_with("/ifcowl") || iri.ends_with("/alignment");
-            if is_ifcowl && owl_sender.is_some() {
-                if let Some(ref tx) = owl_sender {
-                    let _ = tx.send(batch.triples);
-                }
-            } else {
-                let _ = converter_lbd_sender.send(batch.triples);
-            }
+            let _ = converter_lbd_sender.send(batch);
         }
         // Drop senders so serializer threads see EOF
-        drop(owl_sender);
         drop(converter_lbd_sender);
-        drop(ifcowl_sender);
     }
 
     // Check for producer errors recorded by `start_next_producer`.
@@ -899,16 +847,10 @@ fn main() -> anyhow::Result<()> {
     );
 
     let serializer_join_start = Instant::now();
-    // Emit "running" for active serializers
-    let active_serializer_ids: Vec<String> = activation_plan
-        .enabled_ids
-        .iter()
-        .filter_map(|id| built_in_registry.plugin(id).map(|p| p.manifest()))
-        .filter(|m| m.stage == lbd_pipeline::PipelineStage::Serialize)
-        .map(|m| m.id.to_string())
-        .collect();
-    for id in &active_serializer_ids {
-        tracing::info!("module {}: running", id);
+    if !stream_chunk_batches {
+        for id in &active_serializer_ids {
+            tracing::info!("module {}: running", id);
+        }
     }
 
     lbd_thread
@@ -920,7 +862,9 @@ fn main() -> anyhow::Result<()> {
             .join()
             .map_err(|_| anyhow::anyhow!("IfcOWL serializer thread panicked"))??;
     }
-    let serializer_dur = serializer_join_start.elapsed().as_secs_f64();
+    let serializer_dur = streaming_serializer_start
+        .map(|started| started.elapsed().as_secs_f64())
+        .unwrap_or_else(|| serializer_join_start.elapsed().as_secs_f64());
     for id in &active_serializer_ids {
         tracing::info!("module {}: success {:.3}s", id, serializer_dur);
     }
@@ -992,14 +936,6 @@ fn resolve_output_dir_and_filename(
     }
 }
 
-fn resolve_ifcowl_filename(lbd_filename: &str) -> String {
-    let stem = Path::new(lbd_filename)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("lbd_output");
-    format!("{stem}_ifcowl.ttl")
-}
-
 fn resolve_nquads_graph_iri(
     normalized_base: &str,
     output_filename: &str,
@@ -1017,6 +953,89 @@ fn resolve_nquads_graph_iri(
             format!("{normalized_base}/{encoded}")
         }
     }
+}
+
+fn nquads_batch_graph_iri<'a>(
+    batch: &'a lbd_pipeline::TaggedBatch,
+    naming: NquadsGraphNaming,
+    filename_graph_iri: &'a str,
+) -> &'a str {
+    match naming {
+        NquadsGraphNaming::Producers => batch.kind.iri(),
+        NquadsGraphNaming::Filename => filename_graph_iri,
+    }
+}
+
+/// Drain every producer receiver on its own OS thread.
+///
+/// Producers share the Rayon pool and write through bounded channels. Draining
+/// those channels sequentially lets a later parallel producer (notably bSDD)
+/// fill its channel and occupy the pool while an earlier producer (extended
+/// BOT) waits for Rayon work. Concurrent drains keep backpressure bounded
+/// without allowing one producer to starve another.
+fn drain_producer_receivers(
+    receivers: Vec<(
+        String,
+        crossbeam::channel::Receiver<lbd_pipeline::TaggedBatch>,
+    )>,
+    producer_start: Instant,
+    stream_sender: Option<crossbeam::channel::Sender<lbd_pipeline::TaggedBatch>>,
+) -> anyhow::Result<Vec<lbd_pipeline::TaggedBatch>> {
+    let handles: Vec<_> = receivers
+        .into_iter()
+        .map(|(id, receiver)| {
+            let stream_sender = stream_sender.clone();
+            thread::spawn(move || {
+                let mut batches = Vec::new();
+                let mut triple_count = 0usize;
+                let mut stream_closed = false;
+                for batch in receiver {
+                    triple_count += batch.triples.len();
+                    if let Some(sender) = stream_sender.as_ref() {
+                        if !stream_closed && sender.send(batch).is_err() {
+                            // Keep draining the producer so its bounded channel
+                            // cannot deadlock if serialization has failed.
+                            stream_closed = true;
+                        }
+                    } else {
+                        batches.push(batch);
+                    }
+                }
+                (
+                    id,
+                    batches,
+                    triple_count,
+                    stream_closed,
+                    producer_start.elapsed().as_secs_f64(),
+                )
+            })
+        })
+        .collect();
+
+    let mut all_batches = Vec::new();
+    let mut stream_failures = Vec::new();
+    for handle in handles {
+        let (id, mut batches, triple_count, stream_closed, elapsed) = handle
+            .join()
+            .map_err(|_| anyhow::anyhow!("producer receiver drain thread panicked"))?;
+        if stream_closed {
+            stream_failures.push(id.clone());
+        }
+        tracing::info!(
+            "module {}: success {:.3}s ({} triples)",
+            id,
+            elapsed,
+            triple_count
+        );
+        all_batches.append(&mut batches);
+    }
+    if !stream_failures.is_empty() {
+        return Err(anyhow::anyhow!(
+            "serializer channel closed while draining producer(s): {}",
+            stream_failures.join(", ")
+        ));
+    }
+    Ok(all_batches)
 }
 
 fn print_pipeline_modules(registry: &lbd_pipeline::PluginRegistry) {
@@ -1784,12 +1803,15 @@ mod tests {
     use super::{
         build_requested_module_list,
         chunk_writer::{self},
-        parse_module_configs, session, validate_args, Args, ExecutionSettings, NquadsGraphNaming,
-        NquadsModuleOptions, OutputFormat, TurtleGrouping, TurtleLayout,
+        nquads_batch_graph_iri, parse_module_configs, session, validate_args, Args,
+        ExecutionSettings, NquadsGraphNaming, NquadsModuleOptions, OutputFormat, TurtleGrouping,
+        TurtleLayout,
     };
     use clap::Parser;
     use lbd_converter::IfcowlMode;
-    use lbd_pipeline::{DerivedFile, ExportError, ExportFileSummary, ExportSession};
+    use lbd_pipeline::{
+        BatchKind, DerivedFile, ExportError, ExportFileSummary, ExportSession, TaggedBatch,
+    };
     use std::io::Write;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1870,6 +1892,30 @@ mod tests {
     }
 
     #[test]
+    fn nquads_graph_naming_preserves_producer_graphs() {
+        let batch = TaggedBatch {
+            kind: BatchKind::new("https://example.test/base/bot"),
+            triples: Vec::new(),
+        };
+        assert_eq!(
+            nquads_batch_graph_iri(
+                &batch,
+                NquadsGraphNaming::Producers,
+                "https://example.test/base/output"
+            ),
+            "https://example.test/base/bot"
+        );
+        assert_eq!(
+            nquads_batch_graph_iri(
+                &batch,
+                NquadsGraphNaming::Filename,
+                "https://example.test/base/output"
+            ),
+            "https://example.test/base/output"
+        );
+    }
+
+    #[test]
     fn module_selection_is_required() {
         let args = Args::try_parse_from(["ifc2lbd-neo", "input.ifc"]).expect("parse");
         let settings = test_settings(OutputFormat::Turtle);
@@ -1910,6 +1956,7 @@ mod tests {
             1024,
             1,
             None,
+            false,
         )
         .expect("new writer");
         writer
@@ -1944,6 +1991,7 @@ mod tests {
             268_435_456,
             1,
             Some(3),
+            false,
         )
         .expect("new writer");
         writer
