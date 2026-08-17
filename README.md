@@ -141,6 +141,7 @@ Named graph IRIs are derived from `--base-uri`: `{base-uri}/{slug}`.
 | `chunk_size_lines` | integer                      | `2000000`   |
 | `chunk_size_bytes` | integer                      | `268435456` |
 | `chunk_prefix`     | string                       | `out`       |
+| `partitioning`     | `mixed`, `producers`         | `mixed`     |
 
 With `lines` or `bytes`, the CLI streams producer batches into the serializer
 and atomically publishes each completed chunk while conversion is still
@@ -150,6 +151,13 @@ visible `*.nq` / `*.nq.gz` files and begin loading them immediately; hidden
 published last and acts as the completion marker. `cores` keeps all target
 files open and therefore publishes them together at finalization rather than
 progressively.
+
+`partitioning=producers` creates independent chunk streams such as
+`out-bot.part-000.nq.gz` and `out-bsdd.part-000.nq.gz`. Each producer's final
+partial chunk is published when that producer finishes, while large producers
+still rotate according to `chunking=lines|bytes`. A final `out-lbd.manifest.json`
+indexes all producer manifests. Producer partitioning is not compatible with
+`chunking=cores` or a full-graph postprocessor.
 
 ### `neo-bsdd-producer`
 

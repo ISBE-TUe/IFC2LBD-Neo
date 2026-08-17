@@ -226,6 +226,7 @@ pub struct NquadsModuleOptions {
     pub chunk_size_bytes: usize,
     pub chunk_prefix: String,
     pub graph_naming: NquadsGraphNaming,
+    pub partitioning: NquadsPartitioning,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -239,6 +240,12 @@ pub enum NquadsChunkingMode {
 pub enum NquadsGraphNaming {
     Producers,
     Filename,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NquadsPartitioning {
+    Mixed,
+    Producers,
 }
 
 #[derive(Debug, Clone)]

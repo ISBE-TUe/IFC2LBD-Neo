@@ -1450,37 +1450,29 @@ fn postprocess_to_sink(
 
     if settings.output_formats.has_any_nquads() {
         if is_chunked {
-            // Chunked N-Quads: each batch → its own chunk files.
+            // Full-graph postprocessing has already combined producer output,
+            // so serialize the resulting tagged batches into one mixed stream.
+            let mut chunk_writer = SinkQuadChunkWriter::new(
+                sink,
+                format!("{}-lbd", settings.nquads.chunk_prefix),
+                chunk_mode,
+                settings.nquads.chunk_size_lines,
+                settings.nquads.chunk_size_bytes,
+                sink_config.chunk_size,
+                sink_config.max_pending_bytes,
+                compress,
+            )?;
             for batch in &batches {
-                let slug = batch
-                    .kind
-                    .iri()
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or("other")
-                    .to_string();
-                let (file_summaries, triples) = serialize_nquads_receiver_to_chunks(
-                    // Wrap batch.triples in a channel so we can reuse the existing helper.
-                    {
-                        let (tx, rx) = crossbeam::channel::bounded(1);
-                        let _ = tx.send(batch.triples.clone());
-                        drop(tx);
-                        rx
-                    },
-                    sink,
-                    format!("{}-{}", settings.nquads.chunk_prefix, slug),
+                lbd_serializer::write_nquads_batch(
+                    &mut chunk_writer,
+                    &batch.triples,
                     batch.kind.iri(),
-                    chunk_mode,
-                    settings.nquads.chunk_size_lines,
-                    settings.nquads.chunk_size_bytes,
-                    sink_config,
-                    compress,
                 )?;
-                summaries.extend(file_summaries);
             }
             let serialize_ms = now_ms() - serialize_t0;
             emit_export_events(sink, settings, "running", 0)?;
             let export_t0 = now_ms();
+            summaries.extend(chunk_writer.finish()?);
             let export_ms = now_ms() - export_t0;
 
             emit_producer_error_events(sink, &ctx)?;
@@ -2100,9 +2092,9 @@ fn turtle_to_sink_separate(
 /// Drain a triple receiver into an existing SinkChunkWriter, tagging every
 /// triple with `graph_iri`. Returns the number of triples written.
 #[cfg(target_family = "wasm")]
-fn serialize_nquads_receiver_to_writer(
+fn serialize_nquads_receiver_to_writer<W: std::io::Write>(
     rx: crossbeam::channel::Receiver<Vec<lbd_ontology::Triple>>,
-    writer: &mut SinkChunkWriter,
+    writer: &mut W,
     graph_iri: &str,
 ) -> Result<u64, lbd_serializer::SerializerError> {
     let mut triple_count: u64 = 0;
@@ -2240,7 +2232,7 @@ fn nquads_to_sink(
         .module_option(FILE_EXPORT_ID, "compress")
         .as_deref()
         == Some("gzip");
-    if is_chunked {
+    if is_chunked && settings.nquads.partitioning == NquadsPartitioning::Producers {
         // Chunked: each active producer → its own set of chunk files
         macro_rules! drain_chunked {
             ($rx_opt:expr, $slug:literal, $producer_id:expr) => {
@@ -2290,6 +2282,76 @@ fn nquads_to_sink(
 
         emit_export_events(sink, settings, "running", 0)?;
         let export_t0 = now_ms();
+        let export_ms = now_ms() - export_t0;
+
+        emit_producer_error_events(sink, &ctx)?;
+        if settings.has(LOG_EXPORT_ID) {
+            emit_log_sidecar(sink, &ctx, sink_config, &mut summaries)?;
+        }
+        let mut sd = StageDurations::new();
+        sd.serialize_ms = serialize_ms;
+        sd.export_ms = export_ms;
+        sd.by_preprocess = preprocess_durations.clone();
+        for (plugin_id, ms) in produce_durations {
+            let triples = produce_triples.get(plugin_id).copied().unwrap_or(0);
+            sd.by_producer.insert(plugin_id.to_string(), (ms, triples));
+        }
+        Ok((summaries, 0, sink_config.chunk_size, sd))
+    } else if is_chunked {
+        // Mixed partitioning: preserve producer named graphs inside a shared
+        // physical chunk stream, matching the native CLI default.
+        let mut writer = SinkQuadChunkWriter::new(
+            sink,
+            format!("{}-lbd", chunk_prefix),
+            chunk_mode,
+            chunk_size_lines,
+            chunk_size_bytes,
+            sink_config.chunk_size,
+            sink_config.max_pending_bytes,
+            compress,
+        )?;
+        macro_rules! drain_mixed_chunks {
+            ($rx_opt:expr, $slug:literal, $producer_id:expr) => {
+                if let Some(rx) = $rx_opt {
+                    let t0 = now_ms();
+                    let triples = serialize_nquads_receiver_to_writer(
+                        rx,
+                        &mut writer,
+                        &resolve_nquads_graph_iri(
+                            &normalized_base,
+                            &settings.output_stem,
+                            $slug,
+                            settings.nquads.graph_naming,
+                        ),
+                    )?;
+                    let ms = now_ms() - t0;
+                    produce_triples.insert($producer_id, triples);
+                    produce_durations.insert($producer_id, ms);
+                    emit_stage_event(
+                        sink,
+                        $producer_id,
+                        "Produce",
+                        "success",
+                        ms,
+                        0,
+                        triples,
+                        None,
+                    )?;
+                }
+            };
+        }
+        drain_mixed_chunks!(bot_receiver, "bot", BOT_PRODUCER_ID);
+        drain_mixed_chunks!(beo_receiver, "beo", BEO_PRODUCER_ID);
+        drain_mixed_chunks!(bsdd_receiver, "bsdd", BSDD_PRODUCER_ID);
+        drain_mixed_chunks!(props_receiver, "props", PROPS_OPM_PRODUCER_ID);
+        drain_mixed_chunks!(omg_receiver, "omg", OMG_FOG_PRODUCER_ID);
+        drain_mixed_chunks!(ifcowl_receiver, "ifcowl", IFCOWL_PRODUCER_ID);
+        drain_mixed_chunks!(rml_receiver, "rml", RML_MAPPER_ID);
+        let serialize_ms = now_ms() - serialize_t0;
+
+        emit_export_events(sink, settings, "running", 0)?;
+        let export_t0 = now_ms();
+        summaries.extend(writer.finish()?);
         let export_ms = now_ms() - export_t0;
 
         emit_producer_error_events(sink, &ctx)?;

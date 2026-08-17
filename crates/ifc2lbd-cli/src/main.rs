@@ -60,6 +60,12 @@ enum NquadsGraphNaming {
     Filename,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NquadsPartitioning {
+    Mixed,
+    Producers,
+}
+
 #[derive(Debug, Parser)]
 #[command(name = "ifc2lbd-neo")]
 #[command(about = "Convert IFC STEP files to a first-slice LBD Turtle model")]
@@ -157,6 +163,7 @@ struct NquadsModuleOptions {
     chunk_min_count: usize,
     chunk_core_count: Option<usize>,
     graph_naming: NquadsGraphNaming,
+    partitioning: NquadsPartitioning,
 }
 
 #[derive(Clone, Debug)]
@@ -172,6 +179,19 @@ struct ExecutionSettings {
     bsdd_include_standard_attrs: bool,
     bsdd_dedup_properties: bool,
     compress_output: bool,
+}
+
+#[derive(Clone)]
+struct ProducerPartitionConfig {
+    session: session::SharedSession,
+    chunk_prefix: String,
+    chunking: chunk_writer::QuadChunkingMode,
+    chunk_size_lines: usize,
+    chunk_size_bytes: usize,
+    chunk_min_count: usize,
+    graph_naming: NquadsGraphNaming,
+    filename_graph_iri: String,
+    producer_slugs: std::sync::Arc<HashMap<String, String>>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -502,6 +522,21 @@ fn main() -> anyhow::Result<()> {
 
     let ctx = std::sync::Arc::new(ctx);
 
+    let postprocess_ids: Vec<String> = activation_plan
+        .enabled_ids
+        .iter()
+        .filter_map(|id| built_in_registry.plugin(id).map(|p| p.manifest()))
+        .filter(|m| m.stage == lbd_pipeline::PipelineStage::Postprocess)
+        .map(|m| m.id.to_string())
+        .collect();
+    if settings.nquads.partitioning == NquadsPartitioning::Producers && !postprocess_ids.is_empty()
+    {
+        anyhow::bail!(
+            "`neo-nquads-chunked-serializer.partitioning=producers` is not compatible with active postprocessing: {}",
+            postprocess_ids.join(", ")
+        );
+    }
+
     let (converter_lbd_sender, converter_lbd_receiver) =
         crossbeam::channel::bounded::<lbd_pipeline::TaggedBatch>(SERIALIZER_CHANNEL_CAPACITY);
     let lbd_receiver = converter_lbd_receiver;
@@ -518,7 +553,12 @@ fn main() -> anyhow::Result<()> {
     let quad_chunk_size_lines = settings.nquads.chunk_size_lines;
     let quad_chunk_size_bytes = settings.nquads.chunk_size_bytes;
     let quad_chunk_prefix = settings.nquads.chunk_prefix.clone();
+    let quad_chunk_prefix_thread = quad_chunk_prefix.clone();
     let quad_chunk_min_count = settings.nquads.chunk_min_count;
+    let producer_partition_chunks = output_format == OutputFormat::Nquads
+        && quad_chunking_mode != chunk_writer::QuadChunkingMode::None
+        && settings.nquads.partitioning == NquadsPartitioning::Producers
+        && postprocess_ids.is_empty();
     let lbd_chunk_core_count = chunk_writer::resolve_effective_core_chunk_count_for_estimated_bytes(
         settings.nquads.chunking,
         settings.nquads.chunk_core_count,
@@ -538,8 +578,10 @@ fn main() -> anyhow::Result<()> {
     let lbd_session = session.clone();
     let lbd_separate =
         output_format == OutputFormat::Turtle && settings.turtle_layout == TurtleLayout::Separate;
+    let lbd_partitioned = output_format == OutputFormat::Nquads
+        && settings.nquads.partitioning == NquadsPartitioning::Producers;
     let lbd_thread = thread::spawn(move || -> anyhow::Result<()> {
-        if lbd_separate {
+        if lbd_separate || lbd_partitioned {
             // Separate layout: no main LBD file — each graph writes to its own file
             // in the routing section below. Drain the receiver (already empty) and return.
             while lbd_receiver.try_recv().is_ok() {}
@@ -577,7 +619,7 @@ fn main() -> anyhow::Result<()> {
                 if quad_chunking_mode != chunk_writer::QuadChunkingMode::None {
                     let mut lbd_chunk_writer = chunk_writer::QuadChunkWriter::new(
                         lbd_session.clone(),
-                        format!("{}-lbd", quad_chunk_prefix),
+                        format!("{}-lbd", quad_chunk_prefix_thread),
                         quad_chunking_mode,
                         quad_chunk_size_lines,
                         quad_chunk_size_bytes,
@@ -624,17 +666,34 @@ fn main() -> anyhow::Result<()> {
     // that only contained prefix declarations with no actual triples.
     let ifcowl_thread: Option<thread::JoinHandle<anyhow::Result<()>>> = None;
 
-    let postprocess_ids: Vec<String> = activation_plan
-        .enabled_ids
-        .iter()
-        .filter_map(|id| built_in_registry.plugin(id).map(|p| p.manifest()))
-        .filter(|m| m.stage == lbd_pipeline::PipelineStage::Postprocess)
-        .map(|m| m.id.to_string())
-        .collect();
     let stream_chunk_batches = output_format == OutputFormat::Nquads
         && quad_chunking_mode != chunk_writer::QuadChunkingMode::None
         && postprocess_ids.is_empty();
-    let producer_stream_sender = stream_chunk_batches.then(|| converter_lbd_sender.clone());
+    let producer_stream_sender =
+        (stream_chunk_batches && !producer_partition_chunks).then(|| converter_lbd_sender.clone());
+
+    let producer_slugs: HashMap<String, String> = active_producer_ids
+        .iter()
+        .map(|id| {
+            let slug = built_in_registry
+                .plugin(id)
+                .and_then(|plugin| plugin.manifest().named_graph_slug)
+                .map(str::to_string)
+                .unwrap_or_else(|| producer_partition_slug(id));
+            (id.clone(), slug)
+        })
+        .collect();
+    let producer_partition_config = producer_partition_chunks.then(|| ProducerPartitionConfig {
+        session: session.clone(),
+        chunk_prefix: quad_chunk_prefix.clone(),
+        chunking: quad_chunking_mode,
+        chunk_size_lines: quad_chunk_size_lines,
+        chunk_size_bytes: quad_chunk_size_bytes,
+        chunk_min_count: quad_chunk_min_count,
+        graph_naming: nquads_graph_naming,
+        filename_graph_iri: lbd_graph_iri.clone(),
+        producer_slugs: std::sync::Arc::new(producer_slugs),
+    });
 
     let active_serializer_ids: Vec<String> = activation_plan
         .enabled_ids
@@ -653,6 +712,11 @@ fn main() -> anyhow::Result<()> {
                 tracing::info!(
                     "progressive N-Quads enabled: finalized chunks publish during production"
                 );
+                if producer_partition_chunks {
+                    tracing::info!(
+                        "producer partitioning enabled: each producer publishes its own chunk stream"
+                    );
+                }
             }
             chunk_writer::QuadChunkingMode::Cores => tracing::info!(
                 "streaming N-Quads enabled; cores-mode chunks publish together at finalization"
@@ -697,11 +761,19 @@ fn main() -> anyhow::Result<()> {
     // requires the full triple set before mapping).  When no postprocess is
     // active, we could stream directly, but collecting is simpler and the
     // CLI has no memory constraints like WASM.
-    let mut all_batches = drain_producer_receivers(
-        producer_receivers,
-        producer_start,
-        producer_stream_sender.clone(),
-    )?;
+    let (mut all_batches, mut producer_partition_entries) =
+        if let Some(config) = producer_partition_config.clone() {
+            drain_producer_receivers_partitioned(producer_receivers, producer_start, config)?
+        } else {
+            (
+                drain_producer_receivers(
+                    producer_receivers,
+                    producer_start,
+                    producer_stream_sender.clone(),
+                )?,
+                Vec::new(),
+            )
+        };
 
     // Phase 2: IfcOWL runs alone — full rayon pool available, main thread
     // dedicated to draining its receiver. No deadlock possible.
@@ -712,13 +784,21 @@ fn main() -> anyhow::Result<()> {
             &ctx,
             SERIALIZER_CHANNEL_CAPACITY,
         );
-        all_batches.extend(drain_producer_receivers(
-            ifcowl_receivers,
-            producer_start,
-            producer_stream_sender.clone(),
-        )?);
+        if let Some(config) = producer_partition_config.clone() {
+            let (mut batches, mut entries) =
+                drain_producer_receivers_partitioned(ifcowl_receivers, producer_start, config)?;
+            all_batches.append(&mut batches);
+            producer_partition_entries.append(&mut entries);
+        } else {
+            all_batches.extend(drain_producer_receivers(
+                ifcowl_receivers,
+                producer_start,
+                producer_stream_sender.clone(),
+            )?);
+        }
     }
     drop(producer_stream_sender);
+    drop(producer_partition_config);
 
     // Run postprocess plugins (e.g. ontology mapper) on the collected batches.
     if !postprocess_ids.is_empty() {
@@ -824,6 +904,14 @@ fn main() -> anyhow::Result<()> {
                 .collect::<Vec<_>>()
                 .join("; ")
         ));
+    }
+
+    if producer_partition_chunks {
+        chunk_writer::write_producer_partition_manifest(
+            &session,
+            &format!("{}-lbd", quad_chunk_prefix),
+            producer_partition_entries,
+        )?;
     }
 
     tracing::info!(
@@ -1034,6 +1122,141 @@ fn drain_producer_receivers(
         ));
     }
     Ok(all_batches)
+}
+
+fn producer_partition_slug(producer_id: &str) -> String {
+    let trimmed = producer_id
+        .strip_prefix("neo-")
+        .unwrap_or(producer_id)
+        .strip_suffix("-producer")
+        .unwrap_or_else(|| producer_id.strip_prefix("neo-").unwrap_or(producer_id));
+    let slug: String = trimmed
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    if slug.is_empty() {
+        "other".to_string()
+    } else {
+        slug
+    }
+}
+
+fn drain_producer_receivers_partitioned(
+    receivers: Vec<(
+        String,
+        crossbeam::channel::Receiver<lbd_pipeline::TaggedBatch>,
+    )>,
+    producer_start: Instant,
+    config: ProducerPartitionConfig,
+) -> anyhow::Result<(
+    Vec<lbd_pipeline::TaggedBatch>,
+    Vec<chunk_writer::ProducerPartitionEntry>,
+)> {
+    let handles: Vec<_> = receivers
+        .into_iter()
+        .map(|(id, receiver)| {
+            let config = config.clone();
+            thread::spawn(move || -> anyhow::Result<_> {
+                let slug = config
+                    .producer_slugs
+                    .get(&id)
+                    .cloned()
+                    .unwrap_or_else(|| producer_partition_slug(&id));
+                let mut writer: Option<chunk_writer::QuadChunkWriter> = None;
+                let mut graphs = std::collections::BTreeSet::new();
+                let mut triple_count = 0usize;
+                let mut failure: Option<String> = None;
+
+                for batch in receiver {
+                    triple_count += batch.triples.len();
+                    if failure.is_some() {
+                        continue;
+                    }
+                    if writer.is_none() {
+                        match chunk_writer::QuadChunkWriter::new(
+                            config.session.clone(),
+                            format!("{}-{}", config.chunk_prefix, slug),
+                            config.chunking,
+                            config.chunk_size_lines,
+                            config.chunk_size_bytes,
+                            config.chunk_min_count,
+                            None,
+                        ) {
+                            Ok(chunk_writer) => writer = Some(chunk_writer),
+                            Err(error) => {
+                                failure = Some(error.to_string());
+                                continue;
+                            }
+                        }
+                    }
+                    let graph_iri = nquads_batch_graph_iri(
+                        &batch,
+                        config.graph_naming,
+                        &config.filename_graph_iri,
+                    )
+                    .to_string();
+                    graphs.insert(graph_iri.clone());
+                    if let Some(chunk_writer) = writer.as_mut() {
+                        if let Err(error) =
+                            write_nquads_batch(chunk_writer, &batch.triples, &graph_iri)
+                        {
+                            failure = Some(error.to_string());
+                            writer.take();
+                        }
+                    }
+                }
+
+                if let Some(error) = failure {
+                    return Err(anyhow::anyhow!(
+                        "failed to serialize producer partition {id}: {error}"
+                    ));
+                }
+                let entry = if let Some(mut writer) = writer {
+                    let summary = writer
+                        .finish()
+                        .with_context(|| format!("failed to finalize producer partition {id}"))?;
+                    Some(chunk_writer::ProducerPartitionEntry {
+                        producer: id.clone(),
+                        graphs: graphs.into_iter().collect(),
+                        manifest: summary.manifest,
+                        files: summary.files,
+                        total_lines: summary.total_lines,
+                    })
+                } else {
+                    None
+                };
+                Ok((
+                    id,
+                    triple_count,
+                    entry,
+                    producer_start.elapsed().as_secs_f64(),
+                ))
+            })
+        })
+        .collect();
+
+    let mut entries = Vec::new();
+    for handle in handles {
+        let (id, triple_count, entry, elapsed) = handle
+            .join()
+            .map_err(|_| anyhow::anyhow!("producer partition drain thread panicked"))??;
+        tracing::info!(
+            "module {}: success {:.3}s ({} triples)",
+            id,
+            elapsed,
+            triple_count
+        );
+        if let Some(entry) = entry {
+            entries.push(entry);
+        }
+    }
+    Ok((Vec::new(), entries))
 }
 
 fn print_pipeline_modules(registry: &lbd_pipeline::PluginRegistry) {
@@ -1370,6 +1593,18 @@ fn resolve_execution_settings(
             other
         ),
     };
+    let partitioning = match effective_entries
+        .and_then(|e| e.get("partitioning"))
+        .map(String::as_str)
+        .unwrap_or("mixed")
+    {
+        "mixed" => NquadsPartitioning::Mixed,
+        "producers" => NquadsPartitioning::Producers,
+        other => anyhow::bail!(
+            "invalid `neo-nquads-chunked-serializer.partitioning={}` (expected mixed|producers)",
+            other
+        ),
+    };
 
     let turtle_entries = configs.get(lbd_pipeline::TURTLE_SERIALIZER_ID);
     let turtle_grouping = match turtle_entries
@@ -1442,6 +1677,7 @@ fn resolve_execution_settings(
             chunk_min_count,
             chunk_core_count,
             graph_naming,
+            partitioning,
         },
         turtle_grouping,
         turtle_layout,
@@ -1570,6 +1806,14 @@ fn validate_nquads_chunked_serializer_module_config(
                     ));
                 }
             }
+            "partitioning" => {
+                if !matches!(value.as_str(), "mixed" | "producers") {
+                    return Err(format!(
+                        "`neo-nquads-chunked-serializer.partitioning` must be one of mixed|producers, got `{}`",
+                        value
+                    ));
+                }
+            }
             "chunk_size_lines" | "chunk_size_bytes" | "chunk_min_count" | "chunk_core_count" => {
                 let parsed = value.parse::<usize>().map_err(|_| {
                     format!(
@@ -1587,7 +1831,7 @@ fn validate_nquads_chunked_serializer_module_config(
             "chunk_prefix" => {}
             other => {
                 return Err(format!(
-                    "unknown option `neo-nquads-chunked-serializer.{}` (supported: chunking, chunk_size_lines, chunk_size_bytes, chunk_prefix, chunk_min_count, chunk_core_count, graph_naming)",
+                    "unknown option `neo-nquads-chunked-serializer.{}` (supported: chunking, chunk_size_lines, chunk_size_bytes, chunk_prefix, chunk_min_count, chunk_core_count, graph_naming, partitioning)",
                     other
                 ));
             }
@@ -1793,6 +2037,16 @@ fn validate_args(args: &Args, settings: &ExecutionSettings) -> anyhow::Result<()
     {
         anyhow::bail!("`neo-nquads-serializer.chunk_core_count` is only valid when chunking=cores");
     }
+    if settings.nquads.partitioning == NquadsPartitioning::Producers
+        && !matches!(
+            settings.nquads.chunking,
+            chunk_writer::QuadChunkingMode::Lines | chunk_writer::QuadChunkingMode::Bytes
+        )
+    {
+        anyhow::bail!(
+            "`neo-nquads-chunked-serializer.partitioning=producers` supports chunking=lines|bytes, not cores"
+        );
+    }
     Ok(())
 }
 
@@ -1801,18 +2055,19 @@ mod tests {
     use super::{
         build_requested_module_list,
         chunk_writer::{self},
-        nquads_batch_graph_iri, parse_module_configs, session, validate_args, Args,
-        ExecutionSettings, NquadsGraphNaming, NquadsModuleOptions, OutputFormat, TurtleGrouping,
-        TurtleLayout,
+        drain_producer_receivers_partitioned, nquads_batch_graph_iri, parse_module_configs,
+        session, validate_args, Args, ExecutionSettings, NquadsGraphNaming, NquadsModuleOptions,
+        NquadsPartitioning, OutputFormat, ProducerPartitionConfig, TurtleGrouping, TurtleLayout,
     };
     use clap::Parser;
     use lbd_converter::IfcowlMode;
+    use lbd_ontology::{Object, Triple};
     use lbd_pipeline::{
         BatchKind, DerivedFile, ExportError, ExportFileSummary, ExportSession, TaggedBatch,
     };
     use std::io::Write;
     use std::path::{Path, PathBuf};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
     struct DirFileSession {
         dir: PathBuf,
@@ -2016,6 +2271,63 @@ mod tests {
         std::fs::remove_dir_all(&out_dir).ok();
     }
 
+    #[test]
+    fn producer_partitioning_writes_independent_chunk_streams() {
+        let out_dir = unique_temp_dir("producer_partitioning_test");
+        std::fs::create_dir_all(&out_dir).expect("mkdir");
+        let mut slugs = std::collections::HashMap::new();
+        slugs.insert("neo-bot-producer".to_string(), "bot".to_string());
+        slugs.insert("neo-beo-producer".to_string(), "beo".to_string());
+        let config = ProducerPartitionConfig {
+            session: dir_session(out_dir.clone()),
+            chunk_prefix: "out".to_string(),
+            chunking: chunk_writer::QuadChunkingMode::Lines,
+            chunk_size_lines: 1,
+            chunk_size_bytes: 1024,
+            chunk_min_count: 1,
+            graph_naming: NquadsGraphNaming::Producers,
+            filename_graph_iri: "https://example.test/model".to_string(),
+            producer_slugs: std::sync::Arc::new(slugs),
+        };
+        let make_receiver = |producer: &str, graph: &str| {
+            let (sender, receiver) = crossbeam::channel::unbounded();
+            sender
+                .send(TaggedBatch {
+                    kind: BatchKind::new(graph),
+                    triples: vec![Triple {
+                        subject: format!("https://example.test/{producer}"),
+                        predicate: "https://example.test/p".to_string(),
+                        object: Object::Iri("https://example.test/o".to_string()),
+                    }],
+                })
+                .expect("send batch");
+            drop(sender);
+            receiver
+        };
+        let receivers = vec![
+            (
+                "neo-bot-producer".to_string(),
+                make_receiver("bot", "https://example.test/bot"),
+            ),
+            (
+                "neo-beo-producer".to_string(),
+                make_receiver("beo", "https://example.test/beo"),
+            ),
+        ];
+
+        let (batches, entries) =
+            drain_producer_receivers_partitioned(receivers, Instant::now(), config)
+                .expect("partitioned drain");
+        assert!(batches.is_empty());
+        assert_eq!(entries.len(), 2);
+        assert!(out_dir.join("out-bot.part-000.nq").exists());
+        assert!(out_dir.join("out-beo.part-000.nq").exists());
+        assert!(out_dir.join("out-bot.manifest.json").exists());
+        assert!(out_dir.join("out-beo.manifest.json").exists());
+
+        std::fs::remove_dir_all(&out_dir).ok();
+    }
+
     fn unique_temp_dir(prefix: &str) -> PathBuf {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -2036,6 +2348,7 @@ mod tests {
                 chunk_min_count: 1,
                 chunk_core_count: None,
                 graph_naming: NquadsGraphNaming::Producers,
+                partitioning: NquadsPartitioning::Mixed,
             },
             turtle_grouping: TurtleGrouping::Streaming,
             turtle_layout: TurtleLayout::Joined,

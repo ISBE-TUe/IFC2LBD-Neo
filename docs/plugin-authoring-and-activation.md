@@ -588,6 +588,11 @@ These invariants **must not be violated** when modifying plugin infrastructure:
 | `neo-nquads-serializer` | `NQUADS_SERIALIZER_ID` | Streams N-Quads to a single sink |
 | `neo-nquads-chunked-serializer` | `NQUADS_CHUNKED_SERIALIZER_ID` | Streams N-Quads in parallel chunks |
 
+The chunked serializer supports `partitioning=producers`. In this mode each
+producer owns an independent line/byte chunk writer, allowing a completed BOT
+or BEO stream to be atomically published while slower producers continue. The
+global producer-partition manifest is published after every producer finishes.
+
 ### Exporters
 
 | ID | Crate constant | Description |

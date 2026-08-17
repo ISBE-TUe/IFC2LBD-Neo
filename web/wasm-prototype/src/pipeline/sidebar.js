@@ -302,6 +302,17 @@ function optionControl(pluginId, key) {
         </select>
       </div>`;
 	}
+	if (key === "partitioning") {
+		const partitioningVal = current || "mixed";
+		return `
+      <div class="detail-row">
+        <span class="detail-label">file partitioning</span>
+        <select data-option-key="partitioning" class="detail-select">
+          <option value="mixed" ${partitioningVal === "mixed" ? "selected" : ""}>Mixed producer chunks</option>
+          <option value="producers" ${partitioningVal === "producers" ? "selected" : ""}>Separate chunks per producer</option>
+        </select>
+      </div>`;
+	}
 	if (key === "mode") {
 		const modeVal = current || "full";
 		return `
@@ -430,6 +441,7 @@ function optionControl(pluginId, key) {
 		chunk_size_bytes: "268435456 (256MB)",
 		chunk_prefix: "out",
 		graph_naming: "producers | filename",
+		partitioning: "mixed | producers",
 		inflation_threshold: "0.1",
 		output_stem: "converted-model",
 	};

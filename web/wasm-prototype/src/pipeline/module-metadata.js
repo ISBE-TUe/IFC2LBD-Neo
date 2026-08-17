@@ -184,6 +184,7 @@ export const MODULES = [
 			"chunk_size_bytes",
 			"chunk_prefix",
 			"graph_naming",
+			"partitioning",
 		],
 	),
 

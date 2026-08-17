@@ -66,6 +66,7 @@ pub(crate) fn module_option_keys(module_id: &str) -> Vec<String> {
             "chunk_size_bytes".to_string(),
             "chunk_prefix".to_string(),
             "graph_naming".to_string(),
+            "partitioning".to_string(),
         ],
         TURTLE_SERIALIZER_ID => vec!["grouping".to_string(), "layout".to_string()],
         BOT_PRODUCER_ID => vec!["mode".to_string()],

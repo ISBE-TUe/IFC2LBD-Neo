@@ -4,7 +4,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::types::{
     ConversionRequest, ExecutionSettings, NquadsChunkingMode, NquadsGraphNaming,
-    NquadsModuleOptions, OutputFormats, TurtleGrouping, TurtleLayout, WasmApiError,
+    NquadsModuleOptions, NquadsPartitioning, OutputFormats, TurtleGrouping, TurtleLayout,
+    WasmApiError,
 };
 use lbd_converter::IfcowlMode;
 use lbd_pipeline::ActivationPlan;
@@ -144,6 +145,34 @@ pub(crate) fn resolve_execution_settings(
             )));
         }
     };
+    let partitioning = match effective_nquads_entries
+        .and_then(|m| m.get("partitioning"))
+        .map(String::as_str)
+        .unwrap_or("mixed")
+    {
+        "mixed" => NquadsPartitioning::Mixed,
+        "producers" => NquadsPartitioning::Producers,
+        other => {
+            return Err(WasmApiError::Message(format!(
+                "invalid `neo-nquads-chunked-serializer.partitioning={}` (expected mixed|producers)",
+                other
+            )));
+        }
+    };
+    if partitioning == NquadsPartitioning::Producers && active.contains(ONTOLOGY_MAPPER_ID) {
+        return Err(WasmApiError::Message(
+            "`neo-nquads-chunked-serializer.partitioning=producers` is not compatible with the full-graph ontology mapper"
+                .to_string(),
+        ));
+    }
+    if partitioning == NquadsPartitioning::Producers
+        && !matches!(nquads_chunking_str.as_str(), "lines" | "bytes")
+    {
+        return Err(WasmApiError::Message(
+            "`neo-nquads-chunked-serializer.partitioning=producers` supports chunking=lines|bytes"
+                .to_string(),
+        ));
+    }
 
     let output_stem = configs
         .get(FILE_EXPORT_ID)
@@ -226,6 +255,7 @@ pub(crate) fn resolve_execution_settings(
             chunk_size_bytes,
             chunk_prefix,
             graph_naming,
+            partitioning,
         },
         output_stem,
         turtle_grouping,
@@ -525,6 +555,7 @@ pub(crate) fn validate_nquads_chunked_serializer_options(
         "chunk_size_bytes",
         "chunk_prefix",
         "graph_naming",
+        "partitioning",
     ];
     for (key, value) in entries {
         if !allowed.contains(&key.as_str()) {
@@ -550,6 +581,12 @@ pub(crate) fn validate_nquads_chunked_serializer_options(
         if key == "graph_naming" && !matches!(value.as_str(), "producers" | "filename") {
             return Err(WasmApiError::Message(format!(
                 "invalid `neo-nquads-chunked-serializer.graph_naming={}` (expected producers|filename)",
+                value
+            )));
+        }
+        if key == "partitioning" && !matches!(value.as_str(), "mixed" | "producers") {
+            return Err(WasmApiError::Message(format!(
+                "invalid `neo-nquads-chunked-serializer.partitioning={}` (expected mixed|producers)",
                 value
             )));
         }

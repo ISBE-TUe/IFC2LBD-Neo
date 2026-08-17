@@ -20,6 +20,7 @@ const MODULE_DEFAULTS = {
 		chunk_size_bytes: "268435456",
 		chunk_prefix: "out",
 		graph_naming: "producers",
+		partitioning: "mixed",
 	},
 	"neo-nquads-serializer": {
 		graph_naming: "producers",
