@@ -711,6 +711,14 @@ impl ExportSession for CliFileExportSession {
         })
     }
 
+    fn published_filename(&self, filename: &str) -> String {
+        if self.compress {
+            format!("{filename}.gz")
+        } else {
+            filename.to_string()
+        }
+    }
+
     fn accept_derived_file(&mut self, file: DerivedFile) -> Result<(), ExportError> {
         let path = self.output_dir.join(&file.filename);
         std::fs::write(&path, &file.bytes)
@@ -997,6 +1005,9 @@ mod tests {
     use flate2::read::GzDecoder;
     use lbd_pipeline::{ExportSession, PipelineStage};
 
+    use crate::chunk_writer::{QuadChunkWriter, QuadChunkingMode};
+    use crate::session;
+
     use super::{built_in_registry, CliFileExportSession};
 
     #[test]
@@ -1061,6 +1072,55 @@ mod tests {
             .read_to_string(&mut decoded)
             .expect("decode gzip");
         assert_eq!(decoded, "<s> <p> <o> <g> .\n");
+
+        std::fs::remove_dir_all(output_dir).ok();
+    }
+
+    #[test]
+    fn gzip_chunk_manifest_references_published_gzip_files() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let output_dir = std::env::temp_dir().join(format!("ifc2lbd-gzip-chunk-manifest-{unique}"));
+        std::fs::create_dir_all(&output_dir).expect("mkdir");
+        let export_session = CliFileExportSession {
+            output_dir: output_dir.clone(),
+            compress: true,
+            opened: Vec::new(),
+            staged: Vec::new(),
+            derived: Vec::new(),
+        };
+        let shared_session = session::new_shared(Box::new(export_session));
+        let mut writer = QuadChunkWriter::new(
+            shared_session,
+            "test".to_string(),
+            QuadChunkingMode::Lines,
+            1,
+            1024,
+            1,
+            None,
+        )
+        .expect("new writer");
+        writer
+            .write_all(b"<s1> <p> <o> <g> .\n<s2> <p> <o> <g> .\n")
+            .expect("write chunks");
+        writer.finish().expect("finish chunks");
+
+        let manifest_path = output_dir.join("test.manifest.json.gz");
+        let mut decoded = String::new();
+        GzDecoder::new(std::fs::File::open(&manifest_path).expect("open manifest"))
+            .read_to_string(&mut decoded)
+            .expect("decode manifest");
+        let manifest: serde_json::Value = serde_json::from_str(&decoded).expect("parse manifest");
+        let files = manifest["files"].as_array().expect("manifest files");
+        assert_eq!(files.len(), 2);
+        for (index, entry) in files.iter().enumerate() {
+            let filename = entry["file"].as_str().expect("manifest filename");
+            assert_eq!(filename, format!("test.part-{index:03}.nq.gz"));
+            assert!(output_dir.join(filename).exists());
+            assert!(!output_dir.join(format!("test.part-{index:03}.nq")).exists());
+        }
 
         std::fs::remove_dir_all(output_dir).ok();
     }

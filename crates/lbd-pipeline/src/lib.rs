@@ -448,6 +448,15 @@ pub trait ExportSession: Send {
         Ok(())
     }
 
+    /// Resolve the externally visible name for a logical sink name.
+    ///
+    /// Exporters that transform names (for example by appending `.gz`) must
+    /// override this so manifests reference the artefacts that were actually
+    /// published. The default preserves the suggested filename unchanged.
+    fn published_filename(&self, filename: &str) -> String {
+        filename.to_string()
+    }
+
     /// Accept a sidecar artefact emitted by a producer plugin.
     ///
     /// May be called zero or more times before `finalize()`.

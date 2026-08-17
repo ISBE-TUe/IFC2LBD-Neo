@@ -56,7 +56,6 @@ pub(crate) struct QuadChunkWriter {
     bytes_per_chunk: u64,
     min_chunk_count: u64,
     core_chunk_count: u64,
-    compress_output: bool,
     current_index: usize,
     current_file: Option<BufWriter<Box<dyn Write + Send>>>,
     current_bytes: u64,
@@ -87,7 +86,6 @@ impl QuadChunkWriter {
         bytes_per_chunk: usize,
         min_chunk_count: usize,
         core_count_override: Option<usize>,
-        compress_output: bool,
     ) -> anyhow::Result<Self> {
         let available_cores = std::thread::available_parallelism()
             .map(|n| n.get())
@@ -107,7 +105,6 @@ impl QuadChunkWriter {
             bytes_per_chunk: bytes_per_chunk as u64,
             min_chunk_count: min_chunk_count as u64,
             core_chunk_count,
-            compress_output,
             current_index: 0,
             current_file: None,
             current_bytes: 0,
@@ -178,11 +175,7 @@ impl QuadChunkWriter {
         })?;
         tracing::info!(
             "published N-Quads chunk manifest {} ({} chunks, {} lines)",
-            if self.compress_output {
-                format!("{manifest_filename}.gz")
-            } else {
-                manifest_filename
-            },
+            self.published_file_name(&manifest_filename)?,
             self.manifest_entries.len(),
             self.total_lines
         );
@@ -262,14 +255,15 @@ impl QuadChunkWriter {
             session::commit_staged_sink(&self.session, &logical_file_name).map_err(|e| {
                 anyhow::anyhow!("failed to publish quad chunk {logical_file_name}: {e}")
             })?;
+            let published_file_name = self.published_file_name(&logical_file_name)?;
             tracing::info!(
                 "published N-Quads chunk {} ({} lines, {} uncompressed bytes)",
-                self.published_file_name(&logical_file_name),
+                published_file_name,
                 self.current_lines,
                 self.current_bytes
             );
             self.manifest_entries.push(QuadChunkEntry {
-                file: self.published_file_name(&logical_file_name),
+                file: published_file_name,
                 bytes: self.current_bytes,
                 lines: self.current_lines,
             });
@@ -362,14 +356,15 @@ impl QuadChunkWriter {
             session::commit_staged_sink(&self.session, &logical_file_name).map_err(|e| {
                 anyhow::anyhow!("failed to publish quad chunk {logical_file_name}: {e}")
             })?;
+            let published_file_name = self.published_file_name(&logical_file_name)?;
             tracing::info!(
                 "published N-Quads chunk {} ({} lines, {} uncompressed bytes)",
-                self.published_file_name(&logical_file_name),
+                published_file_name,
                 self.core_lines[idx],
                 self.core_bytes[idx]
             );
             self.manifest_entries.push(QuadChunkEntry {
-                file: self.published_file_name(&logical_file_name),
+                file: published_file_name,
                 bytes: self.core_bytes[idx],
                 lines: self.core_lines[idx],
             });
@@ -403,12 +398,10 @@ impl QuadChunkWriter {
         Ok(())
     }
 
-    fn published_file_name(&self, logical_file_name: &str) -> String {
-        if self.compress_output {
-            format!("{logical_file_name}.gz")
-        } else {
-            logical_file_name.to_string()
-        }
+    fn published_file_name(&self, logical_file_name: &str) -> anyhow::Result<String> {
+        session::published_filename(&self.session, logical_file_name).map_err(|e| {
+            anyhow::anyhow!("failed to resolve published filename for {logical_file_name}: {e}")
+        })
     }
 }
 

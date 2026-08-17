@@ -335,6 +335,9 @@ The orchestrator calls `start_session()` once. The returned `ExportSession` then
 - `open_staged_sink()` / `commit_staged_sink()` — optional atomic publication
   for completed streaming chunks; the default delegates to `open_sink()` and
   makes commit a no-op
+- `published_filename()` — resolves a logical sink name to the externally
+  visible name; override it when the exporter changes extensions, such as
+  appending `.gz`, so generated manifests reference the real artefacts
 - `accept_derived_file()` — called once per sidecar file emitted by producers
 - `finalize()` — called after all writes are done; returns an audit summary
 
@@ -360,6 +363,10 @@ pub trait ExportSession: Send {
 
     fn commit_staged_sink(&mut self, filename: &str) -> Result<(), ExportError> {
         Ok(())
+    }
+
+    fn published_filename(&self, filename: &str) -> String {
+        filename.to_string()
     }
 
     fn accept_derived_file(&mut self, file: DerivedFile) -> Result<(), ExportError>;

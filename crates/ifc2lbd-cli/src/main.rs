@@ -519,7 +519,6 @@ fn main() -> anyhow::Result<()> {
     let quad_chunk_size_bytes = settings.nquads.chunk_size_bytes;
     let quad_chunk_prefix = settings.nquads.chunk_prefix.clone();
     let quad_chunk_min_count = settings.nquads.chunk_min_count;
-    let chunk_compress_output = settings.compress_output;
     let lbd_chunk_core_count = chunk_writer::resolve_effective_core_chunk_count_for_estimated_bytes(
         settings.nquads.chunking,
         settings.nquads.chunk_core_count,
@@ -584,7 +583,6 @@ fn main() -> anyhow::Result<()> {
                         quad_chunk_size_bytes,
                         quad_chunk_min_count,
                         lbd_chunk_core_count,
-                        chunk_compress_output,
                     )?;
                     for batch in lbd_receiver {
                         let graph_iri = nquads_batch_graph_iri(
@@ -1956,7 +1954,6 @@ mod tests {
             1024,
             1,
             None,
-            false,
         )
         .expect("new writer");
         writer
@@ -1991,7 +1988,6 @@ mod tests {
             268_435_456,
             1,
             Some(3),
-            false,
         )
         .expect("new writer");
         writer
