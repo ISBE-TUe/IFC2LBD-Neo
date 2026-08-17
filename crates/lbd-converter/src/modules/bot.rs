@@ -3,12 +3,18 @@ use std::collections::HashSet;
 use crossbeam::channel::Sender;
 use ifc_model::IfcModel;
 use ifc_schema::SpatialType;
-use lbd_ontology::{bot_contains_element, bot_contains_zone, bot_element, bot_has_building, bot_has_space, bot_has_storey, owl_same_as, rdf_type, Object, Triple};
+use lbd_ontology::{
+    bot_adjacent_element, bot_adjacent_zone, bot_contains_element, bot_contains_zone, bot_element,
+    bot_has_building, bot_has_space, bot_has_storey, bot_has_sub_element, bot_interface,
+    bot_interface_of, bot_intersecting_element, owl_same_as, rdf_type, Object, Triple,
+};
+use lbd_topology::{build_topology, TopologyEdgeKind, TopologyGraph};
 
 use crate::{
-    baseline_containment_closure, element_resource_iri, ifcowl_element_iri, ifcowl_spatial_iri,
-    normalize_base_uri, sorted_values, spatial_class, spatial_resource_iri, ConvertOptions,
-    StreamError, MIN_STREAM_BATCH_SIZE, MAX_STREAM_BATCH_SIZE,
+    element_resource_iri, ifcowl_element_iri, ifcowl_spatial_iri, normalize_base_uri,
+    object_subject, sorted_values, spatial_class, spatial_resource_iri,
+    topology_interface_resource_iri, ConvertOptions, StreamError, MAX_STREAM_BATCH_SIZE,
+    MIN_STREAM_BATCH_SIZE,
 };
 
 /// Emit BOT spatial-node types, spatial-hierarchy predicates and `bot:Element` typing.
@@ -20,6 +26,32 @@ pub(crate) fn emit_bot<E, F>(
     model: &IfcModel,
     options: &ConvertOptions,
     base: &str,
+    emit: &mut F,
+) -> Result<(), E>
+where
+    F: FnMut(Triple) -> Result<(), E>,
+{
+    emit_bot_inner(model, options, base, None, emit)
+}
+
+pub(crate) fn emit_bot_with_topology<E, F>(
+    model: &IfcModel,
+    options: &ConvertOptions,
+    base: &str,
+    topology: &TopologyGraph,
+    emit: &mut F,
+) -> Result<(), E>
+where
+    F: FnMut(Triple) -> Result<(), E>,
+{
+    emit_bot_inner(model, options, base, Some(topology), emit)
+}
+
+fn emit_bot_inner<E, F>(
+    model: &IfcModel,
+    options: &ConvertOptions,
+    base: &str,
+    topology: Option<&TopologyGraph>,
     emit: &mut F,
 ) -> Result<(), E>
 where
@@ -61,9 +93,9 @@ where
                 continue;
             };
             let predicate = match (parent.spatial_type, child.spatial_type) {
-                // BOT has no `hasSite` property. `bot:Site` is a `bot:Zone`, and
-                // zone containment is `bot:containsZone`.
-                (SpatialType::Project, SpatialType::Site) => Some(bot_contains_zone()),
+                // IfcProject is not a bot:Zone, so Project→Site has no BOT
+                // containment predicate.
+                (SpatialType::Project, SpatialType::Site) => None,
                 (SpatialType::Site, SpatialType::Building) => Some(bot_has_building()),
                 (SpatialType::Building, SpatialType::Storey) => Some(bot_has_storey()),
                 (SpatialType::Storey, SpatialType::Space) => Some(bot_has_space()),
@@ -73,14 +105,21 @@ where
                 emit(Triple {
                     subject: parent_subject.clone(),
                     predicate,
-                    object: Object::Iri(spatial_resource_iri(base, child.spatial_type, &child.guid)),
+                    object: Object::Iri(spatial_resource_iri(
+                        base,
+                        child.spatial_type,
+                        &child.guid,
+                    )),
                 })?;
             }
         }
     }
 
+    if let Some(topology) = topology {
+        emit_topology_edges(model, base, topology, emit)?;
+    }
+
     // bot:containsElement — emit for all spatial structures via contained_in map
-    let mut emitted = HashSet::new();
     let mut pairs: Vec<_> = model
         .contained_in
         .iter()
@@ -94,25 +133,24 @@ where
             }
         })
         .collect();
+    if let Some(topology) = topology {
+        pairs.extend(topology.core_pairs_of_kind(TopologyEdgeKind::ContainsElement));
+    }
     pairs.sort_unstable();
+    pairs.dedup();
     for (structure_id, element_id) in pairs {
         let Some(structure) = model.spatial_nodes.get(&structure_id) else {
             continue;
         };
         let structure_subject = spatial_resource_iri(base, structure.spatial_type, &structure.guid);
-        for contained_id in baseline_containment_closure(model, element_id) {
-            let Some(contained_element) = model.elements.get(&contained_id) else {
-                continue;
-            };
-            if !emitted.insert((structure_id, contained_id)) {
-                continue;
-            }
-            emit(Triple {
-                subject: structure_subject.clone(),
-                predicate: bot_contains_element(),
-                object: Object::Iri(element_resource_iri(base, contained_element)),
-            })?;
-        }
+        let Some(contained_element) = model.elements.get(&element_id) else {
+            continue;
+        };
+        emit(Triple {
+            subject: structure_subject,
+            predicate: bot_contains_element(),
+            object: Object::Iri(element_resource_iri(base, contained_element)),
+        })?;
     }
 
     if options.emit_ifcowl_links {
@@ -137,10 +175,77 @@ where
     Ok(())
 }
 
-/// Stream BOT triples (spatial types + hierarchy + `bot:Element`) in bounded batches.
+fn emit_topology_edges<E, F>(
+    model: &IfcModel,
+    base: &str,
+    topology: &TopologyGraph,
+    emit: &mut F,
+) -> Result<(), E>
+where
+    F: FnMut(Triple) -> Result<(), E>,
+{
+    let mappings = [
+        (TopologyEdgeKind::ContainsZone, bot_contains_zone()),
+        (TopologyEdgeKind::AdjacentElement, bot_adjacent_element()),
+        (TopologyEdgeKind::AdjacentZone, bot_adjacent_zone()),
+        (TopologyEdgeKind::HasSubElement, bot_has_sub_element()),
+        (
+            TopologyEdgeKind::IntersectingElement,
+            bot_intersecting_element(),
+        ),
+    ];
+    for (kind, predicate) in mappings {
+        for (source, target) in topology.core_pairs_of_kind(kind) {
+            let Some(subject) = object_subject(model, base, source) else {
+                continue;
+            };
+            let Some(object) = object_subject(model, base, target) else {
+                continue;
+            };
+            emit(Triple {
+                subject,
+                predicate: predicate.clone(),
+                object: Object::Iri(object),
+            })?;
+        }
+    }
+
+    let mut typed_interfaces = HashSet::new();
+    for (interface_id, target_id) in topology.core_pairs_of_kind(TopologyEdgeKind::InterfaceOf) {
+        let Some(target) = object_subject(model, base, target_id) else {
+            continue;
+        };
+        let subject = topology_interface_resource_iri(base, interface_id);
+        if typed_interfaces.insert(subject.clone()) {
+            emit(Triple {
+                subject: subject.clone(),
+                predicate: rdf_type(),
+                object: Object::Iri(bot_interface()),
+            })?;
+        }
+        emit(Triple {
+            subject,
+            predicate: bot_interface_of(),
+            object: Object::Iri(target),
+        })?;
+    }
+    Ok(())
+}
+
+/// Stream semantic IFC-backed BOT triples in bounded batches.
 pub fn stream_bot(
     model: &IfcModel,
     options: &ConvertOptions,
+    sender: &Sender<Vec<Triple>>,
+) -> Result<u64, StreamError> {
+    let topology = build_topology(model);
+    stream_bot_with_topology(model, options, &topology, sender)
+}
+
+pub fn stream_bot_with_topology(
+    model: &IfcModel,
+    options: &ConvertOptions,
+    topology: &TopologyGraph,
     sender: &Sender<Vec<Triple>>,
 ) -> Result<u64, StreamError> {
     let base = normalize_base_uri(&options.base_uri);
@@ -149,7 +254,7 @@ pub fn stream_bot(
         .clamp(MIN_STREAM_BATCH_SIZE, MAX_STREAM_BATCH_SIZE);
     let mut batch = Vec::with_capacity(batch_size);
     let mut triple_count: u64 = 0;
-    emit_bot(model, options, &base, &mut |triple| {
+    emit_bot_with_topology(model, options, &base, topology, &mut |triple| {
         triple_count += 1;
         batch.push(triple);
         if batch.len() >= batch_size {

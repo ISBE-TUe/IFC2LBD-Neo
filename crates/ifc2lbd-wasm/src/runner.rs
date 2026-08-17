@@ -85,6 +85,8 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
     static CURRENT_RML_CONFIG: std::cell::RefCell<Option<std::sync::Arc<RmlMappingConfig>>> =
         const { std::cell::RefCell::new(None) };
+    static CURRENT_TESSELLATED_MODEL: std::cell::RefCell<Option<std::sync::Arc<tessellated_model::TessellatedModel>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// Set thread-local structured data + RML config from the conversion request.
@@ -93,6 +95,7 @@ thread_local! {
 /// be provided alongside IFC (both active simultaneously). RML mapping content
 /// comes from the `neo-rml-mapper.rml_mapping` module option.
 fn set_structured_data_from_request(request: &ConversionRequest) {
+    CURRENT_TESSELLATED_MODEL.with(|cell| cell.borrow_mut().take());
     // Structured data files (with bytes sent from JS)
     let files: Vec<(String, Vec<u8>)> = request
         .structured_data_files
@@ -130,6 +133,11 @@ fn insert_structured_data_into_ctx(ctx: &mut PipelineContext) {
     CURRENT_RML_CONFIG.with(|cell| {
         if let Some(cfg) = cell.borrow().clone() {
             ctx.insert(cfg);
+        }
+    });
+    CURRENT_TESSELLATED_MODEL.with(|cell| {
+        if let Some(tessellated) = cell.borrow().clone() {
+            ctx.insert(tessellated);
         }
     });
 }
@@ -170,6 +178,18 @@ fn make_pipeline_context(
     ctx.insert(options);
     ctx.insert(step);
     ctx
+}
+
+fn insert_bot_config(ctx: &mut PipelineContext, settings: &ExecutionSettings) {
+    let mode = settings
+        .module_option(BOT_PRODUCER_ID, "mode")
+        .as_deref()
+        .and_then(lbd_topology::BotMode::parse)
+        .unwrap_or_default();
+    ctx.insert(std::sync::Arc::new(lbd_topology::BotConfig {
+        mode,
+        ..lbd_topology::BotConfig::default()
+    }));
 }
 
 /// Build a list of active producer IDs from execution settings.
@@ -657,9 +677,9 @@ impl PipelineRunner {
         request: &ConversionRequest,
         input_size_bytes: u64,
     ) -> Result<(lbd_pipeline::ActivationPlan, ExecutionSettings, Vec<String>), WasmApiError> {
-        let requested = dedupe_modules(request.module_ids.clone());
-        let plan = self.registry.resolve_activation(&requested)?;
         let configs = parse_module_configs(&request.module_options)?;
+        let requested = requested_with_bot_dependencies(request.module_ids.clone(), &configs);
+        let plan = self.registry.resolve_activation(&requested)?;
         validate_module_configs(&plan, &configs)?;
         validate_typed_module_configs(&configs)?;
         validate_activation_plan(&plan)?;
@@ -721,9 +741,9 @@ pub(crate) fn resolve_plan_impl(
     module_options: Vec<String>,
 ) -> Result<ResolvedPlan, WasmApiError> {
     let registry = browser_registry();
-    let requested = dedupe_modules(requested_modules);
-    let plan = registry.resolve_activation(&requested)?;
     let configs = parse_module_configs(&module_options)?;
+    let requested = requested_with_bot_dependencies(requested_modules, &configs);
+    let plan = registry.resolve_activation(&requested)?;
     validate_module_configs(&plan, &configs)?;
     validate_typed_module_configs(&configs)?;
     validate_activation_plan(&plan)?;
@@ -760,14 +780,29 @@ pub(crate) fn requested_settings_for_planning(
     request: &ConversionRequest,
 ) -> Result<ExecutionSettings, WasmApiError> {
     let registry = browser_registry();
-    let requested = dedupe_modules(request.module_ids.clone());
-    let plan = registry.resolve_activation(&requested)?;
     let configs = parse_module_configs(&request.module_options)?;
+    let requested = requested_with_bot_dependencies(request.module_ids.clone(), &configs);
+    let plan = registry.resolve_activation(&requested)?;
     validate_module_configs(&plan, &configs)?;
     validate_typed_module_configs(&configs)?;
     validate_activation_plan(&plan)?;
     let mut warnings = Vec::new();
     resolve_execution_settings(&plan, &configs, request, &mut warnings, 0)
+}
+
+fn requested_with_bot_dependencies(
+    requested: Vec<String>,
+    configs: &HashMap<String, HashMap<String, String>>,
+) -> Vec<String> {
+    let mut requested = dedupe_modules(requested);
+    if configs
+        .get(BOT_PRODUCER_ID)
+        .and_then(|entries| entries.get("mode"))
+        .is_some_and(|mode| mode == "extended")
+    {
+        requested.push(GEOMETRY_PREPROCESS_ID.to_string());
+    }
+    dedupe_modules(requested)
 }
 
 // ===========================================================================
@@ -1169,6 +1204,7 @@ fn postprocess_to_sink(
         step_arc.clone(),
         chan_cap,
     );
+    insert_bot_config(&mut ctx, settings);
     if settings.has(QTO_PREPROCESS_ID) {
         ctx.insert(std::sync::Arc::new(
             plugin_qto_preprocess::QtoOptions::default(),
@@ -1729,6 +1765,7 @@ fn turtle_to_sink_joined(
         step_arc.clone(),
         chan_cap,
     );
+    insert_bot_config(&mut ctx, settings);
     if settings.has(QTO_PREPROCESS_ID) {
         ctx.insert(std::sync::Arc::new(
             plugin_qto_preprocess::QtoOptions::default(),
@@ -1930,6 +1967,7 @@ fn turtle_to_sink_separate(
         step_arc.clone(),
         chan_cap,
     );
+    insert_bot_config(&mut ctx, settings);
     if settings.has(QTO_PREPROCESS_ID) {
         ctx.insert(std::sync::Arc::new(
             plugin_qto_preprocess::QtoOptions::default(),
@@ -2150,6 +2188,7 @@ fn nquads_to_sink(
         step_arc.clone(),
         chan_cap,
     );
+    insert_bot_config(&mut ctx, settings);
     if settings.has(QTO_PREPROCESS_ID) {
         ctx.insert(std::sync::Arc::new(
             plugin_qto_preprocess::QtoOptions::default(),
@@ -2373,6 +2412,7 @@ fn run_geometry_pipeline(
     let mut ctx = PipelineContext::new(limits);
     ctx.insert(model);
     ctx.insert(step);
+    insert_bot_config(&mut ctx, settings);
 
     // IFCContent: raw IFC text for ifc-lite's EntityDecoder
     if let Ok(content) = std::str::from_utf8(input) {
@@ -2439,6 +2479,9 @@ fn run_geometry_pipeline(
         return Vec::new();
     }
     let pre_ms = now_ms().saturating_sub(t0_pre);
+    if let Some(tessellated) = ctx.get::<tessellated_model::TessellatedModel>() {
+        CURRENT_TESSELLATED_MODEL.with(|cell| cell.borrow_mut().replace(tessellated));
+    }
     let _ = emit_stage_event(
         sink,
         GEOMETRY_PREPROCESS_ID,
@@ -2465,41 +2508,43 @@ fn run_geometry_pipeline(
     // Wrap in Arc for producers
     let ctx = std::sync::Arc::new(ctx);
 
-    // ── Produce phase: serialize geometry ─────────────────────────────────────
-    let _ = emit_stage_event(
-        sink,
-        GEOMETRY_PRODUCER_ID,
-        "Produce",
-        "running",
-        0,
-        0,
-        0,
-        None,
-    );
-    let t0_prod = now_ms();
-    let producer_ids = vec![GEOMETRY_PRODUCER_ID.to_string()];
-    let receivers = spawn_producers(&producer_ids, &registry, &ctx, chan_cap);
-    for (_id, rx) in receivers {
-        for _batch in rx {}
+    // ── Optional produce phase: serialize geometry ────────────────────────────
+    if settings.has(GEOMETRY_PRODUCER_ID) {
+        let _ = emit_stage_event(
+            sink,
+            GEOMETRY_PRODUCER_ID,
+            "Produce",
+            "running",
+            0,
+            0,
+            0,
+            None,
+        );
+        let t0_prod = now_ms();
+        let producer_ids = vec![GEOMETRY_PRODUCER_ID.to_string()];
+        let receivers = spawn_producers(&producer_ids, &registry, &ctx, chan_cap);
+        for (_id, rx) in receivers {
+            for _batch in rx {}
+        }
+        drop(ctx);
+        let sidecars: Vec<lbd_pipeline::DerivedFile> = sidecar_rx.try_iter().collect();
+        let prod_ms = now_ms().saturating_sub(t0_prod);
+        let bytes_out: u64 = sidecars.iter().map(|f| f.bytes.len() as u64).sum();
+        let _ = emit_stage_event(
+            sink,
+            GEOMETRY_PRODUCER_ID,
+            "Produce",
+            "success",
+            prod_ms,
+            bytes_out,
+            0,
+            None,
+        );
+        sidecars
+    } else {
+        drop(ctx);
+        Vec::new()
     }
-
-    // Drop ctx to release the sidecar_tx sender, then collect all emitted files
-    drop(ctx);
-    let sidecars: Vec<lbd_pipeline::DerivedFile> = sidecar_rx.try_iter().collect();
-    let prod_ms = now_ms().saturating_sub(t0_prod);
-    let bytes_out: u64 = sidecars.iter().map(|f| f.bytes.len() as u64).sum();
-    let _ = emit_stage_event(
-        sink,
-        GEOMETRY_PRODUCER_ID,
-        "Produce",
-        "success",
-        prod_ms,
-        bytes_out,
-        0,
-        None,
-    );
-
-    sidecars
 }
 
 /// Emit `failed` stage events for any producers whose `produce()` returned

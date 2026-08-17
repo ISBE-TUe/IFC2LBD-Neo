@@ -10,6 +10,44 @@ use ifc_model::IfcModel;
 use ifc_schema::SpatialType;
 use ifc_step::EntityId;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BotMode {
+    /// Emit only relations justified by explicit IFC semantic relationships.
+    #[default]
+    Ifc,
+    /// Enrich the semantic graph using tessellated geometry and exact checks.
+    Extended,
+}
+
+impl BotMode {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "ifc" => Some(Self::Ifc),
+            "extended" => Some(Self::Extended),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BotConfig {
+    pub mode: BotMode,
+    pub tolerance: f64,
+    pub voxel_cell_size: f64,
+    pub voxel_max_element_voxels: usize,
+}
+
+impl Default for BotConfig {
+    fn default() -> Self {
+        Self {
+            mode: BotMode::Ifc,
+            tolerance: 1.0e-4,
+            voxel_cell_size: 0.1,
+            voxel_max_element_voxels: 50_000,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TopologyNodeKind {
     Project,
@@ -91,7 +129,6 @@ pub fn build_topology(model: &IfcModel) -> TopologyGraph {
     let mut node_kinds = HashMap::new();
     let mut core_edges = Vec::new();
     let mut adjacent_elements_of_space: HashMap<EntityId, Vec<EntityId>> = HashMap::new();
-    let mut spaces_of_adjacent_element: HashMap<EntityId, Vec<(EntityId, bool)>> = HashMap::new();
     let mut hosted_elements_of_host: HashMap<EntityId, Vec<EntityId>> = HashMap::new();
     let mut contained_elements_of_structure: HashMap<EntityId, Vec<EntityId>> = HashMap::new();
     let mut opening_to_host = HashMap::new();
@@ -108,7 +145,25 @@ pub fn build_topology(model: &IfcModel) -> TopologyGraph {
     }
 
     for rel in &model.rel_aggregates {
+        if model.elements.contains_key(&rel.parent) {
+            for &child in &rel.children {
+                if model.elements.contains_key(&child) {
+                    core_edges.push(TopologyEdge {
+                        source: rel.parent,
+                        target: child,
+                        kind: TopologyEdgeKind::HasSubElement,
+                        derived_from: Some("IfcRelAggregates"),
+                    });
+                }
+            }
+            continue;
+        }
         if !model.spatial_nodes.contains_key(&rel.parent) {
+            continue;
+        }
+        // IfcProject is not a bot:Zone. Its aggregation of IfcSite therefore
+        // cannot be represented as bot:containsZone.
+        if node_kinds.get(&rel.parent) == Some(&TopologyNodeKind::Project) {
             continue;
         }
         for &child in &rel.children {
@@ -134,14 +189,6 @@ pub fn build_topology(model: &IfcModel) -> TopologyGraph {
             continue;
         }
         push_unique(&mut adjacent_elements_of_space, rel.space, element_id);
-        let is_external = rel
-            .internal_or_external
-            .as_deref()
-            .is_some_and(|value| value.eq_ignore_ascii_case("EXTERNAL"));
-        spaces_of_adjacent_element
-            .entry(element_id)
-            .or_default()
-            .push((rel.space, is_external));
         core_edges.push(TopologyEdge {
             source: rel.space,
             target: element_id,
@@ -150,29 +197,10 @@ pub fn build_topology(model: &IfcModel) -> TopologyGraph {
         });
     }
 
-    for spaces in spaces_of_adjacent_element.values() {
-        for left_index in 0..spaces.len() {
-            for right_index in (left_index + 1)..spaces.len() {
-                let (left_space, left_external) = spaces[left_index];
-                let (right_space, right_external) = spaces[right_index];
-                if left_space == right_space || (left_external && right_external) {
-                    continue;
-                }
-                core_edges.push(TopologyEdge {
-                    source: left_space,
-                    target: right_space,
-                    kind: TopologyEdgeKind::AdjacentZone,
-                    derived_from: Some("IfcRelSpaceBoundary"),
-                });
-                core_edges.push(TopologyEdge {
-                    source: right_space,
-                    target: left_space,
-                    kind: TopologyEdgeKind::AdjacentZone,
-                    derived_from: Some("IfcRelSpaceBoundary"),
-                });
-            }
-        }
-    }
+    // Do not infer bot:adjacentZone merely because two spaces reference the
+    // same element. That element may span floors or bound unrelated spaces.
+    // IFC-only adjacency needs corresponding boundary evidence; geometry mode
+    // may reconstruct it after an exact spatial check.
 
     for rel in &model.rel_fills {
         let Some(host_id) = opening_to_host.get(&rel.opening).copied() else {
@@ -320,7 +348,7 @@ mod tests {
             .core_edges
             .iter()
             .any(|edge| edge.kind == TopologyEdgeKind::AdjacentElement));
-        assert!(topology
+        assert!(!topology
             .core_edges
             .iter()
             .any(|edge| edge.kind == TopologyEdgeKind::AdjacentZone));
@@ -333,6 +361,17 @@ mod tests {
             .core_edges
             .iter()
             .any(|edge| edge.kind == TopologyEdgeKind::IntersectingElement));
+        assert!(!topology.core_edges.iter().any(|edge| {
+            topology.node_kinds.get(&edge.source) == Some(&TopologyNodeKind::Project)
+                && edge.kind == TopologyEdgeKind::ContainsZone
+        }));
+    }
+
+    #[test]
+    fn bot_mode_parser_accepts_only_published_values() {
+        assert_eq!(BotMode::parse("ifc"), Some(BotMode::Ifc));
+        assert_eq!(BotMode::parse("extended"), Some(BotMode::Extended));
+        assert_eq!(BotMode::parse("full"), None);
     }
 
     #[test]
@@ -414,5 +453,4 @@ mod tests {
             .filter(|edge| edge.kind == TopologyEdgeKind::AdjacentZone)
             .all(|edge| edge.source != edge.target));
     }
-
 }

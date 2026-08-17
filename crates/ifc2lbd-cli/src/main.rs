@@ -84,7 +84,7 @@ struct Args {
     base_uri: String,
 
     /// Development tuning.
-    #[arg(long = "geometry-tolerance", default_value_t = 1e-6, hide = true)]
+    #[arg(long = "geometry-tolerance", default_value_t = 1e-4, hide = true)]
     geometry_tolerance: f64, /* used by future CSG boolean intersection */
 
     // used for future CSG boolean intersection,
@@ -197,12 +197,19 @@ fn main() -> anyhow::Result<()> {
     if args.analyze_bsdd {
         return run_analyze_bsdd(&args);
     }
-    let requested_modules = build_requested_module_list(&args);
+    let mut requested_modules = build_requested_module_list(&args);
+    let module_configs = parse_module_configs(&args.module_opt)
+        .map_err(|error| anyhow::anyhow!("invalid --module-opt: {}", error))?;
+    if module_configs
+        .get(lbd_pipeline::BOT_PRODUCER_ID)
+        .and_then(|entries| entries.get("mode"))
+        .is_some_and(|mode| mode == "extended")
+    {
+        requested_modules.push(GEOMETRY_PREPROCESS_ID.to_string());
+    }
     let activation_plan = built_in_registry
         .resolve_activation(&requested_modules)
         .map_err(|error| anyhow::anyhow!("module activation failed: {}", error))?;
-    let module_configs = parse_module_configs(&args.module_opt)
-        .map_err(|error| anyhow::anyhow!("invalid --module-opt: {}", error))?;
     validate_module_configs(&activation_plan, &module_configs)?;
     validate_typed_module_configs(&module_configs)
         .map_err(|error| anyhow::anyhow!("invalid --module-opt: {}", error))?;
@@ -344,6 +351,17 @@ fn main() -> anyhow::Result<()> {
     ctx.insert(model.clone());
     ctx.insert(std::sync::Arc::new(base_options.clone()));
     ctx.insert(step.clone());
+    let bot_entries = module_configs.get(lbd_pipeline::BOT_PRODUCER_ID);
+    let bot_mode = bot_entries
+        .and_then(|entries| entries.get("mode"))
+        .and_then(|value| lbd_topology::BotMode::parse(value))
+        .unwrap_or_default();
+    ctx.insert(std::sync::Arc::new(lbd_topology::BotConfig {
+        mode: bot_mode,
+        tolerance: args.geometry_tolerance,
+        voxel_cell_size: args.voxel_cell_size,
+        voxel_max_element_voxels: args.voxel_max_element_voxels,
+    }));
     // Raw IFC content needed by neo-geometry-preprocess (ifc-lite EntityDecoder)
     let raw_content = std::fs::read_to_string(input_path)
         .map(|s| std::sync::Arc::new(IFCContent(std::sync::Arc::new(s))))
@@ -458,16 +476,27 @@ fn main() -> anyhow::Result<()> {
     }
 
     let preprocess_start = Instant::now();
-    // Emit "running" for each preprocessor so the UI can show active modules
-    for id in &preprocess_ids {
-        tracing::info!("module {}: running", id);
-    }
-    lbd_pipeline::spawn_preprocessors(&preprocess_ids, &built_in_registry, &mut ctx)
-        .map_err(|e| anyhow::anyhow!("preprocess stage failed: {:?}", e))?;
+    let active_preprocessor = std::cell::RefCell::new(None::<(String, Instant)>);
+    lbd_pipeline::spawn_preprocessors_with(
+        &preprocess_ids,
+        &built_in_registry,
+        &mut ctx,
+        |id| {
+            tracing::info!("module {}: running", id);
+            active_preprocessor.replace(Some((id.to_string(), Instant::now())));
+        },
+        |id| {
+            let elapsed = active_preprocessor
+                .borrow_mut()
+                .take()
+                .filter(|(started_id, _)| started_id == id)
+                .map(|(_, started)| started.elapsed().as_secs_f64())
+                .unwrap_or_default();
+            tracing::info!("module {}: success {:.3}s", id, elapsed);
+        },
+    )
+    .map_err(|e| anyhow::anyhow!("preprocess stage failed: {:?}", e))?;
     let preprocess_dur = preprocess_start.elapsed().as_secs_f64();
-    for id in &preprocess_ids {
-        tracing::info!("module {}: success {:.3}s", id, preprocess_dur);
-    }
     tracing::info!("phase preprocess completed in {:.3}s", preprocess_dur);
 
     let export_plugin = built_in_registry
@@ -1104,6 +1133,9 @@ fn validate_typed_module_configs(
         if module_id == lbd_pipeline::IFCOWL_PRODUCER_ID {
             validate_ifcowl_producer_module_config(entries)?;
         }
+        if module_id == lbd_pipeline::BOT_PRODUCER_ID {
+            validate_bot_producer_module_config(entries)?;
+        }
         if module_id == lbd_pipeline::BSDD_PRODUCER_ID {
             validate_bsdd_producer_module_config(entries)?;
         }
@@ -1112,6 +1144,21 @@ fn validate_typed_module_configs(
         }
         if module_id == lbd_pipeline::FILE_EXPORT_ID {
             validate_file_export_module_config(entries)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_bot_producer_module_config(entries: &HashMap<String, String>) -> Result<(), String> {
+    for (key, value) in entries {
+        match key.as_str() {
+            "mode" if matches!(value.as_str(), "ifc" | "extended") => {}
+            "mode" => {
+                return Err(format!(
+                    "`neo-bot-producer.mode` must be ifc|extended, got `{value}`"
+                ))
+            }
+            other => return Err(format!("unknown option `neo-bot-producer.{other}`")),
         }
     }
     Ok(())

@@ -21,6 +21,7 @@ rml-mapper-producer = { workspace = true }
 ontology-mapper-producer = { workspace = true }
 plugin-property-preprocess = { workspace = true }
 plugin-qto-preprocess = { workspace = true }
+plugin-topology-full = { workspace = true }
 plugin-geometry-preprocess = { workspace = true }
 # Geometry output formats: fragments + gltf on all targets.
 # Parquet is only on wasm32 (arrow-buffer has no wasm64 cfg for ALIGNMENT).
@@ -29,6 +30,7 @@ plugin-geometry-producer = { workspace = true, features = [
   "fmt-gltf",
 ] }
 tessellated-model = { workspace = true }
+lbd-topology = { workspace = true }
 crossbeam = { workspace = true }
 flate2 = { workspace = true }
 rayon = { workspace = true }

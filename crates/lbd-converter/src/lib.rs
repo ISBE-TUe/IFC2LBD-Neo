@@ -18,8 +18,8 @@ pub use modules::bsdd::{
 
 // LBD sub-module public streaming API — each produces its own named graph.
 // To add a new module: create modules/<name>.rs, pub mod it in modules/mod.rs, add pub use here.
-pub use modules::bot::stream_bot;
 pub use modules::beo::stream_beo;
+pub use modules::bot::{stream_bot, stream_bot_with_topology};
 pub use modules::ifcowl::stream_ifcowl;
 pub use modules::omg_fog::stream_omg_fog;
 pub use modules::props_opm::stream_props_opm;
@@ -29,10 +29,7 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 
 use crossbeam::channel::Sender;
-use ifc_model::{
-    expand_ifc_guid, IfcModel, PropertyEnumeratedValue, PropertySingleValue,
-    Unit,
-};
+use ifc_model::{expand_ifc_guid, IfcModel, PropertyEnumeratedValue, PropertySingleValue, Unit};
 use ifc_schema::SpatialType;
 use ifc_step::{decode_ifc_unicode, EntityId, StepFile, StepSchema, StepValue};
 use lbd_geometry::{
@@ -42,14 +39,13 @@ use lbd_geometry::{
 use lbd_ontology::{
     beo_class, bot_adjacent_element, bot_adjacent_zone, bot_building, bot_contains_element,
     bot_contains_zone, bot_has_sub_element, bot_interface, bot_interface_of,
-    bot_intersecting_element, bot_site, bot_space, bot_storey, bot_zone, express_has_boolean,
-    express_has_double, express_has_integer, express_has_logical, express_has_string,
-    express_logical_value, geo_as_wkt, geo_geometry, geo_wkt_literal,
-    dicp_construction_project, lbd_has_bounding_box, list_has_contents, list_has_next,
-    opm_current_property_state, opm_has_property_state,
-    opm_property, owl_imports, owl_object_property, owl_ontology, props_property,
-    prov_generated_at_time, qudt_unit, rdf_li, rdf_seq, rdf_type, rdfs_comment, rdfs_label,
-    schema_value, unit_iri, Object, Triple, EXPRESS, XSD,
+    bot_intersecting_element, bot_site, bot_space, bot_storey, bot_zone, dicp_construction_project,
+    express_has_boolean, express_has_double, express_has_integer, express_has_logical,
+    express_has_string, express_logical_value, geo_as_wkt, geo_geometry, geo_wkt_literal,
+    lbd_has_bounding_box, list_has_contents, list_has_next, opm_current_property_state,
+    opm_has_property_state, opm_property, owl_imports, owl_object_property, owl_ontology,
+    props_property, prov_generated_at_time, qudt_unit, rdf_li, rdf_seq, rdf_type, rdfs_comment,
+    rdfs_label, schema_value, unit_iri, Object, Triple, EXPRESS, XSD,
 };
 #[cfg(test)]
 use lbd_ontology::{bot_has_building, owl_same_as, rdf_member};
@@ -1271,11 +1267,9 @@ impl<'a> IfcOwlEmitter<'a> {
         if let StepValue::List(items) = value {
             if matches!(self.mode, IfcowlMode::Projected) {
                 if let Some(components) = projected_inline_components(predicate_local_name) {
-                    let (_, item_expected_range) =
-                        self.resolve_list_shape(expected_range, items);
+                    let (_, item_expected_range) = self.resolve_list_shape(expected_range, items);
                     for (component, item) in components.iter().zip(items.iter()) {
-                        if let Some(object) =
-                            self.emit_value(item_expected_range.as_deref(), item)
+                        if let Some(object) = self.emit_value(item_expected_range.as_deref(), item)
                         {
                             self.triples.push(Triple {
                                 subject: subject.to_string(),
@@ -1289,9 +1283,7 @@ impl<'a> IfcOwlEmitter<'a> {
             }
             if matches!(self.mode, IfcowlMode::Projected)
                 && !is_list_class_name(expected_range)
-                && items
-                    .iter()
-                    .all(|item| !matches!(item, StepValue::List(_)))
+                && items.iter().all(|item| !matches!(item, StepValue::List(_)))
             {
                 for item in items {
                     if let Some(object) = self.emit_value(expected_range, item) {
@@ -1347,10 +1339,18 @@ impl<'a> IfcOwlEmitter<'a> {
     fn emit_value(&mut self, expected_range: Option<&str>, value: &StepValue) -> Option<Object> {
         match value {
             StepValue::Ref(id) => self.entity_subjects.get(id).cloned().map(Object::Iri),
-            StepValue::String(value) => self.emit_scalar_value(expected_range, ScalarValue::String(value.to_string())),
-            StepValue::Int(value) => self.emit_scalar_value(expected_range, ScalarValue::Integer(*value)),
-            StepValue::Real(value) => self.emit_scalar_value(expected_range, ScalarValue::Double(*value)),
-            StepValue::Bool(value) => self.emit_scalar_value(expected_range, ScalarValue::Boolean(*value)),
+            StepValue::String(value) => {
+                self.emit_scalar_value(expected_range, ScalarValue::String(value.to_string()))
+            }
+            StepValue::Int(value) => {
+                self.emit_scalar_value(expected_range, ScalarValue::Integer(*value))
+            }
+            StepValue::Real(value) => {
+                self.emit_scalar_value(expected_range, ScalarValue::Double(*value))
+            }
+            StepValue::Bool(value) => {
+                self.emit_scalar_value(expected_range, ScalarValue::Boolean(*value))
+            }
             StepValue::Enum(value) => Some(Object::Iri(format!("{}{value}", self.namespace))),
             StepValue::Null => None,
             StepValue::Derived => None,
@@ -1373,10 +1373,18 @@ impl<'a> IfcOwlEmitter<'a> {
             .map(str::to_owned)
             .unwrap_or_else(|| pascal_ifc_name(type_name));
         match value {
-            StepValue::String(value) => self.emit_scalar_value(Some(&local_name), ScalarValue::String(value.to_string())),
-            StepValue::Int(value) => self.emit_scalar_value(Some(&local_name), ScalarValue::Integer(*value)),
-            StepValue::Real(value) => self.emit_scalar_value(Some(&local_name), ScalarValue::Double(*value)),
-            StepValue::Bool(value) => self.emit_scalar_value(Some(&local_name), ScalarValue::Boolean(*value)),
+            StepValue::String(value) => {
+                self.emit_scalar_value(Some(&local_name), ScalarValue::String(value.to_string()))
+            }
+            StepValue::Int(value) => {
+                self.emit_scalar_value(Some(&local_name), ScalarValue::Integer(*value))
+            }
+            StepValue::Real(value) => {
+                self.emit_scalar_value(Some(&local_name), ScalarValue::Double(*value))
+            }
+            StepValue::Bool(value) => {
+                self.emit_scalar_value(Some(&local_name), ScalarValue::Boolean(*value))
+            }
             StepValue::List(items) => self.emit_list(Some(&local_name), items),
             _ => self.emit_value(expected_range.or(Some(&local_name)), value),
         }
@@ -2296,7 +2304,12 @@ pub(crate) use ifc_model::iri::{
 /// Property node IRI — deterministic hash of (predicate_local, set_scope, element_guid).
 /// Shared between the props and bSDD modules so the same logical property produces the
 /// same IRI node in both named graphs, enabling natural join in a triplestore.
-pub(crate) fn property_resource_iri(base: &str, predicate_local: &str, guid: &str, set_scope: &str) -> String {
+pub(crate) fn property_resource_iri(
+    base: &str,
+    predicate_local: &str,
+    guid: &str,
+    set_scope: &str,
+) -> String {
     let key = format!("{predicate_local}|{set_scope}|{guid}");
     format!("{base}/p_{:016x}", fnv1a64(key.as_bytes()))
 }
@@ -2353,13 +2366,23 @@ pub(crate) fn property_state_iri(
 /// Key: (predicate_local, pset_name, value_repr) — no element GUID, no pset GUID.
 /// Scoping by pset_name prevents "Height" in Pset_WallCommon from merging with
 /// "Height" in a custom pset.
-pub(crate) fn canonical_property_resource_iri(base: &str, predicate_local: &str, pset_name: &str, value_repr: &str) -> String {
+pub(crate) fn canonical_property_resource_iri(
+    base: &str,
+    predicate_local: &str,
+    pset_name: &str,
+    value_repr: &str,
+) -> String {
     let key = format!("{predicate_local}|{pset_name}|{value_repr}");
     format!("{base}/cp_{:016x}", fnv1a64(key.as_bytes()))
 }
 
 /// Canonical state IRI — same key as the property IRI.
-pub(crate) fn canonical_property_state_iri(base: &str, predicate_local: &str, pset_name: &str, value_repr: &str) -> String {
+pub(crate) fn canonical_property_state_iri(
+    base: &str,
+    predicate_local: &str,
+    pset_name: &str,
+    value_repr: &str,
+) -> String {
     let key = format!("{predicate_local}|{pset_name}|{value_repr}");
     format!("{base}/cs_{:016x}", fnv1a64(key.as_bytes()))
 }
@@ -2367,7 +2390,11 @@ pub(crate) fn canonical_property_state_iri(base: &str, predicate_local: &str, ps
 /// Canonical pset IRI shared across elements whose pset has identical content.
 /// Key: (pset_name, sorted fingerprint of all prop_name=value pairs).
 /// If any single property value differs, the fingerprint differs → different IRI → no sharing.
-pub(crate) fn canonical_pset_resource_iri(base: &str, pset_name: &str, content_repr: &str) -> String {
+pub(crate) fn canonical_pset_resource_iri(
+    base: &str,
+    pset_name: &str,
+    content_repr: &str,
+) -> String {
     let key = format!("{pset_name}|{content_repr}");
     format!("{base}/cps_{:016x}", fnv1a64(key.as_bytes()))
 }
@@ -2705,11 +2732,9 @@ fn quantity_value_object(value: Option<&StepValue>) -> Option<Object> {
                 Some(Object::Literal(trimmed.to_string()))
             }
         }
-        StepValue::Typed { type_name, value } => {
-            (!violates_positive_constraint(type_name, value))
-                .then(|| quantity_value_object(Some(value.as_ref())))
-                .flatten()
-        }
+        StepValue::Typed { type_name, value } => (!violates_positive_constraint(type_name, value))
+            .then(|| quantity_value_object(Some(value.as_ref())))
+            .flatten(),
         _ => None,
     }
 }
@@ -2853,9 +2878,9 @@ mod tests {
     use super::*;
     use ifc_model::build_model;
     use ifc_step::{parse_step_bytes, parse_step_file};
-    use std::convert::Infallible;
     use std::collections::HashMap;
     use std::collections::HashSet;
+    use std::convert::Infallible;
     use std::path::PathBuf;
     use std::sync::Arc;
 
@@ -3045,8 +3070,12 @@ mod tests {
         )
         .unwrap();
         let namespace = ifcowl_namespace(step.header.schema);
-        let triples =
-            modules::ifcowl::convert_ifcowl(&step, "https://example.test/base", step.header.schema, IfcowlMode::Full);
+        let triples = modules::ifcowl::convert_ifcowl(
+            &step,
+            "https://example.test/base",
+            step.header.schema,
+            IfcowlMode::Full,
+        );
 
         assert!(triples.iter().any(|triple| {
             triple.subject == "https://example.test/base/IfcCartesianPoint_1"
@@ -3090,8 +3119,12 @@ mod tests {
         )
         .unwrap();
         let namespace = ifcowl_namespace(step.header.schema);
-        let triples =
-            modules::ifcowl::convert_ifcowl(&step, "https://example.test/base", step.header.schema, IfcowlMode::Full);
+        let triples = modules::ifcowl::convert_ifcowl(
+            &step,
+            "https://example.test/base",
+            step.header.schema,
+            IfcowlMode::Full,
+        );
 
         assert!(triples.iter().any(|triple| {
             triple.subject == "https://example.test/base/IfcOrganization_1"
@@ -3115,8 +3148,12 @@ mod tests {
         )
         .unwrap();
         let namespace = ifcowl_namespace(step.header.schema);
-        let triples =
-            modules::ifcowl::convert_ifcowl(&step, "https://example.test/base", step.header.schema, IfcowlMode::Full);
+        let triples = modules::ifcowl::convert_ifcowl(
+            &step,
+            "https://example.test/base",
+            step.header.schema,
+            IfcowlMode::Full,
+        );
 
         assert!(triples.iter().any(|triple| {
             triple.subject == "https://example.test/base/IfcArbitraryProfileDefWithVoids_4"
@@ -3135,8 +3172,12 @@ mod tests {
         )
         .unwrap();
         let namespace = ifcowl_namespace(step.header.schema);
-        let triples =
-            modules::ifcowl::convert_ifcowl(&step, "https://example.test/base", step.header.schema, IfcowlMode::Full);
+        let triples = modules::ifcowl::convert_ifcowl(
+            &step,
+            "https://example.test/base",
+            step.header.schema,
+            IfcowlMode::Full,
+        );
 
         assert!(triples.iter().any(|triple| {
             triple.subject == "https://example.test/base/IfcCompositeCurve_5"
@@ -3155,8 +3196,12 @@ mod tests {
             b"ISO-10303-21;\nHEADER;\nFILE_SCHEMA(('IFC2X3'));\nENDSEC;\nDATA;\n#1=IFCCOMPOSITECURVE((#2),.F.);\n#2=IFCCOMPOSITECURVESEGMENT(.CONTINUOUS.,.T.,#3);\n#3=IFCPOLYLINE((#4,#5));\n#4=IFCCARTESIANPOINT((0.,0.));\n#5=IFCCARTESIANPOINT((1.,1.));\nENDSEC;\n",
         )
         .unwrap();
-        let triples =
-            modules::ifcowl::convert_ifcowl(&step, "https://example.test/base", step.header.schema, IfcowlMode::Full);
+        let triples = modules::ifcowl::convert_ifcowl(
+            &step,
+            "https://example.test/base",
+            step.header.schema,
+            IfcowlMode::Full,
+        );
 
         assert!(triples.iter().any(|triple| {
             triple.predicate == express_has_logical()
@@ -3170,8 +3215,12 @@ mod tests {
             b"ISO-10303-21;\nHEADER;\nFILE_SCHEMA(('IFC2X3'));\nENDSEC;\nDATA;\n#1=IFCLOCALTIME(12,0,0,$,IFCCOMPOUNDPLANEANGLEMEASURE((41,52,27,840000)),$);\nENDSEC;\n",
         )
         .unwrap();
-        let triples =
-            modules::ifcowl::convert_ifcowl(&step, "https://example.test/base", step.header.schema, IfcowlMode::Full);
+        let triples = modules::ifcowl::convert_ifcowl(
+            &step,
+            "https://example.test/base",
+            step.header.schema,
+            IfcowlMode::Full,
+        );
 
         assert!(triples.iter().any(|triple| {
             triple.subject.contains("/IfcCompoundPlaneAngleMeasure_")
@@ -3237,8 +3286,12 @@ mod tests {
             b"ISO-10303-21;\nHEADER;\nFILE_SCHEMA(('IFC2X3'));\nENDSEC;\nDATA;\n#1=IFCDIRECTION((1.,0.,0.));\nENDSEC;\n",
         )
         .unwrap();
-        let triples =
-            modules::ifcowl::convert_ifcowl(&step, "https://example.test/base", step.header.schema, IfcowlMode::Full);
+        let triples = modules::ifcowl::convert_ifcowl(
+            &step,
+            "https://example.test/base",
+            step.header.schema,
+            IfcowlMode::Full,
+        );
 
         assert!(triples.iter().any(|triple| {
             triple.subject.contains("/REAL_List_")
@@ -3254,8 +3307,12 @@ mod tests {
         )
         .unwrap();
         let namespace = ifcowl_namespace(step.header.schema);
-        let triples =
-            modules::ifcowl::convert_ifcowl(&step, "https://example.test/base", step.header.schema, IfcowlMode::Full);
+        let triples = modules::ifcowl::convert_ifcowl(
+            &step,
+            "https://example.test/base",
+            step.header.schema,
+            IfcowlMode::Full,
+        );
 
         assert!(!triples.iter().any(|triple| {
             triple.subject == "https://example.test/base/IfcSIUnit_1"
@@ -3387,9 +3444,10 @@ mod tests {
                 bsdd_dedup_properties: false,
             },
         );
-        assert!(result.triples.iter().any(|triple| {
-            triple.predicate == rdf_member() && triple.subject.contains("/ps_")
-        }));
+        assert!(result
+            .triples
+            .iter()
+            .any(|triple| { triple.predicate == rdf_member() && triple.subject.contains("/ps_") }));
     }
 
     #[test]
@@ -3496,7 +3554,7 @@ mod tests {
             bsdd_profile: None,
             bsdd_compact: false,
             bsdd_include_standard_attrs: true,
-                bsdd_dedup_properties: false,
+            bsdd_dedup_properties: false,
         };
         let result = convert_step_and_model(&step, &model, &options);
         assert!(result.triples.iter().any(|triple| {
@@ -3580,7 +3638,10 @@ mod tests {
             beo_triples(b"#1=IFCRAILING('0railing00000000000000',$,'R',$,$,$,$,$,.NOTDEFINED.);\n");
         let types = emitted_types(&triples);
 
-        assert_eq!(types, vec!["https://pi.pauwel.be/voc/buildingelement#Railing"]);
+        assert_eq!(
+            types,
+            vec!["https://pi.pauwel.be/voc/buildingelement#Railing"]
+        );
         assert!(!types.iter().any(|iri| iri.contains("NOTDEFINED")));
     }
 
@@ -3653,8 +3714,7 @@ mod tests {
         );
     }
 
-    const PROJECT_AND_SITE: &[u8] =
-        b"#1=IFCPROJECT('0project00000000000000',$,'P',$,$,$,$,$,$);\n\
+    const PROJECT_AND_SITE: &[u8] = b"#1=IFCPROJECT('0project00000000000000',$,'P',$,$,$,$,$,$);\n\
           #2=IFCSITE('0site000000000000000000',$,'S',$,$,$,$,$,$,$,$,$,$,$);\n\
           #3=IFCRELAGGREGATES('0rel0000000000000000000',$,$,$,#1,(#2));\n";
 
@@ -3666,22 +3726,24 @@ mod tests {
         let triples = bot_triples(PROJECT_AND_SITE);
         let types = emitted_types(&triples);
 
-        assert!(types.contains(
-            &"https://w3id.org/digitalconstruction/0.5/Processes#ConstructionProject"
-        ));
-        assert!(!types.iter().any(|iri| iri.contains("linkedbuildingdata.org")));
+        assert!(types
+            .contains(&"https://w3id.org/digitalconstruction/0.5/Processes#ConstructionProject"));
+        assert!(!types
+            .iter()
+            .any(|iri| iri.contains("linkedbuildingdata.org")));
     }
 
-    /// §5 — BOT has no `hasSite` property. `bot:Site` is a `bot:Zone`, and zone
-    /// containment is `bot:containsZone`.
+    /// §5 — BOT has no `hasSite` property and IfcProject is not a bot:Zone, so
+    /// the IFC project aggregation must not be rewritten as zone containment.
     #[test]
-    fn project_to_site_link_uses_a_bot_property_that_exists() {
+    fn project_to_site_link_is_not_misrepresented_as_bot_zone_containment() {
         let triples = bot_triples(PROJECT_AND_SITE);
 
-        let project = spatial_resource_iri(TEST_BASE, SpatialType::Project, "0project00000000000000");
+        let project =
+            spatial_resource_iri(TEST_BASE, SpatialType::Project, "0project00000000000000");
         let site = spatial_resource_iri(TEST_BASE, SpatialType::Site, "0site000000000000000000");
 
-        assert!(triples.iter().any(|triple| {
+        assert!(!triples.iter().any(|triple| {
             triple.subject == project
                 && triple.predicate == bot_contains_zone()
                 && matches!(&triple.object, Object::Iri(iri) if iri == &site)

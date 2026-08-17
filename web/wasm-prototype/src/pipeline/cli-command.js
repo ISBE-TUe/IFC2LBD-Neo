@@ -7,6 +7,9 @@ import { getState } from "./state.js";
 // Default option values per module, matching the Rust-side defaults.
 // Only options that differ from these will appear in the command.
 const MODULE_DEFAULTS = {
+	"neo-bot-producer": {
+		mode: "ifc",
+	},
 	"neo-turtle-serializer": {
 		grouping: "streaming",
 		layout: "joined",

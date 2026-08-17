@@ -244,6 +244,17 @@ function render() {
 function optionControl(pluginId, key) {
 	const { moduleOptions } = getState();
 	const current = moduleOptions[pluginId]?.[key] || "";
+	if (pluginId === "neo-bot-producer" && key === "mode") {
+		const modeVal = current || "ifc";
+		return `
+      <label class="detail-option">
+        <span class="detail-label">mode</span>
+        <select data-option-key="mode" class="detail-select">
+          <option value="ifc" ${modeVal === "ifc" ? "selected" : ""}>IFC only — explicit semantic relations</option>
+          <option value="extended" ${modeVal === "extended" ? "selected" : ""}>Extended — reconstruct with 3D geometry</option>
+        </select>
+      </label>`;
+	}
 
 	if (key === "grouping") {
 		const groupingVal = current || "streaming";

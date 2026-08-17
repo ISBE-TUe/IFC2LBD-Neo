@@ -291,12 +291,29 @@ pub(crate) fn validate_typed_module_configs(
             NQUADS_CHUNKED_SERIALIZER_ID => validate_nquads_chunked_serializer_options(entries)?,
             TURTLE_SERIALIZER_ID => validate_turtle_serializer_options(entries)?,
             FILE_EXPORT_ID => validate_file_export_options(entries)?,
-            BOT_PRODUCER_ID | BEO_PRODUCER_ID | PROPS_OPM_PRODUCER_ID | OMG_FOG_PRODUCER_ID => {
+            BEO_PRODUCER_ID | PROPS_OPM_PRODUCER_ID | OMG_FOG_PRODUCER_ID => {
                 if !entries.is_empty() {
                     return Err(WasmApiError::Message(format!(
                         "module `{}` does not support options",
                         module_id
                     )));
+                }
+            }
+            BOT_PRODUCER_ID => {
+                for (key, value) in entries {
+                    match key.as_str() {
+                        "mode" if matches!(value.as_str(), "ifc" | "extended") => {}
+                        "mode" => {
+                            return Err(WasmApiError::Message(format!(
+                                "`neo-bot-producer.mode` must be ifc|extended, got `{value}`"
+                            )))
+                        }
+                        other => {
+                            return Err(WasmApiError::Message(format!(
+                                "unknown option `neo-bot-producer.{other}`"
+                            )))
+                        }
+                    }
                 }
             }
             IFCOWL_PRODUCER_ID => validate_ifcowl_producer_options(entries)?,
