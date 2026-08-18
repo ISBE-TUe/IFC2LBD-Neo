@@ -88,6 +88,25 @@ struct Args {
     )]
     base_uri: String,
 
+    /// Opaque revision token, mixed into OPM property-state IRIs.
+    ///
+    /// The converter never interprets this: it does not know what a revision is, which
+    /// one came before, or that they are ordered. It only guarantees that two runs given
+    /// different tokens produce different state IRIs for the same value.
+    ///
+    /// That guarantee is what the consuming platform needs. State IRIs are otherwise
+    /// keyed on the value, so a property going A -> B -> A reuses A's state IRI in the
+    /// third revision — and that one node then has to be both current (in r3) and
+    /// outdated (in r2) at once, which no amount of platform bookkeeping can fix.
+    ///
+    /// Deliberately NOT folded into `--base-uri`: that would revision-scope element,
+    /// spatial and geometry IRIs too, destroying the stable identity the whole versioning
+    /// model rests on. Only state IRIs may carry it.
+    ///
+    /// Omit for a single-revision conversion; state IRIs then keep their previous shape.
+    #[arg(long = "revision")]
+    revision: Option<String>,
+
     /// Development tuning.
     #[arg(long = "geometry-tolerance", default_value_t = 1e-4, hide = true)]
     geometry_tolerance: f64, /* used by future CSG boolean intersection */
@@ -343,6 +362,7 @@ fn main() -> anyhow::Result<()> {
         geometry_bounding_boxes: None,
         geometry_wkts: None,
         geometry_hashes: None,
+        revision: args.revision.clone(),
         geometry_tolerance: args.geometry_tolerance,
         low_memory_mode: false,
         stream_batch_size: 8 * 1024,

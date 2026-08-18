@@ -87,6 +87,16 @@ pub struct ConvertOptions {
     /// `tessellated-model` or `ifc-geometry`, and it should not have to in order to
     /// emit a number computed upstream.
     pub geometry_hashes: Option<Arc<HashMap<EntityId, u64>>>,
+    /// Opaque revision token mixed into property-state IRIs. See `--revision` on the CLI.
+    ///
+    /// Never interpreted here — not parsed, not compared, not ordered. The converter only
+    /// guarantees that different tokens yield different state IRIs for the same value,
+    /// which is what lets the platform keep a value that reverts (A → B → A) as three
+    /// distinct states instead of two, where the reused node would have to be current and
+    /// outdated simultaneously.
+    ///
+    /// `None` keeps the previous value-only keying.
+    pub revision: Option<String>,
     pub geometry_tolerance: f64,
     pub low_memory_mode: bool,
     pub stream_batch_size: usize,
@@ -129,6 +139,7 @@ impl Default for ConvertOptions {
             geometry_bounding_boxes: None,
             geometry_wkts: None,
             geometry_hashes: None,
+            revision: None,
             geometry_tolerance: 1e-6,
             low_memory_mode: false,
             stream_batch_size: STREAM_BATCH_SIZE,
@@ -640,6 +651,7 @@ where
                                 value,
                                 resolve_property_unit(property, &unit_by_type, model),
                                 &generated_at,
+                                options.revision.as_deref(),
                                 &mut emit,
                             )?;
                         }
@@ -671,6 +683,7 @@ where
                             value,
                             None,
                             &generated_at,
+                            options.revision.as_deref(),
                             &mut emit,
                         )?;
                     }
@@ -720,6 +733,7 @@ where
                         value,
                         resolve_quantity_unit(quantity.entity_name.as_str(), &unit_by_type),
                         &generated_at,
+                        options.revision.as_deref(),
                         &mut emit,
                     )?;
                 }
@@ -742,6 +756,7 @@ where
         base,
         &unit_by_type,
         &generated_at,
+        options.revision.as_deref(),
         &mut declared_standard_attributes,
         &mut declared_standard_attribute_comments,
         &mut emit,
@@ -1728,6 +1743,7 @@ fn emit_property_state<E, F>(
     value: Object,
     unit: Option<String>,
     generated_at: &str,
+    revision: Option<&str>,
     emit: &mut F,
 ) -> Result<String, E>
 where
@@ -1740,6 +1756,7 @@ where
         object_guid,
         set_scope,
         object_value_repr(&value),
+        revision,
     );
 
     emit(Triple {
@@ -1829,6 +1846,7 @@ fn emit_standard_attribute_triples<E, F>(
     base: &str,
     unit_by_type: &HashMap<String, String>,
     generated_at: &str,
+    revision: Option<&str>,
     declared_object_properties: &mut HashSet<String>,
     declared_property_comments: &mut HashSet<(String, String)>,
     emit: &mut F,
@@ -1845,6 +1863,7 @@ where
             &node.guid,
             Object::Literal(node.guid.to_string()),
             generated_at,
+            revision,
             None,
             declared_object_properties,
             declared_property_comments,
@@ -1858,6 +1877,7 @@ where
                 &node.guid,
                 Object::Literal(name.to_string()),
                 generated_at,
+                revision,
                 None,
                 declared_object_properties,
                 declared_property_comments,
@@ -1872,6 +1892,7 @@ where
                 &node.guid,
                 Object::Literal(description.to_string()),
                 generated_at,
+                revision,
                 None,
                 declared_object_properties,
                 declared_property_comments,
@@ -1886,6 +1907,7 @@ where
                 &node.guid,
                 Object::Literal(object_type.to_string()),
                 generated_at,
+                revision,
                 None,
                 declared_object_properties,
                 declared_property_comments,
@@ -1903,6 +1925,7 @@ where
                 &node.guid,
                 Object::Literal(long_name.to_string()),
                 generated_at,
+                revision,
                 None,
                 declared_object_properties,
                 declared_property_comments,
@@ -1920,6 +1943,7 @@ where
                     datatype: format!("{XSD}double"),
                 },
                 generated_at,
+                revision,
                 unit_by_type.get("LENGTHUNIT").cloned(),
                 declared_object_properties,
                 declared_property_comments,
@@ -1937,6 +1961,7 @@ where
                     datatype: format!("{XSD}double"),
                 },
                 generated_at,
+                revision,
                 unit_by_type.get("LENGTHUNIT").cloned(),
                 declared_object_properties,
                 declared_property_comments,
@@ -1954,6 +1979,7 @@ where
                     datatype: format!("{XSD}double"),
                 },
                 generated_at,
+                revision,
                 unit_by_type.get("LENGTHUNIT").cloned(),
                 declared_object_properties,
                 declared_property_comments,
@@ -1971,6 +1997,7 @@ where
                     datatype: format!("{XSD}double"),
                 },
                 generated_at,
+                revision,
                 unit_by_type.get("LENGTHUNIT").cloned(),
                 declared_object_properties,
                 declared_property_comments,
@@ -1988,6 +2015,7 @@ where
             &element.guid,
             Object::Literal(element.guid.to_string()),
             generated_at,
+            revision,
             None,
             declared_object_properties,
             declared_property_comments,
@@ -2001,6 +2029,7 @@ where
                 &element.guid,
                 Object::Literal(name.to_string()),
                 generated_at,
+                revision,
                 None,
                 declared_object_properties,
                 declared_property_comments,
@@ -2015,6 +2044,7 @@ where
                 &element.guid,
                 Object::Literal(description.to_string()),
                 generated_at,
+                revision,
                 None,
                 declared_object_properties,
                 declared_property_comments,
@@ -2029,6 +2059,7 @@ where
                 &element.guid,
                 Object::Literal(object_type.to_string()),
                 generated_at,
+                revision,
                 None,
                 declared_object_properties,
                 declared_property_comments,
@@ -2043,6 +2074,7 @@ where
                 &element.guid,
                 Object::Literal(tag.to_string()),
                 generated_at,
+                revision,
                 None,
                 declared_object_properties,
                 declared_property_comments,
@@ -2064,6 +2096,7 @@ where
                     datatype: format!("{XSD}double"),
                 },
                 generated_at,
+                revision,
                 unit_by_type.get("LENGTHUNIT").cloned(),
                 declared_object_properties,
                 declared_property_comments,
@@ -2085,6 +2118,7 @@ where
                     datatype: format!("{XSD}double"),
                 },
                 generated_at,
+                revision,
                 unit_by_type.get("LENGTHUNIT").cloned(),
                 declared_object_properties,
                 declared_property_comments,
@@ -2102,6 +2136,7 @@ where
                     datatype: format!("{XSD}integer"),
                 },
                 generated_at,
+                revision,
                 None,
                 declared_object_properties,
                 declared_property_comments,
@@ -2119,6 +2154,7 @@ where
                     datatype: format!("{XSD}integer"),
                 },
                 generated_at,
+                revision,
                 None,
                 declared_object_properties,
                 declared_property_comments,
@@ -2136,6 +2172,7 @@ where
                     datatype: format!("{XSD}double"),
                 },
                 generated_at,
+                revision,
                 unit_by_type.get("LENGTHUNIT").cloned(),
                 declared_object_properties,
                 declared_property_comments,
@@ -2153,6 +2190,7 @@ where
                     datatype: format!("{XSD}double"),
                 },
                 generated_at,
+                revision,
                 unit_by_type.get("LENGTHUNIT").cloned(),
                 declared_object_properties,
                 declared_property_comments,
@@ -2231,6 +2269,7 @@ fn emit_standard_attribute<E, F>(
     object_guid: &str,
     value: Object,
     generated_at: &str,
+    revision: Option<&str>,
     unit: Option<String>,
     declared_object_properties: &mut HashSet<String>,
     declared_property_comments: &mut HashSet<(String, String)>,
@@ -2266,6 +2305,7 @@ where
         value,
         unit,
         generated_at,
+        revision,
         emit,
     )?;
     Ok(())
@@ -2445,17 +2485,29 @@ pub(crate) fn topology_interface_iri_for_guids(base: &str, guid_a: &str, guid_b:
     )
 }
 
-/// Deterministic state IRI keyed on (predicate_local, set_scope, element_guid, value_repr).
+/// Deterministic state IRI keyed on (predicate_local, set_scope, element_guid, value_repr,
+/// revision).
+///
 /// Using the value in the key means same property + same value → same IRI across all modules
 /// (props and bSDD), so a triplestore merge produces one state node rather than duplicates.
+///
+/// The revision is in the key so that keying holds *within* a conversion without leaking
+/// *across* them. Without it, a value going A → B → A reuses A's state IRI in the third
+/// revision, and that single node then has to be simultaneously current (r3) and outdated
+/// (r2). No platform-side bookkeeping can resolve that, because there is only one node to
+/// type. `None` reproduces the old value-only keying for single-revision conversions.
 pub(crate) fn property_state_iri(
     base: &str,
     predicate_local: &str,
     guid: &str,
     set_scope: &str,
     value_repr: &str,
+    revision: Option<&str>,
 ) -> String {
-    let key = format!("{predicate_local}|{set_scope}|{guid}|{value_repr}");
+    let key = format!(
+        "{predicate_local}|{set_scope}|{guid}|{value_repr}|{}",
+        revision.unwrap_or("")
+    );
     format!("{base}/s_{:016x}", fnv1a64(key.as_bytes()))
 }
 
@@ -2470,8 +2522,13 @@ pub(crate) fn property_state_iri(
 /// geometry reverts to an earlier value reuses the earlier state IRI; once revisions
 /// exist, the revision has to enter this key (see PLAN-opm-versioning section 5.4)
 /// or the `Current`/`Outdated` typing of that shared node becomes ambiguous.
-pub(crate) fn geometry_state_iri(base: &str, geom_node: &str, value_repr: &str) -> String {
-    let key = format!("{geom_node}|{value_repr}");
+pub(crate) fn geometry_state_iri(
+    base: &str,
+    geom_node: &str,
+    value_repr: &str,
+    revision: Option<&str>,
+) -> String {
+    let key = format!("{geom_node}|{value_repr}|{}", revision.unwrap_or(""));
     format!("{base}/gs_{:016x}", fnv1a64(key.as_bytes()))
 }
 
@@ -2495,8 +2552,12 @@ pub(crate) fn canonical_property_state_iri(
     predicate_local: &str,
     pset_name: &str,
     value_repr: &str,
+    revision: Option<&str>,
 ) -> String {
-    let key = format!("{predicate_local}|{pset_name}|{value_repr}");
+    let key = format!(
+        "{predicate_local}|{pset_name}|{value_repr}|{}",
+        revision.unwrap_or("")
+    );
     format!("{base}/cs_{:016x}", fnv1a64(key.as_bytes()))
 }
 
@@ -3026,6 +3087,7 @@ mod tests {
                 geometry_bounding_boxes: None,
                 geometry_wkts: None,
                 geometry_hashes: None,
+                revision: None,
                 geometry_tolerance: 1e-6,
                 low_memory_mode: false,
                 stream_batch_size: 8 * 1024,
@@ -3472,6 +3534,7 @@ mod tests {
                 geometry_bounding_boxes: None,
                 geometry_wkts: None,
                 geometry_hashes: None,
+                revision: None,
                 geometry_tolerance: 1e-6,
                 low_memory_mode: false,
                 stream_batch_size: 8 * 1024,
@@ -3529,6 +3592,7 @@ mod tests {
                 geometry_bounding_boxes: None,
                 geometry_wkts: None,
                 geometry_hashes: None,
+                revision: None,
                 geometry_tolerance: 1e-6,
                 low_memory_mode: false,
                 stream_batch_size: 8 * 1024,
@@ -3566,6 +3630,7 @@ mod tests {
                 geometry_bounding_boxes: None,
                 geometry_wkts: None,
                 geometry_hashes: None,
+                revision: None,
                 geometry_tolerance: 1e-6,
                 low_memory_mode: false,
                 stream_batch_size: 8 * 1024,
@@ -3680,6 +3745,7 @@ mod tests {
             )]))),
             geometry_wkts: None,
             geometry_hashes: None,
+            revision: None,
             geometry_tolerance: 1e-6,
             low_memory_mode: false,
             stream_batch_size: 8 * 1024,
