@@ -1,7 +1,8 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use crossbeam::channel::Sender;
 use ifc_model::IfcModel;
+use ifc_step::EntityId;
 use ifc_schema::SpatialType;
 use lbd_ontology::{
     bot_adjacent_element, bot_adjacent_zone, bot_contains_element, bot_contains_zone, bot_element,
@@ -12,8 +13,8 @@ use lbd_topology::{build_topology, TopologyEdgeKind, TopologyGraph};
 
 use crate::{
     element_resource_iri, ifcowl_element_iri, ifcowl_spatial_iri, normalize_base_uri,
-    object_subject, sorted_values, spatial_class, spatial_resource_iri,
-    topology_interface_resource_iri, ConvertOptions, StreamError, MAX_STREAM_BATCH_SIZE,
+    object_subject, object_subject_and_guid, sorted_values, spatial_class, spatial_resource_iri,
+    topology_interface_iri_for_guids, ConvertOptions, StreamError, MAX_STREAM_BATCH_SIZE,
     MIN_STREAM_BATCH_SIZE,
 };
 
@@ -59,7 +60,7 @@ where
 {
     // Spatial node rdf:type (bot:Site, bot:Building, bot:Storey, bot:Space, bot:Zone)
     for node in sorted_values(&model.spatial_nodes) {
-        let subject = spatial_resource_iri(base, node.spatial_type, &node.guid);
+        let subject = spatial_resource_iri(base, &node.guid);
         emit(Triple {
             subject,
             predicate: rdf_type(),
@@ -85,7 +86,7 @@ where
         let Some(parent) = model.spatial_nodes.get(&parent_id) else {
             continue;
         };
-        let parent_subject = spatial_resource_iri(base, parent.spatial_type, &parent.guid);
+        let parent_subject = spatial_resource_iri(base, &parent.guid);
         let mut sorted_child_ids = child_ids.clone();
         sorted_child_ids.sort_unstable();
         for child_id in sorted_child_ids {
@@ -105,11 +106,7 @@ where
                 emit(Triple {
                     subject: parent_subject.clone(),
                     predicate,
-                    object: Object::Iri(spatial_resource_iri(
-                        base,
-                        child.spatial_type,
-                        &child.guid,
-                    )),
+                    object: Object::Iri(spatial_resource_iri(base, &child.guid)),
                 })?;
             }
         }
@@ -142,7 +139,7 @@ where
         let Some(structure) = model.spatial_nodes.get(&structure_id) else {
             continue;
         };
-        let structure_subject = spatial_resource_iri(base, structure.spatial_type, &structure.guid);
+        let structure_subject = spatial_resource_iri(base, &structure.guid);
         let Some(contained_element) = model.elements.get(&element_id) else {
             continue;
         };
@@ -155,7 +152,7 @@ where
 
     if options.emit_ifcowl_links {
         for node in sorted_values(&model.spatial_nodes) {
-            let subject = spatial_resource_iri(base, node.spatial_type, &node.guid);
+            let subject = spatial_resource_iri(base, &node.guid);
             emit(Triple {
                 subject,
                 predicate: owl_same_as(),
@@ -210,12 +207,34 @@ where
         }
     }
 
-    let mut typed_interfaces = HashSet::new();
+    // Interfaces are derived nodes whose plugin-side id is a hash of STEP entity
+    // numbers, which churn on every export. Collect both endpoints per interface
+    // first so the emitted IRI can be keyed on their GUIDs instead — see
+    // `topology_interface_iri_for_guids`.
+    //
+    // BTreeMap rather than HashMap so emission order is deterministic for a given
+    // model, which keeps byte-comparison of two conversion runs meaningful.
+    let mut interface_targets: BTreeMap<EntityId, Vec<(String, String)>> = BTreeMap::new();
     for (interface_id, target_id) in topology.core_pairs_of_kind(TopologyEdgeKind::InterfaceOf) {
-        let Some(target) = object_subject(model, base, target_id) else {
+        let Some((target_iri, target_guid)) = object_subject_and_guid(model, base, target_id) else {
             continue;
         };
-        let subject = topology_interface_resource_iri(base, interface_id);
+        interface_targets
+            .entry(interface_id)
+            .or_default()
+            .push((target_iri, target_guid));
+    }
+
+    let mut typed_interfaces = HashSet::new();
+    for targets in interface_targets.values() {
+        // An interface joins exactly two elements. Any other arity means one
+        // endpoint failed to resolve above, or the topology pass produced
+        // something we do not understand — skip rather than mint an IRI that
+        // cannot be made stable.
+        let [first, second] = targets.as_slice() else {
+            continue;
+        };
+        let subject = topology_interface_iri_for_guids(base, &first.1, &second.1);
         if typed_interfaces.insert(subject.clone()) {
             emit(Triple {
                 subject: subject.clone(),
@@ -223,11 +242,13 @@ where
                 object: Object::Iri(bot_interface()),
             })?;
         }
-        emit(Triple {
-            subject,
-            predicate: bot_interface_of(),
-            object: Object::Iri(target),
-        })?;
+        for target in [first, second] {
+            emit(Triple {
+                subject: subject.clone(),
+                predicate: bot_interface_of(),
+                object: Object::Iri(target.0.clone()),
+            })?;
+        }
     }
     Ok(())
 }

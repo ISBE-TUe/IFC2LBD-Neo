@@ -8,8 +8,6 @@
 //! Keep this in lockstep with the LBD output: any change here changes the RDF
 //! subject IRIs too.
 
-use ifc_schema::{product_type_name, SpatialType};
-
 use crate::{compress_uuid_string, ElementNode, SpatialNode};
 
 /// IFC GlobalIds are 22-char base64-compressed UUIDs; anything else is expanded
@@ -83,57 +81,44 @@ pub fn pascal_ifc_name(entity_name: &str) -> String {
     out
 }
 
-fn spatial_segment(spatial_type: SpatialType) -> &'static str {
-    match spatial_type {
-        SpatialType::Project => "project",
-        SpatialType::Site => "site",
-        SpatialType::Building => "building",
-        SpatialType::Storey => "storey",
-        SpatialType::Space => "space",
-        SpatialType::Zone
-        | SpatialType::Facility
-        | SpatialType::FacilityPart
-        | SpatialType::ExternalSpatialElement => "zone",
-    }
-}
-
-/// Resource IRI for a spatial node, e.g. `<base>/storey_<guid>`.
-pub fn spatial_resource_iri(base: &str, spatial_type: SpatialType, guid: &str) -> String {
-    format!(
-        "{base}/{}",
-        lbd_local_name(spatial_segment(spatial_type), guid)
-    )
-}
-
-/// Resource IRI for an element node, e.g. `<base>/wall_<guid>`.
+/// Resource IRI for any IFC object, spatial or element: `<base>/<guid>`.
 ///
-/// The prefix mirrors the Java LBD converter: building element proxies use the
-/// generic `buildingelement` prefix, recognised product types use their lowercase
-/// product name, and everything else falls back to `ifcowl_<lowercasepascal>`.
-pub fn element_resource_iri(base: &str, element: &ElementNode) -> String {
-    format!(
-        "{base}/{}",
-        lbd_local_name(&element_prefix(element.entity_name.as_str()), &element.guid)
-    )
+/// Deliberately carries **no type segment**. An object's identity is its GlobalId
+/// and nothing else; the IFC class lives in `rdf:type`, where a reclassification
+/// changes the type without breaking identity.
+///
+/// The former `<base>/wall_<guid>` / `<base>/storey_<guid>` scheme folded the type
+/// into the identity, with two consequences that are fatal for versioning:
+///
+/// - Reclassifying a wall to a curtain wall minted a *new* IRI for the same
+///   physical object, orphaning every property and geometry state attached to the
+///   old one — the element read as deleted-and-replaced across revisions.
+/// - The `ifcowl_<name>` fallback meant the prefix changed when **this converter**
+///   learned a new product type, so IRIs moved with no change to the IFC file at
+///   all. Identity was not stable across converter versions.
+///
+/// Note the prefixes on `geometry_<guid>`, `interface_<id>` and the property/state
+/// IRIs are **not** type decoration — they distinguish different resources *about*
+/// the same object, and must stay. Removing those would collapse an element and
+/// its geometry node onto one IRI.
+pub fn object_resource_iri(base: &str, guid: &str) -> String {
+    format!("{base}/{}", prefix_safe_guid_token(guid))
 }
 
-fn element_prefix(entity_name: &str) -> String {
-    match entity_name {
-        "IFCBUILDINGELEMENTPROXY" => "buildingelement".to_string(),
-        _ => product_type_name(entity_name)
-            .map(|name| name.to_ascii_lowercase())
-            .unwrap_or_else(|| {
-                format!(
-                    "ifcowl_{}",
-                    pascal_ifc_name(entity_name).to_ascii_lowercase()
-                )
-            }),
-    }
+/// Resource IRI for a spatial node. Thin alias over [`object_resource_iri`] kept
+/// for call-site readability; spatial and element nodes share one IRI scheme.
+pub fn spatial_resource_iri(base: &str, guid: &str) -> String {
+    object_resource_iri(base, guid)
+}
+
+/// Resource IRI for an element node. See [`object_resource_iri`].
+pub fn element_resource_iri(base: &str, element: &ElementNode) -> String {
+    object_resource_iri(base, &element.guid)
 }
 
 /// Resource IRI for a spatial node value object.
 pub fn spatial_node_resource_iri(base: &str, node: &SpatialNode) -> String {
-    spatial_resource_iri(base, node.spatial_type, node.guid.as_str())
+    object_resource_iri(base, node.guid.as_str())
 }
 
 #[cfg(test)]

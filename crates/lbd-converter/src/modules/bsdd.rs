@@ -8,8 +8,7 @@ use ifc_model::IfcModel;
 use ifc_schema::SpatialType;
 use ifc_step::{decode_ifc_unicode, StepSchema, StepValue};
 use lbd_ontology::{
-    opm_current_property_state, opm_has_property_state, opm_property, prov_generated_at_time,
-    rdf_type, rdfs_label, schema_value, qudt_unit, Object, Triple, XSD,
+    opm_has_property_state, opm_property, rdf_type, rdfs_label, Object, Triple, XSD,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -1372,7 +1371,7 @@ pub fn stream_bsdd_with_cache(
                 sender,
                 batch_size,
                 Triple {
-                    subject: spatial_resource_iri(&base, spatial.spatial_type, &spatial.guid),
+                    subject: spatial_resource_iri(&base, &spatial.guid),
                     predicate: rdf_type(),
                     object: Object::Iri(bsdd_class(class_code)),
                 },
@@ -1565,7 +1564,7 @@ fn process_element_psets(
             )
         } else if let Some(spatial) = model.spatial_nodes.get(&object_id) {
             (
-                spatial_resource_iri(base, spatial.spatial_type, &spatial.guid),
+                spatial_resource_iri(base, &spatial.guid),
                 spatial.guid.to_string(),
                 spatial_ifc_class(spatial.spatial_type).to_string(),
             )
@@ -1767,7 +1766,7 @@ fn process_element_quantities(
             )
         } else if let Some(spatial) = model.spatial_nodes.get(&object_id) {
             (
-                spatial_resource_iri(base, spatial.spatial_type, &spatial.guid),
+                spatial_resource_iri(base, &spatial.guid),
                 spatial.guid.to_string(),
                 spatial_ifc_class(spatial.spatial_type).to_string(),
             )
@@ -2266,55 +2265,9 @@ fn emit_property(
         }
     } // end if !compact
 
-    push(
-        batch,
-        sender,
-        batch_size,
-        Triple {
-            subject: state_subject.clone(),
-            predicate: rdf_type(),
-            object: Object::Iri(opm_current_property_state()),
-        },
-        triples,
-    )?;
-    push(
-        batch,
-        sender,
-        batch_size,
-        Triple {
-            subject: state_subject.clone(),
-            predicate: prov_generated_at_time(),
-            object: Object::TypedLiteral {
-                value: generated_at.to_string(),
-                datatype: format!("{XSD}dateTime"),
-            },
-        },
-        triples,
-    )?;
-    push(
-        batch,
-        sender,
-        batch_size,
-        Triple {
-            subject: state_subject.clone(),
-            predicate: schema_value(),
-            object: value,
-        },
-        triples,
-    )?;
-    if let Some(unit) = unit {
-        push(
-            batch,
-            sender,
-            batch_size,
-            Triple {
-                subject: state_subject,
-                predicate: qudt_unit(),
-                object: Object::Iri(unit),
-            },
-            triples,
-        )?;
-    }
+    crate::emit_opm_state_block(&state_subject, value, unit, generated_at, &mut |triple| {
+        push(batch, sender, batch_size, triple, triples)
+    })?;
 
     Ok(())
 }
@@ -2338,7 +2291,7 @@ fn emit_bsdd_standard_attrs(
     let mut triples = 0_u64;
 
     for spatial in sorted_values(&model.spatial_nodes) {
-        let subject = spatial_resource_iri(base, spatial.spatial_type, &spatial.guid);
+        let subject = spatial_resource_iri(base, &spatial.guid);
         let guid = spatial.guid.as_str();
 
         emit_std_attr(&subject, base, "globalIdIfcRoot", guid,
@@ -2527,31 +2480,9 @@ fn emit_std_attr(
         predicate: opm_has_property_state(),
         object: Object::Iri(state_iri.clone()),
     }, triples)?;
-    push(batch, sender, batch_size, Triple {
-        subject: state_iri.clone(),
-        predicate: rdf_type(),
-        object: Object::Iri(opm_current_property_state()),
-    }, triples)?;
-    push(batch, sender, batch_size, Triple {
-        subject: state_iri.clone(),
-        predicate: prov_generated_at_time(),
-        object: Object::TypedLiteral {
-            value: generated_at.to_string(),
-            datatype: format!("{XSD}dateTime"),
-        },
-    }, triples)?;
-    push(batch, sender, batch_size, Triple {
-        subject: state_iri.clone(),
-        predicate: schema_value(),
-        object: value,
-    }, triples)?;
-    if let Some(unit) = unit {
-        push(batch, sender, batch_size, Triple {
-            subject: state_iri,
-            predicate: qudt_unit(),
-            object: Object::Iri(unit),
-        }, triples)?;
-    }
+    crate::emit_opm_state_block(&state_iri, value, unit, generated_at, &mut |triple| {
+        push(batch, sender, batch_size, triple, triples)
+    })?;
     Ok(())
 }
 

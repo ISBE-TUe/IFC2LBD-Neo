@@ -30,7 +30,7 @@ where
 {
     // Spatial nodes
     for node in sorted_values(&model.spatial_nodes) {
-        let subject = spatial_resource_iri(base, node.spatial_type, &node.guid);
+        let subject = spatial_resource_iri(base, &node.guid);
         let geom_node = geometry_resource_iri(base, &node.guid);
         emit(Triple {
             subject: subject.clone(),

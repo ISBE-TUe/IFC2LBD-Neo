@@ -24,7 +24,7 @@ pub use modules::ifcowl::stream_ifcowl;
 pub use modules::omg_fog::stream_omg_fog;
 pub use modules::props_opm::stream_props_opm;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::OnceLock;
 
@@ -43,7 +43,8 @@ use lbd_ontology::{
     express_has_boolean, express_has_double, express_has_integer, express_has_logical,
     express_has_string, express_logical_value, geo_as_wkt, geo_geometry, geo_wkt_literal,
     lbd_has_bounding_box, list_has_contents, list_has_next, opm_current_property_state,
-    opm_has_property_state, opm_property, owl_imports, owl_object_property, owl_ontology,
+    opm_has_property_state, opm_property, opm_property_state, owl_imports, owl_object_property,
+    owl_ontology,
     props_property, prov_generated_at_time, qudt_unit, rdf_li, rdf_seq, rdf_type, rdfs_comment,
     rdfs_label, schema_value, unit_iri, Object, Triple, EXPRESS, XSD,
 };
@@ -387,13 +388,33 @@ where
                 })?;
             }
 
+            // Group both endpoints per interface before minting the IRI, so it can
+            // be keyed on their GUIDs rather than on churn-prone STEP entity ids —
+            // see `topology_interface_iri_for_guids`. Kept in lockstep with the
+            // modular path in `modules::bot::emit_topology_edges`; the two must
+            // agree or the WASM and CLI paths emit different interface IRIs.
+            let mut interface_targets: BTreeMap<EntityId, Vec<(String, String)>> = BTreeMap::new();
             for (interface_id, target_id) in
                 topology.core_pairs_of_kind(TopologyEdgeKind::InterfaceOf)
             {
-                let interface_subject = topology_interface_resource_iri(base, interface_id);
-                let Some(target) = object_subject(model, base, target_id) else {
+                let Some((target_iri, target_guid)) =
+                    object_subject_and_guid(model, base, target_id)
+                else {
                     continue;
                 };
+                interface_targets
+                    .entry(interface_id)
+                    .or_default()
+                    .push((target_iri, target_guid));
+            }
+
+            for targets in interface_targets.values() {
+                // An interface joins exactly two elements; any other arity means an
+                // endpoint failed to resolve, so skip rather than mint an unstable IRI.
+                let [first, second] = targets.as_slice() else {
+                    continue;
+                };
+                let interface_subject = topology_interface_iri_for_guids(base, &first.1, &second.1);
                 if emitted_interface_types.insert(interface_subject.clone()) {
                     emit(Triple {
                         subject: interface_subject.clone(),
@@ -401,11 +422,13 @@ where
                         object: Object::Iri(bot_interface()),
                     })?;
                 }
-                emit(Triple {
-                    subject: interface_subject,
-                    predicate: bot_interface_of(),
-                    object: Object::Iri(target),
-                })?;
+                for target in [first, second] {
+                    emit(Triple {
+                        subject: interface_subject.clone(),
+                        predicate: bot_interface_of(),
+                        object: Object::Iri(target.0.clone()),
+                    })?;
+                }
             }
 
             if options.enable_topology_extension {
@@ -459,7 +482,7 @@ where
                 continue;
             };
             let structure_subject =
-                spatial_resource_iri(base, structure.spatial_type, &structure.guid);
+                spatial_resource_iri(base, &structure.guid);
             for contained_id in baseline_containment_closure(model, element_id) {
                 let Some(contained_element) = model.elements.get(&contained_id) else {
                     continue;
@@ -486,7 +509,7 @@ where
             let Some(storey) = model.spatial_nodes.get(&storey_id) else {
                 continue;
             };
-            let structure_subject = spatial_resource_iri(base, storey.spatial_type, &storey.guid);
+            let structure_subject = spatial_resource_iri(base, &storey.guid);
             let mut child_space_ids = model
                 .children_of
                 .get(&storey_id)
@@ -1727,13 +1750,45 @@ where
         predicate: opm_has_property_state(),
         object: Object::Iri(state_subject.clone()),
     })?;
+    emit_opm_state_block(&state_subject, value, unit, generated_at, emit)?;
+    Ok(property_subject)
+}
+
+/// Emit the OPM state block shared by every property-state producer.
+///
+/// This is the single definition of what a state node looks like. The `props`
+/// producer, bSDD properties (`modules::bsdd::emit_property`) and bSDD standard
+/// attributes (`modules::bsdd::emit_std_attr`) all route through here, so a change
+/// to the state shape lands once instead of being hand-copied three times.
+///
+/// Generic over the emit closure so the batching producers in `modules::bsdd` can
+/// pass a wrapper around their `push` helper.
+pub(crate) fn emit_opm_state_block<E, F>(
+    state_subject: &str,
+    value: Object,
+    unit: Option<String>,
+    generated_at: &str,
+    emit: &mut F,
+) -> Result<(), E>
+where
+    F: FnMut(Triple) -> Result<(), E>,
+{
+    // Both classes, deliberately. CurrentPropertyState is a subclass of
+    // PropertyState, but consumers run with `axiomsClass=NoAxioms`, so nothing
+    // infers the superclass. Without the base type asserted, "give me every state
+    // of this property, current or outdated" matches nothing.
     emit(Triple {
-        subject: state_subject.clone(),
+        subject: state_subject.to_string(),
+        predicate: rdf_type(),
+        object: Object::Iri(opm_property_state()),
+    })?;
+    emit(Triple {
+        subject: state_subject.to_string(),
         predicate: rdf_type(),
         object: Object::Iri(opm_current_property_state()),
     })?;
     emit(Triple {
-        subject: state_subject.clone(),
+        subject: state_subject.to_string(),
         predicate: prov_generated_at_time(),
         object: Object::TypedLiteral {
             value: generated_at.to_string(),
@@ -1741,18 +1796,18 @@ where
         },
     })?;
     emit(Triple {
-        subject: state_subject.clone(),
+        subject: state_subject.to_string(),
         predicate: schema_value(),
         object: value,
     })?;
     if let Some(unit) = unit {
         emit(Triple {
-            subject: state_subject,
+            subject: state_subject.to_string(),
             predicate: qudt_unit(),
             object: Object::Iri(unit),
         })?;
     }
-    Ok(property_subject)
+    Ok(())
 }
 
 fn emit_standard_attribute_triples<E, F>(
@@ -1768,7 +1823,7 @@ where
     F: FnMut(Triple) -> Result<(), E>,
 {
     for node in sorted_values(&model.spatial_nodes) {
-        let subject = spatial_resource_iri(base, node.spatial_type, &node.guid);
+        let subject = spatial_resource_iri(base, &node.guid);
         emit_standard_attribute(
             &subject,
             base,
@@ -2344,8 +2399,36 @@ fn bbox_wkt_polyhedral_surface(bbox: &BoundingBox) -> String {
     )
 }
 
-fn topology_interface_resource_iri(base: &str, interface_id: EntityId) -> String {
-    format!("{base}/interface_{interface_id}")
+/// Stable IRI for a derived topology interface, keyed on the GUIDs of the two
+/// elements it joins.
+///
+/// The topology plugin identifies interfaces by hashing the two elements' STEP
+/// entity ids (`plugin_topology_full::interface_id`). Those are instance numbers
+/// (`#1234`) that the authoring tool reassigns on **every** export, so an IRI
+/// derived from them changed on every re-export even when nothing in the model
+/// moved — interfaces were undiffable, and no versioning scheme could rest on
+/// them.
+///
+/// GUIDs are the stable anchor, so the IRI is re-derived from them here, at the
+/// point identity is actually minted, rather than threading a GUID lookup down
+/// through the geometry pipeline.
+///
+/// The pair is sorted so the same two elements produce the same IRI regardless of
+/// which order the topology pass happened to visit them in. GUIDs are spelled out
+/// rather than hashed: it costs ~45 characters of local name, and in exchange the
+/// IRI says which two elements it joins, so an adjacency diff between revisions is
+/// readable without a reverse lookup.
+pub(crate) fn topology_interface_iri_for_guids(base: &str, guid_a: &str, guid_b: &str) -> String {
+    let (first, second) = if guid_a <= guid_b {
+        (guid_a, guid_b)
+    } else {
+        (guid_b, guid_a)
+    };
+    format!(
+        "{base}/interface_{}_{}",
+        prefix_safe_guid_token(first),
+        prefix_safe_guid_token(second)
+    )
 }
 
 /// Deterministic state IRI keyed on (predicate_local, set_scope, element_guid, value_repr).
@@ -2542,7 +2625,7 @@ fn is_express_scalar_class(class_name: &str) -> bool {
 
 fn object_subject(model: &IfcModel, base: &str, object_id: EntityId) -> Option<String> {
     if let Some(node) = model.spatial_nodes.get(&object_id) {
-        return Some(spatial_resource_iri(base, node.spatial_type, &node.guid));
+        return Some(spatial_resource_iri(base, &node.guid));
     }
     if let Some(element) = model.elements.get(&object_id) {
         return Some(element_resource_iri(base, element));
@@ -2557,7 +2640,7 @@ fn object_subject_and_guid(
 ) -> Option<(String, String)> {
     if let Some(node) = model.spatial_nodes.get(&object_id) {
         return Some((
-            spatial_resource_iri(base, node.spatial_type, &node.guid),
+            spatial_resource_iri(base, &node.guid),
             node.guid.to_string(),
         ));
     }
@@ -2955,11 +3038,7 @@ mod tests {
             .values()
             .find(|node| node.spatial_type == SpatialType::Project)
             .unwrap();
-        let subject = spatial_resource_iri(
-            "https://example.test/base",
-            project.spatial_type,
-            &project.guid,
-        );
+        let subject = spatial_resource_iri("https://example.test/base", &project.guid);
         assert!(subject.contains(project.guid.as_str()));
         assert!(!subject.contains('-'));
     }
@@ -3256,28 +3335,48 @@ mod tests {
         assert_eq!(token_a.len(), 16);
     }
 
+    /// Element identity must not depend on the IFC class.
+    ///
+    /// This replaces an earlier test that asserted the `buildingelement_<guid>`
+    /// prefix scheme. That scheme is gone deliberately: it made a reclassification
+    /// (wall → curtain wall) mint a new IRI for the same physical object, orphaning
+    /// its property and geometry history across revisions. The `ifcowl_<name>`
+    /// fallback was worse — the prefix moved when *this converter* learned a new
+    /// product type, so IRIs were not even stable across converter versions.
     #[test]
-    fn test_element_resource_iri_uses_java_style_proxy_prefix() {
-        let element = ifc_model::ElementNode {
-            id: 1,
-            guid: "3$3qM0qBX2JfSuV0oX6e4A".into(),
-            entity_name: "IFCBUILDINGELEMENTPROXY".into(),
-            name: None,
-            description: None,
-            object_type: None,
-            predefined_type: None,
-            tag: None,
-            overall_height: None,
-            overall_width: None,
-            number_of_risers: None,
-            number_of_treads: None,
-            riser_height: None,
-            tread_length: None,
-        };
+    fn element_iri_is_guid_only_and_ignores_entity_type() {
+        fn node(entity_name: &str) -> ifc_model::ElementNode {
+            ifc_model::ElementNode {
+                id: 1,
+                guid: "3$3qM0qBX2JfSuV0oX6e4A".into(),
+                entity_name: entity_name.into(),
+                name: None,
+                description: None,
+                object_type: None,
+                predefined_type: None,
+                tag: None,
+                overall_height: None,
+                overall_width: None,
+                number_of_risers: None,
+                number_of_treads: None,
+                riser_height: None,
+                tread_length: None,
+            }
+        }
 
-        let iri = element_resource_iri("https://example.test/base", &element);
-        assert!(iri.contains("/buildingelement_"));
-        assert!(!iri.contains("/buildingelementproxy_"));
+        let base = "https://example.test/base";
+        let proxy = element_resource_iri(base, &node("IFCBUILDINGELEMENTPROXY"));
+        let wall = element_resource_iri(base, &node("IFCWALL"));
+        let curtain = element_resource_iri(base, &node("IFCCURTAINWALL"));
+
+        // Reclassification must not change identity.
+        assert_eq!(proxy, wall);
+        assert_eq!(wall, curtain);
+
+        // No type segment survives, and `$` is still escaped rather than folded.
+        assert_eq!(wall, "https://example.test/base/3%243qM0qBX2JfSuV0oX6e4A");
+        assert!(!wall.contains("buildingelement"));
+        assert!(!wall.contains("wall"));
     }
 
     #[test]
@@ -3739,9 +3838,8 @@ mod tests {
     fn project_to_site_link_is_not_misrepresented_as_bot_zone_containment() {
         let triples = bot_triples(PROJECT_AND_SITE);
 
-        let project =
-            spatial_resource_iri(TEST_BASE, SpatialType::Project, "0project00000000000000");
-        let site = spatial_resource_iri(TEST_BASE, SpatialType::Site, "0site000000000000000000");
+        let project = spatial_resource_iri(TEST_BASE, "0project00000000000000");
+        let site = spatial_resource_iri(TEST_BASE, "0site000000000000000000");
 
         assert!(!triples.iter().any(|triple| {
             triple.subject == project

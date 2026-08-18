@@ -239,6 +239,17 @@ pub fn geo_wkt_literal() -> String {
     format!("{GEO}wktLiteral")
 }
 
+/// Base class for every property state, current or outdated.
+///
+/// `opm:CurrentPropertyState` and `opm:OutdatedPropertyState` are both declared
+/// `rdfs:subClassOf` this in the OPM vocabulary, so in a reasoning store it would
+/// be inferred. Consumers run Blazegraph namespaces with `axiomsClass=NoAxioms`
+/// and `truthMaintenance=false`, so nothing materialises the superclass — it has
+/// to be asserted explicitly or `?s a opm:PropertyState` matches nothing.
+pub fn opm_property_state() -> String {
+    format!("{OPM}PropertyState")
+}
+
 pub fn opm_current_property_state() -> String {
     format!("{OPM}CurrentPropertyState")
 }
