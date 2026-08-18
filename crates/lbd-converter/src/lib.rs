@@ -74,6 +74,19 @@ pub struct ConvertOptions {
     pub geometry_relations: Option<Arc<Vec<GeometryRelation>>>,
     pub geometry_bounding_boxes: Option<Arc<HashMap<EntityId, BoundingBox>>>,
     pub geometry_wkts: Option<Arc<HashMap<EntityId, String>>>,
+    /// Per-element geometry content hashes, from
+    /// `plugin_geometry_producer::stable_element_geometry_hashes`.
+    ///
+    /// When present, the OMG producer hangs an `opm:PropertyState` off each geometry
+    /// node carrying the hash as `schema:value`, which is what turns "did this
+    /// element's geometry change between revisions" into a graph query instead of a
+    /// mesh comparison. `None` simply omits the states, so the module degrades to its
+    /// previous behaviour rather than failing.
+    ///
+    /// Deliberately a plain map of primitives: `lbd-converter` does not depend on
+    /// `tessellated-model` or `ifc-geometry`, and it should not have to in order to
+    /// emit a number computed upstream.
+    pub geometry_hashes: Option<Arc<HashMap<EntityId, u64>>>,
     pub geometry_tolerance: f64,
     pub low_memory_mode: bool,
     pub stream_batch_size: usize,
@@ -115,6 +128,7 @@ impl Default for ConvertOptions {
             geometry_relations: None,
             geometry_bounding_boxes: None,
             geometry_wkts: None,
+            geometry_hashes: None,
             geometry_tolerance: 1e-6,
             low_memory_mode: false,
             stream_batch_size: STREAM_BATCH_SIZE,
@@ -2445,6 +2459,22 @@ pub(crate) fn property_state_iri(
     format!("{base}/s_{:016x}", fnv1a64(key.as_bytes()))
 }
 
+/// Deterministic IRI for a geometry `opm:PropertyState`, keyed on (geometry node, value).
+///
+/// Follows the `s_`/`cs_` property-state convention — an FNV-1a-64 of the key rather
+/// than a readable composite — with a `gs_` discriminator so geometry states are
+/// distinguishable from property states at a glance in a query result.
+///
+/// Value-derived, so an unchanged mesh reuses the same state node across conversions
+/// while a changed one mints a new IRI for free. Note this means an element whose
+/// geometry reverts to an earlier value reuses the earlier state IRI; once revisions
+/// exist, the revision has to enter this key (see PLAN-opm-versioning section 5.4)
+/// or the `Current`/`Outdated` typing of that shared node becomes ambiguous.
+pub(crate) fn geometry_state_iri(base: &str, geom_node: &str, value_repr: &str) -> String {
+    let key = format!("{geom_node}|{value_repr}");
+    format!("{base}/gs_{:016x}", fnv1a64(key.as_bytes()))
+}
+
 /// Canonical property IRI shared across elements when (pset_name, prop_name, value) is identical.
 /// Key: (predicate_local, pset_name, value_repr) — no element GUID, no pset GUID.
 /// Scoping by pset_name prevents "Height" in Pset_WallCommon from merging with
@@ -2995,6 +3025,7 @@ mod tests {
                 geometry_relations: None,
                 geometry_bounding_boxes: None,
                 geometry_wkts: None,
+                geometry_hashes: None,
                 geometry_tolerance: 1e-6,
                 low_memory_mode: false,
                 stream_batch_size: 8 * 1024,
@@ -3440,6 +3471,7 @@ mod tests {
                 geometry_relations: None,
                 geometry_bounding_boxes: None,
                 geometry_wkts: None,
+                geometry_hashes: None,
                 geometry_tolerance: 1e-6,
                 low_memory_mode: false,
                 stream_batch_size: 8 * 1024,
@@ -3496,6 +3528,7 @@ mod tests {
                 geometry_relations: None,
                 geometry_bounding_boxes: None,
                 geometry_wkts: None,
+                geometry_hashes: None,
                 geometry_tolerance: 1e-6,
                 low_memory_mode: false,
                 stream_batch_size: 8 * 1024,
@@ -3532,6 +3565,7 @@ mod tests {
                 geometry_relations: None,
                 geometry_bounding_boxes: None,
                 geometry_wkts: None,
+                geometry_hashes: None,
                 geometry_tolerance: 1e-6,
                 low_memory_mode: false,
                 stream_batch_size: 8 * 1024,
@@ -3645,6 +3679,7 @@ mod tests {
                 },
             )]))),
             geometry_wkts: None,
+            geometry_hashes: None,
             geometry_tolerance: 1e-6,
             low_memory_mode: false,
             stream_batch_size: 8 * 1024,

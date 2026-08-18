@@ -708,6 +708,7 @@ impl PipelineRunner {
             geometry_relations: None,
             geometry_bounding_boxes: None, // Computed later from STEP data if bbox is active
             geometry_wkts: None,
+            geometry_hashes: None,
             geometry_tolerance: 1e-6,
             low_memory_mode: mode == ExecutionMode::Lowmem,
             stream_batch_size,

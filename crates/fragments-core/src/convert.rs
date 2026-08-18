@@ -560,9 +560,54 @@ fn build_meshes<'a>(
     ))
 }
 
+// ── Stable hashing primitives ───────────────────────────────────────────────
+//
+// Shared with `plugin-geometry-producer`, which is what actually builds the `.frag`
+// artifact in the CLI and worker pipelines and therefore owns the per-element
+// geometry hash. These live here because this crate is the common dependency; the
+// alternative was a third copy of "hash some geometry" in a repo that already had
+// two.
+//
+// Deliberately NOT built on `hash_shell` below, nor on
+// `plugin_geometry_producer::hash_ifc_mesh`. Both of those hash with
+// `DefaultHasher`, whose algorithm std explicitly documents as unspecified and free
+// to change between Rust releases. That is fine for their purpose — deciding "have I
+// already seen this shell in this process" — and fatal for a hash written into RDF
+// and compared against a previous revision, because a toolchain upgrade would make
+// every element in every model read as changed.
+//
+// FNV-1a-64 has a fixed definition, so a persisted value stays comparable.
+
+pub const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+pub const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+pub fn fnv_feed(mut hash: u64, bytes: &[u8]) -> u64 {
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
+/// Quantisation applied to coordinates before hashing, in the model's length unit
+/// (metres in practice). 1e4 gives 0.1 mm resolution.
+///
+/// This is the change-detection threshold: movement smaller than this yields no new
+/// hash. Intentional — without quantisation, floating-point noise from independent
+/// tessellations would report spurious changes on every export — but sub-0.1mm
+/// movement is invisible to versioning as a consequence.
+pub const HASH_PRECISION: f64 = 10_000.0;
+
+pub fn quantise(value: f64) -> i64 {
+    (value * HASH_PRECISION).round() as i64
+}
+
 /// Geometry deduplication hash matching oracle's metric-based approach from loadShellGeometry.
 /// Oracle hash string: "${vertexCount}-${triangleCount}-${areaSum}-${biggestArea}-${volume}-${cx}-${cy}-${cz}-${x1}-${y1}-${z1}"
 /// All float values rounded to precision p = 10000.
+///
+/// In-run dedup only — see the note above `stable_shell_content_hash` for why this
+/// must not be persisted or compared across revisions.
 pub fn hash_shell(shell: &ShellGeometry) -> u64 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -1397,6 +1442,48 @@ mod tests {
             .parent()
             .unwrap()
             .to_path_buf()
+    }
+
+    // ── Stable hashing primitives ────────────────────────────────────────────
+    //
+    // The per-element geometry hash built on these lives in
+    // `plugin-geometry-producer`, which owns the artifact these values describe.
+    // What is pinned here is the algorithm itself, since both crates depend on it
+    // producing the same number forever.
+
+    #[test]
+    fn fnv_feed_is_deterministic_and_order_sensitive() {
+        assert_eq!(fnv_feed(FNV_OFFSET, b"ab"), fnv_feed(FNV_OFFSET, b"ab"));
+        assert_ne!(fnv_feed(FNV_OFFSET, b"ab"), fnv_feed(FNV_OFFSET, b"ba"));
+    }
+
+    /// Quantisation defines the change-detection floor at 0.1 mm.
+    #[test]
+    fn quantise_rounds_to_tenth_millimetre() {
+        assert_eq!(quantise(1.0), 10_000);
+        // Sub-quantum movement collapses — deliberate, so float noise from
+        // independent tessellations does not read as a geometry change.
+        assert_eq!(quantise(1.0), quantise(1.0 + 1.0e-6));
+        // A tenth of a millimetre does not.
+        assert_ne!(quantise(1.0), quantise(1.0001));
+    }
+
+    /// The algorithm must not depend on the Rust version.
+    ///
+    /// This is why these primitives exist rather than reusing `hash_shell` or
+    /// `hash_ifc_mesh`, both of which hash with `DefaultHasher` — std documents that
+    /// algorithm as unspecified and free to change between releases, which would make
+    /// every element in every model read as changed after a toolchain upgrade.
+    ///
+    /// Pinning the literal turns that regression into a test failure rather than a
+    /// silent mass-diff. If FNV-1a-64 or `HASH_PRECISION` is ever changed
+    /// deliberately, this value changes with it — and every geometry hash in every
+    /// namespace then needs a re-ingest, so treat an unexpected failure here as a
+    /// real finding rather than a number to update.
+    #[test]
+    fn fnv_is_pinned_to_a_known_value() {
+        let hash = fnv_feed(FNV_OFFSET, &quantise(1.0).to_le_bytes());
+        assert_eq!(hash, 0xdd82_7944_d4be_7338);
     }
 
     #[test]

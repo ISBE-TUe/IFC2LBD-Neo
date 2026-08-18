@@ -1,11 +1,14 @@
 use crossbeam::channel::Sender;
 use ifc_model::IfcModel;
-use lbd_ontology::{omg_geometry, omg_has_geometry, rdf_type, Object, Triple};
+use ifc_step::EntityId;
+use lbd_ontology::{
+    omg_geometry, omg_has_geometry, opm_has_property_state, rdf_type, Object, Triple,
+};
 
 use crate::{
-    element_resource_iri, geometry_resource_iri, normalize_base_uri, sorted_values,
-    spatial_resource_iri, ConvertOptions, StreamError, MAX_STREAM_BATCH_SIZE,
-    MIN_STREAM_BATCH_SIZE,
+    current_generated_at_rfc3339, element_resource_iri, geometry_resource_iri, geometry_state_iri,
+    normalize_base_uri, sorted_values, spatial_resource_iri, ConvertOptions, StreamError,
+    MAX_STREAM_BATCH_SIZE, MIN_STREAM_BATCH_SIZE,
 };
 
 /// Emit OMG geometry-link triples for every element and spatial node.
@@ -21,13 +24,15 @@ use crate::{
 /// because they are already emitted by the bbox enricher pass.
 pub(crate) fn emit_omg_fog<E, F>(
     model: &IfcModel,
-    _options: &ConvertOptions,
+    options: &ConvertOptions,
     base: &str,
     emit: &mut F,
 ) -> Result<(), E>
 where
     F: FnMut(Triple) -> Result<(), E>,
 {
+    let generated_at = current_generated_at_rfc3339();
+
     // Spatial nodes
     for node in sorted_values(&model.spatial_nodes) {
         let subject = spatial_resource_iri(base, &node.guid);
@@ -38,10 +43,11 @@ where
             object: Object::Iri(geom_node.clone()),
         })?;
         emit(Triple {
-            subject: geom_node,
+            subject: geom_node.clone(),
             predicate: rdf_type(),
             object: Object::Iri(omg_geometry()),
         })?;
+        emit_geometry_state(options, base, &geom_node, node.id, &generated_at, emit)?;
     }
 
     // Building elements
@@ -54,13 +60,60 @@ where
             object: Object::Iri(geom_node.clone()),
         })?;
         emit(Triple {
-            subject: geom_node,
+            subject: geom_node.clone(),
             predicate: rdf_type(),
             object: Object::Iri(omg_geometry()),
         })?;
+        emit_geometry_state(options, base, &geom_node, element.id, &generated_at, emit)?;
     }
 
     Ok(())
+}
+
+/// Hang an OPM state carrying this element's geometry content hash off its geometry
+/// node, when the geometry producer supplied one.
+///
+/// This is what makes geometry change detectable by query. Previously the `omg` graph
+/// was identical whether a wall had moved ten metres or not at all, because it carried
+/// only a link and a type — which is also why the module was disabled in the worker as
+/// an "actively misleading signal". The state is the consumer that fixes that.
+///
+/// Absent from the map means the element has no geometry, so there is nothing to state.
+/// The hash is tagged with its algorithm so a future change to it is distinguishable in
+/// the data rather than silently comparable against old values.
+fn emit_geometry_state<E, F>(
+    options: &ConvertOptions,
+    base: &str,
+    geom_node: &str,
+    entity_id: EntityId,
+    generated_at: &str,
+    emit: &mut F,
+) -> Result<(), E>
+where
+    F: FnMut(Triple) -> Result<(), E>,
+{
+    let Some(hashes) = options.geometry_hashes.as_ref() else {
+        return Ok(());
+    };
+    let Some(hash) = hashes.get(&entity_id) else {
+        return Ok(());
+    };
+
+    let value = format!("fnv1a64:{hash:016x}");
+    let state_subject = geometry_state_iri(base, geom_node, &value);
+
+    emit(Triple {
+        subject: geom_node.to_string(),
+        predicate: opm_has_property_state(),
+        object: Object::Iri(state_subject.clone()),
+    })?;
+    crate::emit_opm_state_block(
+        &state_subject,
+        Object::Literal(value),
+        None,
+        generated_at,
+        emit,
+    )
 }
 
 /// Stream OMG geometry-link triples in bounded batches.

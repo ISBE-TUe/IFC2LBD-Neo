@@ -4,6 +4,8 @@
 //! via sidecar_tx. Supported formats: fragments (default), gltf, parquet, ifc5.
 
 
+use std::collections::HashMap;
+
 use crossbeam::channel::Sender;
 use lbd_pipeline::{
     DerivedFile, FailurePolicy, ParallelismMode, PipelineContext, PipelinePlugin, PipelineStage,
@@ -65,7 +67,97 @@ pub(crate) fn mesh_min_corner(mesh: &ifc_geometry::Mesh) -> [f64; 3] {
     min
 }
 
+// ── Stable per-element geometry hash (OPM versioning) ───────────────────────
+//
+// Different purpose from `hash_ifc_mesh` below, which is an in-run dedup key. This
+// value is written into RDF as the `schema:value` of a geometry `opm:PropertyState`
+// and compared against the previous revision, so it has to survive a toolchain
+// upgrade. `hash_ifc_mesh` hashes with `DefaultHasher`, whose algorithm std documents
+// as unspecified between Rust releases — using it here would make every element in
+// every model read as changed after a compiler bump.
+//
+// Primitives come from `fragments_core` so the repo has one FNV definition rather
+// than a third copy of "hash some geometry".
+
+/// Fold a quantised column-major 4×4 transform into a hash.
+fn feed_colmajor(hash: u64, matrix: &[f64; 16]) -> u64 {
+    let mut hash = hash;
+    for component in matrix {
+        hash = fragments_core::fnv_feed(hash, &fragments_core::quantise(*component).to_le_bytes());
+    }
+    hash
+}
+
+/// Content hash of a triangulated mesh: vertex positions, then indices.
+///
+/// Positions are hashed **raw**, without the min-corner normalisation
+/// `hash_ifc_mesh` applies. That normalisation exists to make dedup
+/// translation-invariant, which is precisely the opposite of what change detection
+/// wants: where an assembly's placement is baked into its vertices, normalising it
+/// away would hide the movement we are trying to detect.
+fn stable_mesh_content_hash(mesh: &ifc_geometry::Mesh) -> u64 {
+    let mut hash = fragments_core::FNV_OFFSET;
+    hash = fragments_core::fnv_feed(hash, &((mesh.positions.len() / 3) as u64).to_le_bytes());
+    hash = fragments_core::fnv_feed(hash, &(mesh.indices.len() as u64).to_le_bytes());
+    for component in &mesh.positions {
+        hash = fragments_core::fnv_feed(
+            hash,
+            &fragments_core::quantise(f64::from(*component)).to_le_bytes(),
+        );
+    }
+    for index in &mesh.indices {
+        hash = fragments_core::fnv_feed(hash, &u64::from(*index).to_le_bytes());
+    }
+    hash
+}
+
+/// Per-element geometry content hashes, keyed by STEP entity id.
+///
+/// Computed from the same `TessellatedModel` the `.frag` is serialised from, so the
+/// value cannot drift from what is actually rendered — the point being that the graph
+/// acts as a queryable proxy for the artifact's contents.
+///
+/// Elements with no geometry are **absent** rather than mapped to a sentinel: they
+/// have no geometry to have changed, and one shared sentinel would collide across
+/// every such element.
+pub fn stable_element_geometry_hashes(tessellated: &TessellatedModel) -> HashMap<u64, u64> {
+    let mut hashes = HashMap::new();
+    for flat_mesh in &tessellated.meshes {
+        if flat_mesh.geometries.is_empty() {
+            continue;
+        }
+
+        // Sub-hashes are sorted before folding, so the result does not depend on the
+        // order the tessellator happened to visit an element's geometries in —
+        // otherwise a reordered export reports a change that never happened.
+        let mut geometry_hashes: Vec<u64> = Vec::with_capacity(flat_mesh.geometries.len());
+        for geometry in &flat_mesh.geometries {
+            let mut hash = stable_mesh_content_hash(&geometry.mesh);
+            hash = feed_colmajor(hash, &geometry.local_transform);
+            geometry_hashes.push(hash);
+        }
+        geometry_hashes.sort_unstable();
+
+        // World placement is folded in separately from the per-geometry transforms. A
+        // pure translation of the whole element leaves every mesh and local transform
+        // untouched, so without this the most common revision change of all —
+        // something moved — would be invisible.
+        let mut element_hash = feed_colmajor(
+            fragments_core::FNV_OFFSET,
+            &flat_mesh.geometries[0].world_transform,
+        );
+        for hash in &geometry_hashes {
+            element_hash = fragments_core::fnv_feed(element_hash, &hash.to_le_bytes());
+        }
+        hashes.insert(flat_mesh.express_id, element_hash);
+    }
+    hashes
+}
+
 /// Exact content hash of a mesh: quantized vertices (relative to `off`) + index list.
+///
+/// In-run dedup only — see the note above `stable_element_geometry_hashes` for why
+/// this must not be persisted or compared across revisions.
 ///
 /// Passing the mesh min-corner as `off` makes the hash TRANSLATION-INVARIANT, so
 /// identical shapes at different positions (repeated railing balusters, explicit

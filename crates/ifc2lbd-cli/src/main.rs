@@ -342,6 +342,7 @@ fn main() -> anyhow::Result<()> {
         geometry_relations: None,
         geometry_bounding_boxes: None,
         geometry_wkts: None,
+        geometry_hashes: None,
         geometry_tolerance: args.geometry_tolerance,
         low_memory_mode: false,
         stream_batch_size: 8 * 1024,

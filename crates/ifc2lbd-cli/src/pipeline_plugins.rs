@@ -448,6 +448,29 @@ impl ProducerPlugin for OmgFogProducerPlugin {
                 "OmgFogProducerPlugin: missing ConvertOptions in context".to_string(),
             )
         })?;
+        // Per-element geometry hashes for the OPM geometry states.
+        //
+        // Computed here from the TessellatedModel rather than read from the geometry
+        // producer, deliberately: both are Produce-stage modules and run in parallel,
+        // so omg cannot assume neo-geometry-producer has already run. The
+        // TessellatedModel is a Preprocess output, so it is guaranteed present by the
+        // time any producer starts.
+        //
+        // Same input and same function as the artifact path, so the value cannot
+        // disagree with what gets serialised into the .frag.
+        let options = match ctx.get::<tessellated_model::TessellatedModel>() {
+            Some(tessellated) => {
+                let hashes =
+                    plugin_geometry_producer::stable_element_geometry_hashes(&tessellated);
+                let mut with_hashes = (*options).clone();
+                with_hashes.geometry_hashes = Some(std::sync::Arc::new(hashes));
+                std::sync::Arc::new(with_hashes)
+            }
+            // No tessellation in this run (geometry preprocessing not enabled): emit the
+            // structural links only, as before. Degrades rather than fails.
+            None => options,
+        };
+
         let (raw_sender, raw_receiver) =
             crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
         let graph_iri = BatchKind::new(format!("{}/omg", options.base_uri.trim_end_matches('/')));
