@@ -100,7 +100,7 @@ where
     };
 
     let value = format!("fnv1a64:{hash:016x}");
-    let state_subject = geometry_state_iri(base, geom_node, &value, options.revision.as_deref());
+    let state_subject = geometry_state_iri(base, geom_node, &value);
 
     emit(Triple {
         subject: geom_node.to_string(),

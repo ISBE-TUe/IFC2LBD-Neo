@@ -1402,7 +1402,6 @@ pub fn stream_bsdd_with_cache(
                     cache,
                     &unit_by_type,
                     &generated_at,
-                    options.revision.as_deref(),
                     compact,
                     pset_dedup.as_ref(),
                     sender,
@@ -1429,7 +1428,6 @@ pub fn stream_bsdd_with_cache(
             cache,
             &unit_by_type,
             &generated_at,
-            options.revision.as_deref(),
             compact,
             pset_dedup.as_ref(),
             sender,
@@ -1462,7 +1460,6 @@ pub fn stream_bsdd_with_cache(
                         cache,
                         &unit_by_type,
                         &generated_at,
-                        options.revision.as_deref(),
                         compact,
                         qty_dedup.as_ref(),
                         sender,
@@ -1489,7 +1486,6 @@ pub fn stream_bsdd_with_cache(
             cache,
             &unit_by_type,
             &generated_at,
-            options.revision.as_deref(),
             compact,
             qty_dedup.as_ref(),
             sender,
@@ -1511,7 +1507,6 @@ pub fn stream_bsdd_with_cache(
             &base,
             &unit_by_type,
             &generated_at,
-            options.revision.as_deref(),
             sender,
             batch_size,
         )?;
@@ -1555,7 +1550,6 @@ fn process_element_psets(
     cache: &BsddMatchCache,
     unit_by_type: &HashMap<String, String>,
     generated_at: &str,
-    revision: Option<&str>,
     compact: bool,
     dedup: Option<&Arc<Mutex<DedupSets>>>,
     sender: &Sender<Vec<Triple>>,
@@ -1696,7 +1690,6 @@ fn process_element_psets(
                     cache,
                     resolve_property_unit(psv, unit_by_type, model),
                     generated_at,
-                    revision,
                     compact,
                     dedup,
                     &mut local_unmatched,
@@ -1729,7 +1722,6 @@ fn process_element_psets(
                         cache,
                         None,
                         generated_at,
-                        revision,
                         compact,
                         dedup,
                         &mut local_unmatched,
@@ -1760,7 +1752,6 @@ fn process_element_quantities(
     cache: &BsddMatchCache,
     unit_by_type: &HashMap<String, String>,
     generated_at: &str,
-    revision: Option<&str>,
     compact: bool,
     dedup: Option<&Arc<Mutex<DedupSets>>>,
     sender: &Sender<Vec<Triple>>,
@@ -1908,7 +1899,6 @@ fn process_element_quantities(
                 cache,
                 resolve_quantity_unit(quantity.entity_name.as_str(), unit_by_type),
                 generated_at,
-                revision,
                 compact,
                 dedup,
                 &mut local_unmatched,
@@ -2037,7 +2027,6 @@ fn emit_property(
     cache: &BsddMatchCache,
     unit: Option<String>,
     generated_at: &str,
-    revision: Option<&str>,
     compact: bool,
     dedup: Option<&Arc<Mutex<DedupSets>>>,
     unmatched_histogram: &mut HashMap<String, u64>,
@@ -2072,25 +2061,12 @@ fn emit_property(
         // are shared across elements regardless of which pset entity they belong to.
         (
             crate::canonical_property_resource_iri(base, &predicate_local, pset_name, &value_repr),
-            crate::canonical_property_state_iri(
-                base,
-                &predicate_local,
-                pset_name,
-                &value_repr,
-                revision,
-            ),
+            crate::canonical_property_state_iri(base, &predicate_local, pset_name, &value_repr),
         )
     } else {
         (
             crate::property_resource_iri(base, &predicate_local, object_guid, pset_guid),
-            crate::property_state_iri(
-                base,
-                &predicate_local,
-                object_guid,
-                pset_guid,
-                crate::object_value_repr(&value),
-                revision,
-            ),
+            crate::property_state_iri(base, &predicate_local, object_guid, pset_guid, crate::object_value_repr(&value)),
         )
     };
 
@@ -2308,7 +2284,6 @@ fn emit_bsdd_standard_attrs(
     base: &str,
     unit_by_type: &HashMap<String, String>,
     generated_at: &str,
-    revision: Option<&str>,
     sender: &Sender<Vec<Triple>>,
     batch_size: usize,
 ) -> Result<u64, StreamError> {
@@ -2320,21 +2295,21 @@ fn emit_bsdd_standard_attrs(
         let guid = spatial.guid.as_str();
 
         emit_std_attr(&subject, base, "globalIdIfcRoot", guid,
-            Object::Literal(spatial.guid.to_string()), generated_at, revision, None,
+            Object::Literal(spatial.guid.to_string()), generated_at, None,
             &mut batch, sender, batch_size, &mut triples)?;
         if let Some(name) = &spatial.name {
             emit_std_attr(&subject, base, "nameIfcRoot", guid,
-                Object::Literal(name.to_string()), generated_at, revision, None,
+                Object::Literal(name.to_string()), generated_at, None,
                 &mut batch, sender, batch_size, &mut triples)?;
         }
         if let Some(desc) = spatial.description.as_ref().filter(|d| !d.is_empty()) {
             emit_std_attr(&subject, base, "descriptionIfcRoot", guid,
-                Object::Literal(desc.to_string()), generated_at, revision, None,
+                Object::Literal(desc.to_string()), generated_at, None,
                 &mut batch, sender, batch_size, &mut triples)?;
         }
         if let Some(object_type) = &spatial.object_type {
             emit_std_attr(&subject, base, "objectTypeIfcObject", guid,
-                Object::Literal(object_type.to_string()), generated_at, revision, None,
+                Object::Literal(object_type.to_string()), generated_at, None,
                 &mut batch, sender, batch_size, &mut triples)?;
         }
         if let Some(long_name) = &spatial.long_name {
@@ -2343,31 +2318,31 @@ fn emit_bsdd_standard_attrs(
                 _ => "longNameIfcSpatialElement",
             };
             emit_std_attr(&subject, base, attr, guid,
-                Object::Literal(long_name.to_string()), generated_at, revision, None,
+                Object::Literal(long_name.to_string()), generated_at, None,
                 &mut batch, sender, batch_size, &mut triples)?;
         }
         if let Some(elevation) = spatial.elevation {
             emit_std_attr(&subject, base, "elevationIfcBuildingStorey", guid,
                 Object::TypedLiteral { value: elevation.to_string(), datatype: format!("{XSD}double") },
-                generated_at, revision, unit_by_type.get("LENGTHUNIT").cloned(),
+                generated_at, unit_by_type.get("LENGTHUNIT").cloned(),
                 &mut batch, sender, batch_size, &mut triples)?;
         }
         if let Some(ref_elevation) = spatial.ref_elevation {
             emit_std_attr(&subject, base, "refElevationIfcSite", guid,
                 Object::TypedLiteral { value: ref_elevation.to_string(), datatype: format!("{XSD}double") },
-                generated_at, revision, unit_by_type.get("LENGTHUNIT").cloned(),
+                generated_at, unit_by_type.get("LENGTHUNIT").cloned(),
                 &mut batch, sender, batch_size, &mut triples)?;
         }
         if let Some(elev_ref_height) = spatial.elevation_of_ref_height {
             emit_std_attr(&subject, base, "elevationOfRefHeightIfcBuilding", guid,
                 Object::TypedLiteral { value: elev_ref_height.to_string(), datatype: format!("{XSD}double") },
-                generated_at, revision, unit_by_type.get("LENGTHUNIT").cloned(),
+                generated_at, unit_by_type.get("LENGTHUNIT").cloned(),
                 &mut batch, sender, batch_size, &mut triples)?;
         }
         if let Some(elev_terrain) = spatial.elevation_of_terrain {
             emit_std_attr(&subject, base, "elevationOfTerrainIfcBuilding", guid,
                 Object::TypedLiteral { value: elev_terrain.to_string(), datatype: format!("{XSD}double") },
-                generated_at, revision, unit_by_type.get("LENGTHUNIT").cloned(),
+                generated_at, unit_by_type.get("LENGTHUNIT").cloned(),
                 &mut batch, sender, batch_size, &mut triples)?;
         }
     }
@@ -2377,26 +2352,26 @@ fn emit_bsdd_standard_attrs(
         let guid = element.guid.as_str();
 
         emit_std_attr(&subject, base, "globalIdIfcRoot", guid,
-            Object::Literal(element.guid.to_string()), generated_at, revision, None,
+            Object::Literal(element.guid.to_string()), generated_at, None,
             &mut batch, sender, batch_size, &mut triples)?;
         if let Some(name) = &element.name {
             emit_std_attr(&subject, base, "nameIfcRoot", guid,
-                Object::Literal(name.to_string()), generated_at, revision, None,
+                Object::Literal(name.to_string()), generated_at, None,
                 &mut batch, sender, batch_size, &mut triples)?;
         }
         if let Some(desc) = element.description.as_ref().filter(|d| !d.is_empty()) {
             emit_std_attr(&subject, base, "descriptionIfcRoot", guid,
-                Object::Literal(desc.to_string()), generated_at, revision, None,
+                Object::Literal(desc.to_string()), generated_at, None,
                 &mut batch, sender, batch_size, &mut triples)?;
         }
         if let Some(object_type) = &element.object_type {
             emit_std_attr(&subject, base, "objectTypeIfcObject", guid,
-                Object::Literal(object_type.to_string()), generated_at, revision, None,
+                Object::Literal(object_type.to_string()), generated_at, None,
                 &mut batch, sender, batch_size, &mut triples)?;
         }
         if let Some(tag) = &element.tag {
             emit_std_attr(&subject, base, "batid", guid,
-                Object::Literal(tag.to_string()), generated_at, revision, None,
+                Object::Literal(tag.to_string()), generated_at, None,
                 &mut batch, sender, batch_size, &mut triples)?;
         }
         if let Some(overall_height) = element.overall_height {
@@ -2407,7 +2382,7 @@ fn emit_bsdd_standard_attrs(
             };
             emit_std_attr(&subject, base, attr, guid,
                 Object::TypedLiteral { value: overall_height.to_string(), datatype: format!("{XSD}double") },
-                generated_at, revision, unit_by_type.get("LENGTHUNIT").cloned(),
+                generated_at, unit_by_type.get("LENGTHUNIT").cloned(),
                 &mut batch, sender, batch_size, &mut triples)?;
         }
         if let Some(overall_width) = element.overall_width {
@@ -2418,31 +2393,31 @@ fn emit_bsdd_standard_attrs(
             };
             emit_std_attr(&subject, base, attr, guid,
                 Object::TypedLiteral { value: overall_width.to_string(), datatype: format!("{XSD}double") },
-                generated_at, revision, unit_by_type.get("LENGTHUNIT").cloned(),
+                generated_at, unit_by_type.get("LENGTHUNIT").cloned(),
                 &mut batch, sender, batch_size, &mut triples)?;
         }
         if let Some(n) = element.number_of_risers {
             emit_std_attr(&subject, base, "numberOfRiserIfcStairFlight", guid,
                 Object::TypedLiteral { value: n.to_string(), datatype: format!("{XSD}integer") },
-                generated_at, revision, None,
+                generated_at, None,
                 &mut batch, sender, batch_size, &mut triples)?;
         }
         if let Some(n) = element.number_of_treads {
             emit_std_attr(&subject, base, "numberOfTreadsIfcStairFlight", guid,
                 Object::TypedLiteral { value: n.to_string(), datatype: format!("{XSD}integer") },
-                generated_at, revision, None,
+                generated_at, None,
                 &mut batch, sender, batch_size, &mut triples)?;
         }
         if let Some(h) = element.riser_height {
             emit_std_attr(&subject, base, "riserHeightIfcStairFlight", guid,
                 Object::TypedLiteral { value: h.to_string(), datatype: format!("{XSD}double") },
-                generated_at, revision, unit_by_type.get("LENGTHUNIT").cloned(),
+                generated_at, unit_by_type.get("LENGTHUNIT").cloned(),
                 &mut batch, sender, batch_size, &mut triples)?;
         }
         if let Some(l) = element.tread_length {
             emit_std_attr(&subject, base, "treadLengthIfcStairFlight", guid,
                 Object::TypedLiteral { value: l.to_string(), datatype: format!("{XSD}double") },
-                generated_at, revision, unit_by_type.get("LENGTHUNIT").cloned(),
+                generated_at, unit_by_type.get("LENGTHUNIT").cloned(),
                 &mut batch, sender, batch_size, &mut triples)?;
         }
     }
@@ -2462,7 +2437,6 @@ fn emit_std_attr(
     guid: &str,
     value: Object,
     generated_at: &str,
-    revision: Option<&str>,
     unit: Option<String>,
     batch: &mut Vec<Triple>,
     sender: &Sender<Vec<Triple>>,
@@ -2477,7 +2451,6 @@ fn emit_std_attr(
         guid,
         "standardAttributes",
         crate::object_value_repr(&value),
-        revision,
     );
 
     // Universal navigation — same shape as regular bSDD properties.
