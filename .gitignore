@@ -6,6 +6,7 @@
 
 # Rust
 target/
+target-*/
 **/*.rs.bk
 vendor/*/target/
 vendor/*/Cargo.lock
