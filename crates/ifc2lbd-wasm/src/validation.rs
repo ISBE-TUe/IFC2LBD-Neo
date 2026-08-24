@@ -245,6 +245,24 @@ pub(crate) fn resolve_execution_settings(
         .map(|v| v == "true")
         .unwrap_or(false);
 
+    // OPM level can be set on any of the three OPM-emitting modules.
+    let opm_level = {
+        let raw = bsdd_entries
+            .and_then(|e| e.get("opm_level"))
+            .or_else(|| configs.get(PROPS_OPM_PRODUCER_ID).and_then(|e| e.get("opm_level")))
+            .or_else(|| configs.get(OMG_FOG_PRODUCER_ID).and_then(|e| e.get("opm_level")));
+        match raw.map(String::as_str) {
+            None => lbd_converter::OpmLevel::L2,
+            Some("l2") => lbd_converter::OpmLevel::L2,
+            Some("l3") => lbd_converter::OpmLevel::L3,
+            Some(other) => {
+                return Err(WasmApiError::Message(format!(
+                    "invalid `opm_level={other}` (expected l2 or l3)"
+                )));
+            }
+        }
+    };
+
     Ok(ExecutionSettings {
         output_formats,
         active_plugin_ids: active.iter().map(|s| s.to_string()).collect(),
@@ -265,6 +283,7 @@ pub(crate) fn resolve_execution_settings(
         bsdd_compact,
         bsdd_include_standard_attrs,
         bsdd_dedup_properties,
+        opm_level,
     })
 }
 
@@ -321,12 +340,30 @@ pub(crate) fn validate_typed_module_configs(
             NQUADS_CHUNKED_SERIALIZER_ID => validate_nquads_chunked_serializer_options(entries)?,
             TURTLE_SERIALIZER_ID => validate_turtle_serializer_options(entries)?,
             FILE_EXPORT_ID => validate_file_export_options(entries)?,
-            BEO_PRODUCER_ID | PROPS_OPM_PRODUCER_ID | OMG_FOG_PRODUCER_ID => {
+            BEO_PRODUCER_ID => {
                 if !entries.is_empty() {
                     return Err(WasmApiError::Message(format!(
                         "module `{}` does not support options",
                         module_id
                     )));
+                }
+            }
+            PROPS_OPM_PRODUCER_ID | OMG_FOG_PRODUCER_ID => {
+                for (key, value) in entries {
+                    match key.as_str() {
+                        "opm_level" => {
+                            if !["l2", "l3"].contains(&value.as_str()) {
+                                return Err(WasmApiError::Message(format!(
+                                    "`{module_id}.opm_level` must be l2 or l3, got `{value}`"
+                                )));
+                            }
+                        }
+                        other => {
+                            return Err(WasmApiError::Message(format!(
+                                "unknown option `{module_id}.{other}` (supported: opm_level)"
+                            )));
+                        }
+                    }
                 }
             }
             BOT_PRODUCER_ID => {
@@ -511,9 +548,17 @@ pub(crate) fn validate_bsdd_producer_options(
                     )));
                 }
             }
+            "opm_level" => {
+                if !["l2", "l3"].contains(&value.as_str()) {
+                    return Err(WasmApiError::Message(format!(
+                        "`neo-bsdd-producer.opm_level` must be l2 or l3, got `{}`",
+                        value
+                    )));
+                }
+            }
             other => {
                 return Err(WasmApiError::Message(format!(
-                    "unknown option `neo-bsdd-producer.{}` (supported: profile, compact, include_standard_attrs, dedup_properties)",
+                    "unknown option `neo-bsdd-producer.{}` (supported: profile, compact, include_standard_attrs, dedup_properties, opm_level)",
                     other
                 )));
             }

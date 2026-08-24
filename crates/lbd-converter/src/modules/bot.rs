@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, HashSet};
 
 use crossbeam::channel::Sender;
 use ifc_model::IfcModel;
-use ifc_step::EntityId;
 use ifc_schema::SpatialType;
+use ifc_step::EntityId;
 use lbd_ontology::{
     bot_adjacent_element, bot_adjacent_zone, bot_contains_element, bot_contains_zone, bot_element,
     bot_has_building, bot_has_space, bot_has_storey, bot_has_sub_element, bot_interface,
@@ -216,7 +216,8 @@ where
     // model, which keeps byte-comparison of two conversion runs meaningful.
     let mut interface_targets: BTreeMap<EntityId, Vec<(String, String)>> = BTreeMap::new();
     for (interface_id, target_id) in topology.core_pairs_of_kind(TopologyEdgeKind::InterfaceOf) {
-        let Some((target_iri, target_guid)) = object_subject_and_guid(model, base, target_id) else {
+        let Some((target_iri, target_guid)) = object_subject_and_guid(model, base, target_id)
+        else {
             continue;
         };
         interface_targets

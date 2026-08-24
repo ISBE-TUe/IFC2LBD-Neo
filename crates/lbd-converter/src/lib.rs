@@ -44,9 +44,8 @@ use lbd_ontology::{
     express_has_string, express_logical_value, geo_as_wkt, geo_geometry, geo_wkt_literal,
     lbd_has_bounding_box, list_has_contents, list_has_next, opm_current_property_state,
     opm_has_property_state, opm_property, opm_property_state, owl_imports, owl_object_property,
-    owl_ontology,
-    props_property, prov_generated_at_time, qudt_unit, rdf_li, rdf_seq, rdf_type, rdfs_comment,
-    rdfs_label, schema_value, unit_iri, Object, Triple, EXPRESS, XSD,
+    owl_ontology, props_property, prov_generated_at_time, qudt_unit, rdf_li, rdf_seq, rdf_type,
+    rdfs_comment, rdfs_label, schema_value, seas_value, unit_iri, Object, Triple, EXPRESS, XSD,
 };
 #[cfg(test)]
 use lbd_ontology::{bot_has_building, owl_same_as, rdf_member};
@@ -108,6 +107,23 @@ pub struct ConvertOptions {
     /// elements sharing height=3m point to one canonical property node instead of N copies.
     /// The element→hasProperty link is still emitted per element. Default false.
     pub bsdd_dedup_properties: bool,
+    /// OPM level: L2 (flat `seas:value` on property node) or L3 (three-hop state chain).
+    /// Default L2.
+    pub opm_level: OpmLevel,
+}
+
+/// OPM emission level.
+///
+/// - **L2** (default): flat — `seas:value` and `qudt:unit` directly on the
+///   property node. No state node, no `hasPropertyState`, no `generatedAtTime`,
+///   no `schema:value`.
+/// - **L3**: three-hop state chain — `opm:hasPropertyState` link from property
+///   to a state node carrying `schema:value`, `qudt:unit`, and `prov:generatedAtTime`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OpmLevel {
+    #[default]
+    L2,
+    L3,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -138,6 +154,7 @@ impl Default for ConvertOptions {
             bsdd_compact: false,
             bsdd_include_standard_attrs: true,
             bsdd_dedup_properties: false,
+            opm_level: OpmLevel::default(),
         }
     }
 }
@@ -495,8 +512,7 @@ where
             let Some(structure) = model.spatial_nodes.get(&structure_id) else {
                 continue;
             };
-            let structure_subject =
-                spatial_resource_iri(base, &structure.guid);
+            let structure_subject = spatial_resource_iri(base, &structure.guid);
             for contained_id in baseline_containment_closure(model, element_id) {
                 let Some(contained_element) = model.elements.get(&contained_id) else {
                     continue;
@@ -640,6 +656,7 @@ where
                                 value,
                                 resolve_property_unit(property, &unit_by_type, model),
                                 &generated_at,
+                                options.opm_level,
                                 &mut emit,
                             )?;
                         }
@@ -671,6 +688,7 @@ where
                             value,
                             None,
                             &generated_at,
+                            options.opm_level,
                             &mut emit,
                         )?;
                     }
@@ -720,6 +738,7 @@ where
                         value,
                         resolve_quantity_unit(quantity.entity_name.as_str(), &unit_by_type),
                         &generated_at,
+                        options.opm_level,
                         &mut emit,
                     )?;
                 }
@@ -742,6 +761,7 @@ where
         base,
         &unit_by_type,
         &generated_at,
+        options.opm_level,
         &mut declared_standard_attributes,
         &mut declared_standard_attribute_comments,
         &mut emit,
@@ -1728,6 +1748,7 @@ fn emit_property_state<E, F>(
     value: Object,
     unit: Option<String>,
     generated_at: &str,
+    opm_level: OpmLevel,
     emit: &mut F,
 ) -> Result<String, E>
 where
@@ -1759,67 +1780,109 @@ where
             object: Object::Literal(label),
         })?;
     }
-    emit(Triple {
-        subject: property_subject.clone(),
-        predicate: opm_has_property_state(),
-        object: Object::Iri(state_subject.clone()),
-    })?;
-    emit_opm_state_block(&state_subject, value, unit, generated_at, emit)?;
+    emit_opm_value(
+        &property_subject,
+        &state_subject,
+        value,
+        unit,
+        generated_at,
+        opm_level,
+        emit,
+    )?;
     Ok(property_subject)
 }
 
-/// Emit the OPM state block shared by every property-state producer.
+/// Emit the OPM value block shared by every property-state producer.
 ///
-/// This is the single definition of what a state node looks like. The `props`
-/// producer, bSDD properties (`modules::bsdd::emit_property`) and bSDD standard
-/// attributes (`modules::bsdd::emit_std_attr`) all route through here, so a change
-/// to the state shape lands once instead of being hand-copied three times.
+/// This is the single definition of what a property's value looks like. The
+/// `props` producer, bSDD properties (`modules::bsdd::emit_property`), bSDD
+/// standard attributes (`modules::bsdd::emit_std_attr`), and the OMG geometry
+/// hash producer (`modules::omg_fog::emit_geometry_state`) all route through
+/// here, so a change to the value shape lands once instead of being hand-copied.
 ///
-/// Generic over the emit closure so the batching producers in `modules::bsdd` can
-/// pass a wrapper around their `push` helper.
-pub(crate) fn emit_opm_state_block<E, F>(
+/// Generic over the emit closure so the batching producers in `modules::bsdd`
+/// can pass a wrapper around their `push` helper.
+///
+/// # OPM levels
+///
+/// - **L2** (default): flat — `seas:value` and `qudt:unit` directly on the
+///   property node. No state node, no `hasPropertyState`, no `generatedAtTime`,
+///   no `schema:value`. This is SEAS L2 (context-free evaluation).
+///
+/// - **L3**: three-hop state chain — `opm:hasPropertyState` link from property
+///   to a state node carrying `schema:value`, `qudt:unit`, and
+///   `prov:generatedAtTime`. This is the original behaviour.
+pub(crate) fn emit_opm_value<E, F>(
+    property_subject: &str,
     state_subject: &str,
     value: Object,
     unit: Option<String>,
     generated_at: &str,
+    opm_level: OpmLevel,
     emit: &mut F,
 ) -> Result<(), E>
 where
     F: FnMut(Triple) -> Result<(), E>,
 {
-    // Both classes, deliberately. CurrentPropertyState is a subclass of
-    // PropertyState, but consumers run with `axiomsClass=NoAxioms`, so nothing
-    // infers the superclass. Without the base type asserted, "give me every state
-    // of this property, current or outdated" matches nothing.
-    emit(Triple {
-        subject: state_subject.to_string(),
-        predicate: rdf_type(),
-        object: Object::Iri(opm_property_state()),
-    })?;
-    emit(Triple {
-        subject: state_subject.to_string(),
-        predicate: rdf_type(),
-        object: Object::Iri(opm_current_property_state()),
-    })?;
-    emit(Triple {
-        subject: state_subject.to_string(),
-        predicate: prov_generated_at_time(),
-        object: Object::TypedLiteral {
-            value: generated_at.to_string(),
-            datatype: format!("{XSD}dateTime"),
-        },
-    })?;
-    emit(Triple {
-        subject: state_subject.to_string(),
-        predicate: schema_value(),
-        object: value,
-    })?;
-    if let Some(unit) = unit {
-        emit(Triple {
-            subject: state_subject.to_string(),
-            predicate: qudt_unit(),
-            object: Object::Iri(unit),
-        })?;
+    match opm_level {
+        OpmLevel::L2 => {
+            // Flat: seas:value + qudt:unit directly on the property node.
+            emit(Triple {
+                subject: property_subject.to_string(),
+                predicate: seas_value(),
+                object: value,
+            })?;
+            if let Some(unit) = unit {
+                emit(Triple {
+                    subject: property_subject.to_string(),
+                    predicate: qudt_unit(),
+                    object: Object::Iri(unit),
+                })?;
+            }
+        }
+        OpmLevel::L3 => {
+            // Three-hop state chain (original behaviour).
+            emit(Triple {
+                subject: property_subject.to_string(),
+                predicate: opm_has_property_state(),
+                object: Object::Iri(state_subject.to_string()),
+            })?;
+            // Both classes, deliberately. CurrentPropertyState is a subclass of
+            // PropertyState, but consumers run with `axiomsClass=NoAxioms`, so
+            // nothing infers the superclass. Without the base type asserted,
+            // "give me every state of this property, current or outdated"
+            // matches nothing.
+            emit(Triple {
+                subject: state_subject.to_string(),
+                predicate: rdf_type(),
+                object: Object::Iri(opm_property_state()),
+            })?;
+            emit(Triple {
+                subject: state_subject.to_string(),
+                predicate: rdf_type(),
+                object: Object::Iri(opm_current_property_state()),
+            })?;
+            emit(Triple {
+                subject: state_subject.to_string(),
+                predicate: prov_generated_at_time(),
+                object: Object::TypedLiteral {
+                    value: generated_at.to_string(),
+                    datatype: format!("{XSD}dateTime"),
+                },
+            })?;
+            emit(Triple {
+                subject: state_subject.to_string(),
+                predicate: schema_value(),
+                object: value,
+            })?;
+            if let Some(unit) = unit {
+                emit(Triple {
+                    subject: state_subject.to_string(),
+                    predicate: qudt_unit(),
+                    object: Object::Iri(unit),
+                })?;
+            }
+        }
     }
     Ok(())
 }
@@ -1829,6 +1892,7 @@ fn emit_standard_attribute_triples<E, F>(
     base: &str,
     unit_by_type: &HashMap<String, String>,
     generated_at: &str,
+    opm_level: OpmLevel,
     declared_object_properties: &mut HashSet<String>,
     declared_property_comments: &mut HashSet<(String, String)>,
     emit: &mut F,
@@ -1848,6 +1912,7 @@ where
             None,
             declared_object_properties,
             declared_property_comments,
+            opm_level,
             emit,
         )?;
         if let Some(name) = node.name.as_ref() {
@@ -1861,6 +1926,7 @@ where
                 None,
                 declared_object_properties,
                 declared_property_comments,
+                opm_level,
                 emit,
             )?;
         }
@@ -1875,6 +1941,7 @@ where
                 None,
                 declared_object_properties,
                 declared_property_comments,
+                opm_level,
                 emit,
             )?;
         }
@@ -1889,6 +1956,7 @@ where
                 None,
                 declared_object_properties,
                 declared_property_comments,
+                opm_level,
                 emit,
             )?;
         }
@@ -1906,6 +1974,7 @@ where
                 None,
                 declared_object_properties,
                 declared_property_comments,
+                opm_level,
                 emit,
             )?;
         }
@@ -1923,6 +1992,7 @@ where
                 unit_by_type.get("LENGTHUNIT").cloned(),
                 declared_object_properties,
                 declared_property_comments,
+                opm_level,
                 emit,
             )?;
         }
@@ -1940,6 +2010,7 @@ where
                 unit_by_type.get("LENGTHUNIT").cloned(),
                 declared_object_properties,
                 declared_property_comments,
+                opm_level,
                 emit,
             )?;
         }
@@ -1957,6 +2028,7 @@ where
                 unit_by_type.get("LENGTHUNIT").cloned(),
                 declared_object_properties,
                 declared_property_comments,
+                opm_level,
                 emit,
             )?;
         }
@@ -1974,6 +2046,7 @@ where
                 unit_by_type.get("LENGTHUNIT").cloned(),
                 declared_object_properties,
                 declared_property_comments,
+                opm_level,
                 emit,
             )?;
         }
@@ -1991,6 +2064,7 @@ where
             None,
             declared_object_properties,
             declared_property_comments,
+            opm_level,
             emit,
         )?;
         if let Some(name) = element.name.as_ref() {
@@ -2004,6 +2078,7 @@ where
                 None,
                 declared_object_properties,
                 declared_property_comments,
+                opm_level,
                 emit,
             )?;
         }
@@ -2018,6 +2093,7 @@ where
                 None,
                 declared_object_properties,
                 declared_property_comments,
+                opm_level,
                 emit,
             )?;
         }
@@ -2032,6 +2108,7 @@ where
                 None,
                 declared_object_properties,
                 declared_property_comments,
+                opm_level,
                 emit,
             )?;
         }
@@ -2046,6 +2123,7 @@ where
                 None,
                 declared_object_properties,
                 declared_property_comments,
+                opm_level,
                 emit,
             )?;
         }
@@ -2067,6 +2145,7 @@ where
                 unit_by_type.get("LENGTHUNIT").cloned(),
                 declared_object_properties,
                 declared_property_comments,
+                opm_level,
                 emit,
             )?;
         }
@@ -2088,6 +2167,7 @@ where
                 unit_by_type.get("LENGTHUNIT").cloned(),
                 declared_object_properties,
                 declared_property_comments,
+                opm_level,
                 emit,
             )?;
         }
@@ -2105,6 +2185,7 @@ where
                 None,
                 declared_object_properties,
                 declared_property_comments,
+                opm_level,
                 emit,
             )?;
         }
@@ -2122,6 +2203,7 @@ where
                 None,
                 declared_object_properties,
                 declared_property_comments,
+                opm_level,
                 emit,
             )?;
         }
@@ -2139,6 +2221,7 @@ where
                 unit_by_type.get("LENGTHUNIT").cloned(),
                 declared_object_properties,
                 declared_property_comments,
+                opm_level,
                 emit,
             )?;
         }
@@ -2156,6 +2239,7 @@ where
                 unit_by_type.get("LENGTHUNIT").cloned(),
                 declared_object_properties,
                 declared_property_comments,
+                opm_level,
                 emit,
             )?;
         }
@@ -2234,6 +2318,7 @@ fn emit_standard_attribute<E, F>(
     unit: Option<String>,
     declared_object_properties: &mut HashSet<String>,
     declared_property_comments: &mut HashSet<(String, String)>,
+    opm_level: OpmLevel,
     emit: &mut F,
 ) -> Result<(), E>
 where
@@ -2266,6 +2351,7 @@ where
         value,
         unit,
         generated_at,
+        opm_level,
         emit,
     )?;
     Ok(())
@@ -3035,6 +3121,7 @@ mod tests {
                 bsdd_compact: false,
                 bsdd_include_standard_attrs: true,
                 bsdd_dedup_properties: false,
+                opm_level: OpmLevel::L2,
             },
         );
 
@@ -3481,6 +3568,7 @@ mod tests {
                 bsdd_compact: false,
                 bsdd_include_standard_attrs: true,
                 bsdd_dedup_properties: false,
+                opm_level: OpmLevel::L2,
             },
         );
 
@@ -3538,6 +3626,7 @@ mod tests {
                 bsdd_compact: false,
                 bsdd_include_standard_attrs: true,
                 bsdd_dedup_properties: false,
+                opm_level: OpmLevel::L2,
             },
         );
 
@@ -3575,6 +3664,7 @@ mod tests {
                 bsdd_compact: false,
                 bsdd_include_standard_attrs: true,
                 bsdd_dedup_properties: false,
+                opm_level: OpmLevel::L2,
             },
         );
         assert!(result
@@ -3689,6 +3779,7 @@ mod tests {
             bsdd_compact: false,
             bsdd_include_standard_attrs: true,
             bsdd_dedup_properties: false,
+            opm_level: OpmLevel::L2,
         };
         let result = convert_step_and_model(&step, &model, &options);
         assert!(result.triples.iter().any(|triple| {

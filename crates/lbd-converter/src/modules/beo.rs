@@ -6,7 +6,7 @@ use tracing::debug;
 
 use crate::{
     element_resource_iri, lbd_predefined_type_class_iri, lbd_product_class_iri, normalize_base_uri,
-    sorted_values, ConvertOptions, StreamError, MIN_STREAM_BATCH_SIZE, MAX_STREAM_BATCH_SIZE,
+    sorted_values, ConvertOptions, StreamError, MAX_STREAM_BATCH_SIZE, MIN_STREAM_BATCH_SIZE,
 };
 
 /// Emit BEO product-class `rdf:type` triples for IFC elements.

@@ -186,6 +186,7 @@ mod tests {
             bsdd_compact: false,
             bsdd_include_standard_attrs: false,
             bsdd_dedup_properties: false,
+            opm_level: lbd_converter::OpmLevel::L2,
         }
     }
 

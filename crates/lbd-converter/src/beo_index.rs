@@ -32,7 +32,12 @@ const BEO_CLASSES: &str = include_str!("../resources/beo_classes.txt");
 
 fn declared_classes() -> &'static HashSet<&'static str> {
     static CLASSES: OnceLock<HashSet<&'static str>> = OnceLock::new();
-    CLASSES.get_or_init(|| BEO_CLASSES.lines().filter(|line| !line.is_empty()).collect())
+    CLASSES.get_or_init(|| {
+        BEO_CLASSES
+            .lines()
+            .filter(|line| !line.is_empty())
+            .collect()
+    })
 }
 
 /// Whether BEO declares a class with this local name (e.g. `Railing`,
@@ -47,13 +52,7 @@ mod tests {
 
     #[test]
     fn declares_base_classes_reported_by_the_vocabulary_audit() {
-        for name in [
-            "Railing",
-            "Stair",
-            "Roof",
-            "Slab",
-            "BuildingElement",
-        ] {
+        for name in ["Railing", "Stair", "Roof", "Slab", "BuildingElement"] {
             assert!(beo_declares(name), "BEO should declare {name}");
         }
     }

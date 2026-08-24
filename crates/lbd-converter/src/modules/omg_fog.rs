@@ -1,9 +1,7 @@
 use crossbeam::channel::Sender;
 use ifc_model::IfcModel;
 use ifc_step::EntityId;
-use lbd_ontology::{
-    omg_geometry, omg_has_geometry, opm_has_property_state, rdf_type, Object, Triple,
-};
+use lbd_ontology::{omg_geometry, omg_has_geometry, rdf_type, Object, Triple};
 
 use crate::{
     current_generated_at_rfc3339, element_resource_iri, geometry_resource_iri, geometry_state_iri,
@@ -102,16 +100,13 @@ where
     let value = format!("fnv1a64:{hash:016x}");
     let state_subject = geometry_state_iri(base, geom_node, &value);
 
-    emit(Triple {
-        subject: geom_node.to_string(),
-        predicate: opm_has_property_state(),
-        object: Object::Iri(state_subject.clone()),
-    })?;
-    crate::emit_opm_state_block(
+    crate::emit_opm_value(
+        geom_node,
         &state_subject,
         Object::Literal(value),
         None,
         generated_at,
+        options.opm_level,
         emit,
     )
 }

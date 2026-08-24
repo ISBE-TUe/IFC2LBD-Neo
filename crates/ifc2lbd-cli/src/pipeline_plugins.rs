@@ -460,8 +460,7 @@ impl ProducerPlugin for OmgFogProducerPlugin {
         // disagree with what gets serialised into the .frag.
         let options = match ctx.get::<tessellated_model::TessellatedModel>() {
             Some(tessellated) => {
-                let hashes =
-                    plugin_geometry_producer::stable_element_geometry_hashes(&tessellated);
+                let hashes = plugin_geometry_producer::stable_element_geometry_hashes(&tessellated);
                 let mut with_hashes = (*options).clone();
                 with_hashes.geometry_hashes = Some(std::sync::Arc::new(hashes));
                 std::sync::Arc::new(with_hashes)

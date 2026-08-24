@@ -3,8 +3,8 @@ use ifc_model::IfcModel;
 use lbd_ontology::Triple;
 
 use crate::{
-    emit_props_opm_inner, normalize_base_uri, ConvertOptions, StreamError,
-    MIN_STREAM_BATCH_SIZE, MAX_STREAM_BATCH_SIZE,
+    emit_props_opm_inner, normalize_base_uri, ConvertOptions, StreamError, MAX_STREAM_BATCH_SIZE,
+    MIN_STREAM_BATCH_SIZE,
 };
 
 /// Stream direct OPM property and quantity triples in bounded batches.

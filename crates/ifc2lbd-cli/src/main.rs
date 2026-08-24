@@ -14,7 +14,9 @@ use anyhow::Context;
 use clap::{Parser, ValueEnum};
 use ifc_model::build_model;
 use ifc_step::parse_step_file;
-use lbd_converter::{list_embedded_profiles, score_profile_for_model, ConvertOptions, IfcowlMode};
+use lbd_converter::{
+    list_embedded_profiles, score_profile_for_model, ConvertOptions, IfcowlMode, OpmLevel,
+};
 use lbd_serializer::{
     serialize_turtle_batch_raw_to_writer, serialize_turtle_batch_to_writer,
     serialize_turtle_batches_to_writer, serialize_turtle_grouped_to_writer, write_nquads_batch,
@@ -178,6 +180,7 @@ struct ExecutionSettings {
     bsdd_compact: bool,
     bsdd_include_standard_attrs: bool,
     bsdd_dedup_properties: bool,
+    opm_level: OpmLevel,
     compress_output: bool,
 }
 
@@ -352,6 +355,7 @@ fn main() -> anyhow::Result<()> {
         bsdd_compact: settings.bsdd_compact,
         bsdd_include_standard_attrs: settings.bsdd_include_standard_attrs,
         bsdd_dedup_properties: settings.bsdd_dedup_properties,
+        opm_level: settings.opm_level,
     };
 
     let preprocess_ids: Vec<String> = activation_plan
@@ -1380,6 +1384,12 @@ fn validate_typed_module_configs(
         if module_id == lbd_pipeline::BSDD_PRODUCER_ID {
             validate_bsdd_producer_module_config(entries)?;
         }
+        if module_id == lbd_pipeline::PROPS_OPM_PRODUCER_ID {
+            validate_opm_module_config("neo-props-opm", entries)?;
+        }
+        if module_id == lbd_pipeline::OMG_FOG_PRODUCER_ID {
+            validate_opm_module_config("neo-omg-fog", entries)?;
+        }
         if module_id == GEOMETRY_PRODUCER_ID {
             validate_geometry_producer_module_config(entries)?;
         }
@@ -1445,6 +1455,29 @@ fn validate_geometry_producer_module_config(
     Ok(())
 }
 
+fn validate_opm_module_config(
+    module_name: &str,
+    entries: &HashMap<String, String>,
+) -> Result<(), String> {
+    for (key, value) in entries {
+        match key.as_str() {
+            "opm_level" => {
+                if !["l2", "l3"].contains(&value.as_str()) {
+                    return Err(format!(
+                        "`{module_name}.opm_level` must be l2 or l3, got `{value}`"
+                    ));
+                }
+            }
+            other => {
+                return Err(format!(
+                    "unknown option `{module_name}.{other}` (supported: opm_level)"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn validate_bsdd_producer_module_config(entries: &HashMap<String, String>) -> Result<(), String> {
     let known_profiles = ["base", "revit-dach", "allplan-de", "tekla-en"];
     for (key, value) in entries {
@@ -1484,9 +1517,17 @@ fn validate_bsdd_producer_module_config(entries: &HashMap<String, String>) -> Re
                     ));
                 }
             }
+            "opm_level" => {
+                if !["l2", "l3"].contains(&value.as_str()) {
+                    return Err(format!(
+                        "`neo-bsdd-producer.opm_level` must be l2 or l3, got `{}`",
+                        value
+                    ));
+                }
+            }
             other => {
                 return Err(format!(
-                    "unknown option `neo-bsdd-producer.{}` (supported: profile, compact, include_standard_attrs, dedup_properties)",
+                    "unknown option `neo-bsdd-producer.{}` (supported: profile, compact, include_standard_attrs, dedup_properties, opm_level)",
                     other
                 ));
             }
@@ -1661,6 +1702,29 @@ fn resolve_execution_settings(
         .map(|v| v == "true")
         .unwrap_or(false);
 
+    // OPM level can be set on any of the three OPM-emitting modules.
+    // First one found wins (bsdd → props-opm → omg-fog).
+    let opm_level = {
+        let raw = bsdd_entries
+            .and_then(|e| e.get("opm_level"))
+            .or_else(|| {
+                configs
+                    .get(lbd_pipeline::PROPS_OPM_PRODUCER_ID)
+                    .and_then(|e| e.get("opm_level"))
+            })
+            .or_else(|| {
+                configs
+                    .get(lbd_pipeline::OMG_FOG_PRODUCER_ID)
+                    .and_then(|e| e.get("opm_level"))
+            });
+        match raw.map(String::as_str) {
+            None => OpmLevel::L2,
+            Some("l2") => OpmLevel::L2,
+            Some("l3") => OpmLevel::L3,
+            Some(other) => anyhow::bail!("invalid `opm_level={other}` (expected l2 or l3)"),
+        }
+    };
+
     let file_export_entries = configs.get(lbd_pipeline::FILE_EXPORT_ID);
     let compress_output = file_export_entries
         .and_then(|e| e.get("compress"))
@@ -1687,6 +1751,7 @@ fn resolve_execution_settings(
         bsdd_compact,
         bsdd_include_standard_attrs,
         bsdd_dedup_properties,
+        opm_level,
         compress_output,
     })
 }
@@ -2061,7 +2126,7 @@ mod tests {
         NquadsPartitioning, OutputFormat, ProducerPartitionConfig, TurtleGrouping, TurtleLayout,
     };
     use clap::Parser;
-    use lbd_converter::IfcowlMode;
+    use lbd_converter::{IfcowlMode, OpmLevel};
     use lbd_ontology::{Object, Triple};
     use lbd_pipeline::{
         BatchKind, DerivedFile, ExportError, ExportFileSummary, ExportSession, TaggedBatch,
@@ -2358,6 +2423,7 @@ mod tests {
             bsdd_compact: false,
             bsdd_include_standard_attrs: true,
             bsdd_dedup_properties: false,
+            opm_level: OpmLevel::L2,
             compress_output: false,
         }
     }

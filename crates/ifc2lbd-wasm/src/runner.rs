@@ -718,6 +718,7 @@ impl PipelineRunner {
             bsdd_compact: settings.bsdd_compact,
             bsdd_include_standard_attrs: settings.bsdd_include_standard_attrs,
             bsdd_dedup_properties: settings.bsdd_dedup_properties,
+            opm_level: settings.opm_level,
         }
     }
 
