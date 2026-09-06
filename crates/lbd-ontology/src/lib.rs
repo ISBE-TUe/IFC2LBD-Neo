@@ -229,6 +229,14 @@ pub fn geo_has_geometry() -> String {
     format!("{GEO}hasGeometry")
 }
 
+pub fn geo_has_bounding_box() -> String {
+    format!("{GEO}hasBoundingBox")
+}
+
+pub fn geo_feature() -> String {
+    format!("{GEO}Feature")
+}
+
 pub fn geo_geometry() -> String {
     format!("{GEO}Geometry")
 }

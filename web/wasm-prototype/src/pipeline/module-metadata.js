@@ -97,7 +97,13 @@ export const MODULES = [
 		"Produce",
 		"buildingSMART Data Dictionary properties",
 		"Required",
-		["profile", "compact", "include_standard_attrs", "dedup_properties"],
+		[
+			"profile",
+			"compact",
+			"include_standard_attrs",
+			"dedup_properties",
+			"opm_level",
+		],
 		{ outputs: ["props"] },
 	),
 	mod(
@@ -106,7 +112,7 @@ export const MODULES = [
 		"Produce",
 		"OPM property set modeling",
 		"Required",
-		[],
+		["opm_level"],
 		{ outputs: ["props"] },
 	),
 	mod(
@@ -115,7 +121,7 @@ export const MODULES = [
 		"Produce",
 		"Ontology for Managing Geometry / Fog features",
 		"Required",
-		[],
+		["opm_level", "emit_bounding_boxes"],
 		{ outputs: ["omg"] },
 	),
 	mod(

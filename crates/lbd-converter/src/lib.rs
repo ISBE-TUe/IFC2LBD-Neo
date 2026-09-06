@@ -18,6 +18,7 @@ pub use modules::bsdd::{
 
 // LBD sub-module public streaming API — each produces its own named graph.
 // To add a new module: create modules/<name>.rs, pub mod it in modules/mod.rs, add pub use here.
+pub use lbd_geometry::BoundingBox;
 pub use modules::beo::stream_beo;
 pub use modules::bot::{stream_bot, stream_bot_with_topology};
 pub use modules::ifcowl::stream_ifcowl;
@@ -33,7 +34,7 @@ use ifc_model::{expand_ifc_guid, IfcModel, PropertyEnumeratedValue, PropertySing
 use ifc_schema::SpatialType;
 use ifc_step::{decode_ifc_unicode, EntityId, StepFile, StepSchema, StepValue};
 use lbd_geometry::{
-    derive_relations_from_bounding_boxes, BoundingBox, GeometryRelation, GeometryRelationKind,
+    derive_relations_from_bounding_boxes, GeometryRelation, GeometryRelationKind,
     MapBoundingBoxProvider,
 };
 use lbd_ontology::{
@@ -41,14 +42,15 @@ use lbd_ontology::{
     bot_contains_zone, bot_has_sub_element, bot_interface, bot_interface_of,
     bot_intersecting_element, bot_site, bot_space, bot_storey, bot_zone, dicp_construction_project,
     express_has_boolean, express_has_double, express_has_integer, express_has_logical,
-    express_has_string, express_logical_value, geo_as_wkt, geo_geometry, geo_wkt_literal,
-    lbd_has_bounding_box, list_has_contents, list_has_next, opm_current_property_state,
-    opm_has_property_state, opm_property, opm_property_state, owl_imports, owl_object_property,
-    owl_ontology, props_property, prov_generated_at_time, qudt_unit, rdf_li, rdf_seq, rdf_type,
-    rdfs_comment, rdfs_label, schema_value, seas_value, unit_iri, Object, Triple, EXPRESS, XSD,
+    express_has_string, express_logical_value, geo_as_wkt, geo_feature, geo_geometry,
+    geo_has_bounding_box, geo_wkt_literal, list_has_contents, list_has_next,
+    opm_current_property_state, opm_has_property_state, opm_property, opm_property_state,
+    owl_imports, owl_object_property, owl_ontology, props_property, prov_generated_at_time,
+    qudt_unit, rdf_li, rdf_seq, rdf_type, rdfs_comment, rdfs_label, schema_value, seas_value,
+    unit_iri, Object, Triple, EXPRESS, XSD,
 };
 #[cfg(test)]
-use lbd_ontology::{bot_has_building, owl_same_as, rdf_member};
+use lbd_ontology::{bot_has_building, omg_has_geometry, owl_same_as, rdf_member};
 use lbd_topology::{
     build_topology, build_topology_with_enricher, IfcRelationEvidenceEnricher, TopologyEdgeKind,
     TopologyGraph, TopologyNodeKind,
@@ -107,9 +109,15 @@ pub struct ConvertOptions {
     /// elements sharing height=3m point to one canonical property node instead of N copies.
     /// The element→hasProperty link is still emitted per element. Default false.
     pub bsdd_dedup_properties: bool,
-    /// OPM level: L2 (flat `seas:value` on property node) or L3 (three-hop state chain).
-    /// Default L2.
-    pub opm_level: OpmLevel,
+    /// OPM emission level for the bSDD producer. Default L2.
+    pub bsdd_opm_level: OpmLevel,
+    /// OPM emission level for the Props-OPM producer. Default L2.
+    pub props_opm_level: OpmLevel,
+    /// OPM emission level for OMG geometry hash states. Default L2.
+    pub omg_opm_level: OpmLevel,
+    /// Emit GeoSPARQL bounding-box geometry from OMG-FOG when geometry is available.
+    /// Default true to preserve the existing output.
+    pub omg_emit_bounding_boxes: bool,
 }
 
 /// OPM emission level.
@@ -154,7 +162,10 @@ impl Default for ConvertOptions {
             bsdd_compact: false,
             bsdd_include_standard_attrs: true,
             bsdd_dedup_properties: false,
-            opm_level: OpmLevel::default(),
+            bsdd_opm_level: OpmLevel::default(),
+            props_opm_level: OpmLevel::default(),
+            omg_opm_level: OpmLevel::default(),
+            omg_emit_bounding_boxes: true,
         }
     }
 }
@@ -309,7 +320,6 @@ where
     F: FnMut(Triple) -> Result<(), E>,
 {
     if !options.topology_only {
-        emit_geometry_declarations(&mut emit)?;
         modules::core_entities::emit_core_entities(model, options, base, &mut emit)?;
     }
 
@@ -630,6 +640,12 @@ where
             let Some(property_set) = model.property_sets.get(&property_set_id) else {
                 continue;
             };
+            // Scope on the set name, not its GlobalId: the GlobalId is re-minted on
+            // every export and would make every property IRI revision-unstable.
+            let set_scope = set_scope_token(
+                property_set.name.as_deref().unwrap_or_default(),
+                &property_set.guid,
+            );
             for property_id in &property_set.properties {
                 // --- IfcPropertySingleValue ---
                 if let Some(property) = model.property_single_values.get(property_id) {
@@ -652,11 +668,11 @@ where
                                     &decode_ifc_unicode(&property.name),
                                 )),
                                 &object_guid,
-                                &property_set.guid,
+                                &set_scope,
                                 value,
                                 resolve_property_unit(property, &unit_by_type, model),
                                 &generated_at,
-                                options.opm_level,
+                                options.props_opm_level,
                                 &mut emit,
                             )?;
                         }
@@ -684,11 +700,11 @@ where
                                 &decode_ifc_unicode(&property.name),
                             )),
                             &object_guid,
-                            &property_set.guid,
+                            &set_scope,
                             value,
                             None,
                             &generated_at,
-                            options.opm_level,
+                            options.props_opm_level,
                             &mut emit,
                         )?;
                     }
@@ -709,6 +725,10 @@ where
             let Some(quantity_set) = model.element_quantities.get(&quantity_set_id) else {
                 continue;
             };
+            let set_scope = set_scope_token(
+                quantity_set.name.as_deref().unwrap_or_default(),
+                &quantity_set.guid,
+            );
             for quantity_id in &quantity_set.quantities {
                 let Some(quantity) = model.physical_quantities.get(quantity_id) else {
                     continue;
@@ -734,11 +754,11 @@ where
                             &decode_ifc_unicode(&quantity.name),
                         )),
                         &object_guid,
-                        &quantity_set.guid,
+                        &set_scope,
                         value,
                         resolve_quantity_unit(quantity.entity_name.as_str(), &unit_by_type),
                         &generated_at,
-                        options.opm_level,
+                        options.props_opm_level,
                         &mut emit,
                     )?;
                 }
@@ -761,7 +781,7 @@ where
         base,
         &unit_by_type,
         &generated_at,
-        options.opm_level,
+        options.props_opm_level,
         &mut declared_standard_attributes,
         &mut declared_standard_attribute_comments,
         &mut emit,
@@ -1985,7 +2005,7 @@ where
                 "elevationIfcBuildingStorey",
                 &node.guid,
                 Object::TypedLiteral {
-                    value: elevation.to_string(),
+                    value: quantize_value(elevation),
                     datatype: format!("{XSD}double"),
                 },
                 generated_at,
@@ -2003,7 +2023,7 @@ where
                 "refElevationIfcSite",
                 &node.guid,
                 Object::TypedLiteral {
-                    value: ref_elevation.to_string(),
+                    value: quantize_value(ref_elevation),
                     datatype: format!("{XSD}double"),
                 },
                 generated_at,
@@ -2021,7 +2041,7 @@ where
                 "elevationOfRefHeightIfcBuilding",
                 &node.guid,
                 Object::TypedLiteral {
-                    value: elevation_of_ref_height.to_string(),
+                    value: quantize_value(elevation_of_ref_height),
                     datatype: format!("{XSD}double"),
                 },
                 generated_at,
@@ -2039,7 +2059,7 @@ where
                 "elevationOfTerrainIfcBuilding",
                 &node.guid,
                 Object::TypedLiteral {
-                    value: elevation_of_terrain.to_string(),
+                    value: quantize_value(elevation_of_terrain),
                     datatype: format!("{XSD}double"),
                 },
                 generated_at,
@@ -2138,7 +2158,7 @@ where
                 },
                 &element.guid,
                 Object::TypedLiteral {
-                    value: overall_height.to_string(),
+                    value: quantize_value(overall_height),
                     datatype: format!("{XSD}double"),
                 },
                 generated_at,
@@ -2160,7 +2180,7 @@ where
                 },
                 &element.guid,
                 Object::TypedLiteral {
-                    value: overall_width.to_string(),
+                    value: quantize_value(overall_width),
                     datatype: format!("{XSD}double"),
                 },
                 generated_at,
@@ -2214,7 +2234,7 @@ where
                 "riserHeightIfcStairFlight",
                 &element.guid,
                 Object::TypedLiteral {
-                    value: riser_height.to_string(),
+                    value: quantize_value(riser_height),
                     datatype: format!("{XSD}double"),
                 },
                 generated_at,
@@ -2272,38 +2292,17 @@ where
             continue;
         };
         let wkt = if let Some(wkt_map) = wkts.and_then(|m| m.get(&object_id)) {
-            wkt_map.clone()
+            scoped_wkt_literal(base, wkt_map)
         } else if let Some(bbox) = boxes.and_then(|m| m.get(&object_id)) {
-            let dx = (bbox.x_max - bbox.x_min).abs();
-            let dy = (bbox.y_max - bbox.y_min).abs();
-            let dz = (bbox.z_max - bbox.z_min).abs();
-            if dx <= f64::EPSILON && dy <= f64::EPSILON && dz <= f64::EPSILON {
+            let Some(wkt) = bounding_box_wkt_literal(base, bbox) else {
                 continue;
-            }
-            bbox_wkt_polyhedral_surface(bbox)
+            };
+            wkt
         } else {
             continue;
         };
 
-        let geometry_subject = geometry_resource_iri(base, &object_guid);
-        emit(Triple {
-            subject: subject.clone(),
-            predicate: lbd_has_bounding_box(),
-            object: Object::Iri(geometry_subject.clone()),
-        })?;
-        emit(Triple {
-            subject: geometry_subject.clone(),
-            predicate: rdf_type(),
-            object: Object::Iri(geo_geometry()),
-        })?;
-        emit(Triple {
-            subject: geometry_subject,
-            predicate: geo_as_wkt(),
-            object: Object::TypedLiteral {
-                value: wkt,
-                datatype: geo_wkt_literal(),
-            },
-        })?;
+        emit_bounding_box_wkt(&subject, &object_guid, base, wkt, emit)?;
     }
     Ok(())
 }
@@ -2354,18 +2353,6 @@ where
         opm_level,
         emit,
     )?;
-    Ok(())
-}
-
-fn emit_geometry_declarations<E, F>(emit: &mut F) -> Result<(), E>
-where
-    F: FnMut(Triple) -> Result<(), E>,
-{
-    emit(Triple {
-        subject: lbd_has_bounding_box(),
-        predicate: rdf_type(),
-        object: Object::Iri(owl_object_property()),
-    })?;
     Ok(())
 }
 
@@ -2469,19 +2456,118 @@ pub(crate) fn property_resource_iri(
     format!("{base}/p_{:016x}", fnv1a64(key.as_bytes()))
 }
 
-pub(crate) fn property_set_resource_iri(base: &str, guid: &str) -> String {
-    let suffix = prefix_safe_guid_token(guid);
-    format!("{base}/ps_{suffix}")
+/// Revision-stable scope token for an `IfcPropertySet` / `IfcElementQuantity`.
+///
+/// Authoring tools (Tekla, Revit, ...) mint a fresh `GlobalId` for the property-set
+/// entity on every export, even when its name and every value inside it are
+/// byte-identical to the previous export. Keying instance IRIs on that GUID makes
+/// each re-export produce different `p_`/`s_`/`ps_`/`qs_` IRIs, so an
+/// element whose properties never changed still serialises a different RDF fragment
+/// -- and any downstream content hash over that fragment reports it as edited.
+///
+/// The set *name* is authored data and survives re-export, so it is the scope token.
+/// Only a set with no name at all falls back to the GUID: that keeps two distinct
+/// unnamed sets on one object from collapsing into a single node, at the cost of
+/// revision stability in a case IFC exporters do not really produce.
+pub(crate) fn set_scope_token(set_name: &str, set_guid: &str) -> String {
+    let trimmed = set_name.trim();
+    if trimmed.is_empty() {
+        format!("guid:{set_guid}")
+    } else {
+        trimmed.to_string()
+    }
 }
 
-pub(crate) fn quantity_set_resource_iri(base: &str, guid: &str) -> String {
-    let suffix = prefix_safe_guid_token(guid);
-    format!("{base}/qs_{suffix}")
+/// Property-set node IRI for the non-dedup path -- hash of (set_scope, owning object).
+///
+/// Scoped by the owning object because the property nodes hanging off it are already
+/// per-object (`property_resource_iri` keys on the element GUID); one node shared
+/// by every object referencing the same `IfcPropertySet` entity would gather the
+/// property nodes of all of them under a single set.
+pub(crate) fn property_set_resource_iri(base: &str, set_scope: &str, object_guid: &str) -> String {
+    let key = format!("{set_scope}|{object_guid}");
+    format!("{base}/ps_{:016x}", fnv1a64(key.as_bytes()))
+}
+
+/// Quantity-set counterpart of [`property_set_resource_iri`].
+pub(crate) fn quantity_set_resource_iri(base: &str, set_scope: &str, object_guid: &str) -> String {
+    let key = format!("{set_scope}|{object_guid}");
+    format!("{base}/qs_{:016x}", fnv1a64(key.as_bytes()))
 }
 
 pub(crate) fn geometry_resource_iri(base: &str, guid: &str) -> String {
     let suffix = prefix_safe_guid_token(guid);
     format!("{base}/geometry_{suffix}")
+}
+
+pub(crate) fn bounding_box_resource_iri(base: &str, guid: &str) -> String {
+    let suffix = prefix_safe_guid_token(guid);
+    format!("{base}/bbox_{suffix}")
+}
+
+fn model_local_crs_iri(base: &str) -> String {
+    format!("{base}/crs/model-local")
+}
+
+fn scoped_wkt_literal(base: &str, wkt: &str) -> String {
+    if wkt.trim_start().starts_with('<') {
+        wkt.to_string()
+    } else {
+        format!("<{}> {wkt}", model_local_crs_iri(base))
+    }
+}
+
+pub(crate) fn bounding_box_wkt_literal(base: &str, bbox: &BoundingBox) -> Option<String> {
+    let values = [
+        bbox.x_min, bbox.x_max, bbox.y_min, bbox.y_max, bbox.z_min, bbox.z_max,
+    ];
+    if !values.iter().all(|value| value.is_finite()) {
+        return None;
+    }
+    let dx = (bbox.x_max - bbox.x_min).abs();
+    let dy = (bbox.y_max - bbox.y_min).abs();
+    let dz = (bbox.z_max - bbox.z_min).abs();
+    if dx <= f64::EPSILON && dy <= f64::EPSILON && dz <= f64::EPSILON {
+        return None;
+    }
+    Some(scoped_wkt_literal(base, &bbox_wkt_polyhedral_surface(bbox)))
+}
+
+pub(crate) fn emit_bounding_box_wkt<E, F>(
+    feature_subject: &str,
+    guid: &str,
+    base: &str,
+    wkt: String,
+    emit: &mut F,
+) -> Result<(), E>
+where
+    F: FnMut(Triple) -> Result<(), E>,
+{
+    let bbox_subject = bounding_box_resource_iri(base, guid);
+    emit(Triple {
+        subject: feature_subject.to_string(),
+        predicate: rdf_type(),
+        object: Object::Iri(geo_feature()),
+    })?;
+    emit(Triple {
+        subject: feature_subject.to_string(),
+        predicate: geo_has_bounding_box(),
+        object: Object::Iri(bbox_subject.clone()),
+    })?;
+    emit(Triple {
+        subject: bbox_subject.clone(),
+        predicate: rdf_type(),
+        object: Object::Iri(geo_geometry()),
+    })?;
+    emit(Triple {
+        subject: bbox_subject,
+        predicate: geo_as_wkt(),
+        object: Object::TypedLiteral {
+            value: wkt,
+            datatype: geo_wkt_literal(),
+        },
+    })?;
+    Ok(())
 }
 
 // canonical_guid_token / prefix_safe_guid_token now live in ifc_model::iri
@@ -2915,7 +3001,7 @@ fn quantity_value_object(value: Option<&StepValue>) -> Option<Object> {
             datatype: format!("{XSD}integer"),
         }),
         StepValue::Real(value) => value.is_finite().then(|| Object::TypedLiteral {
-            value: canonicalize_decimal(*value),
+            value: quantize_value(*value),
             datatype: format!("{XSD}decimal"),
         }),
         StepValue::Bool(value) => Some(Object::TypedLiteral {
@@ -2942,6 +3028,50 @@ fn should_skip_named_self_value(name: &str, value: &Object) -> bool {
     match value {
         Object::Literal(literal) => literal.trim() == name.trim(),
         _ => false,
+    }
+}
+
+/// Significant digits kept when canonicalising property/quantity values.
+///
+/// Six digits (≈1e-6 relative grid) sit well below BIM measurement precision
+/// but are coarse enough to absorb authoring-tool float noise: tools recompute
+/// quantities on every export and the last 2–3 bits of the f64 wobble, which at
+/// building scale (1e0–1e4) lands in the 11th–13th digit. An *absolute* grid
+/// cannot absorb that noise for all magnitudes — a fixed 1e-9 step keeps 12–14
+/// significant digits at building scale, so the noise survived into literals
+/// and content-hash keys (4,728 phantom edits on one revision pair, plus 2,076
+/// precision-rounding ones). A relative grid collapses it by construction.
+const VALUE_SIG_DIGITS: usize = 6;
+
+/// Canonical string form for a property/quantity value that feeds both the
+/// emitted literal and every content-hash IRI key (cp_/cs_/ps_/cps_).
+///
+/// Quantizes to [`VALUE_SIG_DIGITS`] significant digits (relative grid) so two
+/// conversions that disagree only in low-order float noise produce byte-identical
+/// values and therefore identical node IRIs. Must stay idempotent: keys and
+/// literals derive from the same string, so re-canonicalizing an already
+/// canonicalized value must be a no-op.
+///
+/// The IfcOWL sidecar deliberately keeps [`canonicalize_decimal`]'s absolute
+/// 1e-9 grid instead: it is a faithful EXPRESS mirror of the file, not a
+/// dedup key source.
+pub(crate) fn quantize_value(value: f64) -> String {
+    if !value.is_finite() {
+        return value.to_string();
+    }
+    if value == 0.0 || value.abs() < 5e-10 {
+        // Dead zone: anything below half the former 1e-9 step is exporter
+        // noise, not a measurement. A relative grid cannot collapse values
+        // around zero (it preserves magnitudes), so keep the absolute
+        // zero-threshold from the previous canonicalization.
+        return "0".to_string();
+    }
+    // Scientific-notation round trip: the formatter scales the mantissa, so
+    // rounding always cuts at the 6th significant digit without powf
+    // overflow/underflow, for any finite input.
+    match format!("{:.*e}", VALUE_SIG_DIGITS - 1, value).parse::<f64>() {
+        Ok(q) if q.is_finite() => format!("{q}"),
+        _ => value.to_string(),
     }
 }
 
@@ -3121,7 +3251,10 @@ mod tests {
                 bsdd_compact: false,
                 bsdd_include_standard_attrs: true,
                 bsdd_dedup_properties: false,
-                opm_level: OpmLevel::L2,
+                bsdd_opm_level: OpmLevel::L2,
+                props_opm_level: OpmLevel::L2,
+                omg_opm_level: OpmLevel::L2,
+                omg_emit_bounding_boxes: true,
             },
         );
 
@@ -3204,10 +3337,6 @@ mod tests {
         assert!(result.triples.iter().any(|triple| {
             triple.predicate == qudt_unit()
                 && matches!(&triple.object, Object::Iri(iri) if iri == "http://qudt.org/vocab/unit/M2")
-        }));
-        assert!(result.triples.iter().any(|triple| {
-            triple.predicate == lbd_has_bounding_box()
-                && matches!(&triple.object, Object::Iri(iri) if iri.contains("/geometry_"))
         }));
     }
 
@@ -3445,6 +3574,42 @@ mod tests {
         assert_eq!(canonicalize_decimal(-0.0000000001), "0");
     }
 
+    /// The 6-significant-digit relative grid must collapse the two phantom-edit
+    /// classes observed downstream: 11th–13th digit float wobble between
+    /// authoring-tool re-exports, and pure precision-rounding variants.
+    #[test]
+    fn test_quantize_value_collapses_float_wobble() {
+        assert_eq!(quantize_value(1234.567890123), "1234.57");
+        assert_eq!(quantize_value(1234.567890124), "1234.57");
+        assert_eq!(quantize_value(1234.567890123456), "1234.57");
+        assert_eq!(quantize_value(5.34999999999999), "5.35");
+        assert_eq!(quantize_value(6.75000000000001), "6.75");
+        // Relative grid: small magnitudes keep their 6 significant digits
+        // instead of being truncated by an absolute step.
+        assert_eq!(quantize_value(0.0001234567890123), "0.000123457");
+        assert_eq!(quantize_value(-9876.54321), "-9876.54");
+        assert_eq!(quantize_value(42.0), "42");
+        assert_eq!(quantize_value(1e-9), "0.000000001");
+    }
+
+    /// Zero (including negative zero and sub-noise magnitudes) and extremes
+    /// must canonicalize without panicking, and must stay idempotent — keys and
+    /// literals derive from the same string, so canonicalizing an already
+    /// canonicalized value must return it unchanged.
+    #[test]
+    fn test_quantize_value_zero_extremes_idempotent() {
+        assert_eq!(quantize_value(0.0), "0");
+        assert_eq!(quantize_value(-0.0), "0");
+        assert_eq!(quantize_value(-1e-10), "0");
+        for value in [1e300, -1e300, 1e-300, f64::MAX, f64::MIN_POSITIVE, f64::NAN] {
+            let repr = quantize_value(value);
+            if value.is_finite() {
+                let reparsed = repr.parse::<f64>().unwrap();
+                assert_eq!(quantize_value(reparsed), repr, "not idempotent: {repr}");
+            }
+        }
+    }
+
     #[test]
     fn test_stable_short_guid_token_is_deterministic() {
         let token_a = stable_short_guid_token("2O2Fr$t4X7Zf8NOew3FNtn");
@@ -3568,7 +3733,10 @@ mod tests {
                 bsdd_compact: false,
                 bsdd_include_standard_attrs: true,
                 bsdd_dedup_properties: false,
-                opm_level: OpmLevel::L2,
+                bsdd_opm_level: OpmLevel::L2,
+                props_opm_level: OpmLevel::L2,
+                omg_opm_level: OpmLevel::L2,
+                omg_emit_bounding_boxes: true,
             },
         );
 
@@ -3626,7 +3794,10 @@ mod tests {
                 bsdd_compact: false,
                 bsdd_include_standard_attrs: true,
                 bsdd_dedup_properties: false,
-                opm_level: OpmLevel::L2,
+                bsdd_opm_level: OpmLevel::L2,
+                props_opm_level: OpmLevel::L2,
+                omg_opm_level: OpmLevel::L2,
+                omg_emit_bounding_boxes: true,
             },
         );
 
@@ -3664,7 +3835,10 @@ mod tests {
                 bsdd_compact: false,
                 bsdd_include_standard_attrs: true,
                 bsdd_dedup_properties: false,
-                opm_level: OpmLevel::L2,
+                bsdd_opm_level: OpmLevel::L2,
+                props_opm_level: OpmLevel::L2,
+                omg_opm_level: OpmLevel::L2,
+                omg_emit_bounding_boxes: true,
             },
         );
         assert!(result
@@ -3779,12 +3953,19 @@ mod tests {
             bsdd_compact: false,
             bsdd_include_standard_attrs: true,
             bsdd_dedup_properties: false,
-            opm_level: OpmLevel::L2,
+            bsdd_opm_level: OpmLevel::L2,
+            props_opm_level: OpmLevel::L2,
+            omg_opm_level: OpmLevel::L2,
+            omg_emit_bounding_boxes: true,
         };
         let result = convert_step_and_model(&step, &model, &options);
         assert!(result.triples.iter().any(|triple| {
-            triple.predicate == lbd_has_bounding_box()
-                && matches!(&triple.object, Object::Iri(iri) if iri.contains("/geometry_"))
+            triple.predicate == geo_has_bounding_box()
+                && matches!(&triple.object, Object::Iri(iri) if iri.contains("/bbox_"))
+        }));
+        assert!(result.triples.iter().any(|triple| {
+            triple.predicate == rdf_type()
+                && matches!(&triple.object, Object::Iri(iri) if iri == &geo_feature())
         }));
         assert!(result.triples.iter().any(|triple| {
             triple.predicate == rdf_type()
@@ -3792,8 +3973,43 @@ mod tests {
         }));
         assert!(result.triples.iter().any(|triple| {
             triple.predicate == geo_as_wkt()
-                && matches!(&triple.object, Object::TypedLiteral { value, datatype } if value.starts_with("POLYHEDRALSURFACE Z") && datatype == &geo_wkt_literal())
+                && matches!(&triple.object, Object::TypedLiteral { value, datatype } if value.starts_with("<https://example.test/base/crs/model-local> POLYHEDRALSURFACE Z") && datatype == &geo_wkt_literal())
         }));
+
+        let mut omg_triples = Vec::new();
+        modules::omg_fog::emit_omg_fog(
+            &model,
+            &options,
+            "https://example.test/base",
+            &mut |triple| {
+                omg_triples.push(triple);
+                Ok::<(), std::convert::Infallible>(())
+            },
+        )
+        .unwrap();
+        assert!(omg_triples
+            .iter()
+            .any(|triple| triple.predicate == geo_has_bounding_box()));
+
+        let mut without_boxes = options.clone();
+        without_boxes.omg_emit_bounding_boxes = false;
+        let mut omg_without_boxes = Vec::new();
+        modules::omg_fog::emit_omg_fog(
+            &model,
+            &without_boxes,
+            "https://example.test/base",
+            &mut |triple| {
+                omg_without_boxes.push(triple);
+                Ok::<(), std::convert::Infallible>(())
+            },
+        )
+        .unwrap();
+        assert!(omg_without_boxes
+            .iter()
+            .all(|triple| triple.predicate != geo_has_bounding_box()));
+        assert!(omg_without_boxes
+            .iter()
+            .any(|triple| triple.predicate == omg_has_geometry()));
     }
 
     // ── Vocabulary correctness ───────────────────────────────────────────────

@@ -1,5 +1,6 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -79,7 +80,9 @@ fn build_candidate_set(
         .meshes
         .iter()
         .filter_map(|flat| {
-            let envelope = world_envelope(flat)?;
+            let [x_min, x_max, y_min, y_max, z_min, z_max] =
+                *model.world_bounding_boxes().get(&flat.express_id)?;
+            let envelope = AABB::from_corners([x_min, y_min, z_min], [x_max, y_max, z_max]);
             Some(IndexedEnvelope {
                 id: flat.express_id,
                 envelope,
@@ -124,24 +127,102 @@ fn build_candidate_set(
     }
 }
 
-/// Hard ceiling on the total byte size of simultaneously-live prepared Parry
-/// meshes in the extended BOT topology phase.
+/// Byte ceiling on simultaneously-resident prepared Parry meshes in the extended
+/// BOT topology phase.
 ///
-/// When the referenced meshes fit this budget they are prepared once, in
-/// parallel, and kept resident for the whole verdict phase (the fast
-/// `shared-full` path). Models whose referenced meshes exceed the budget fall
-/// back to batch-with-eviction (`shared-bounded`), trading speed for a hard
-/// memory ceiling.
+/// Derived from what the machine actually has rather than fixed, because a budget
+/// larger than free memory bounds nothing -- it just moves the cost from RAM to
+/// swap, where the verdict phase degrades by orders of magnitude instead of
+/// failing cleanly. A fixed 8 GiB was fine on the 64-thread server it was tuned
+/// on and pathological on a 16 GB workstation running the same model.
 ///
-/// Crucially this budget is independent of the Rayon thread count. The previous
-/// implementation prepared meshes per 128-pair chunk and ran every chunk in
-/// parallel, so peak memory scaled with `rayon_threads × per-chunk` — on a
-/// 64-thread server that ballooned into the tens of GB. A shared, thread-count
-/// independent budget gives a flat memory ceiling regardless of core count.
-const PREPARED_CACHE_BUDGET_BYTES: usize = 8 << 30; // 8 GiB
+/// Sources, most specific first:
+///   1. `IFC2LBD_TOPOLOGY_MESH_BUDGET_MB` -- operator override, in MiB.
+///   2. The cgroup memory limit (v2 `memory.max`, else v1 `memory.limit_in_bytes`),
+///      which is what actually kills the process in a container.
+///   3. `MemAvailable` from `/proc/meminfo`.
+///
+/// Whatever is found is taken at 60% and clamped to [256 MiB, 8 GiB]. The other
+/// 40% is not slack: the IFC model, the tessellation and the RDF batches in
+/// flight are all live at the same time as this cache.
+///
+/// The budget stays independent of the Rayon thread count -- that was the point
+/// of the original change and it still holds. Peak memory does not grow with
+/// core count.
+fn prepared_cache_budget_bytes() -> usize {
+    const MIN: usize = 256 << 20;
+    const MAX: usize = 8 << 30;
+
+    let detected = budget_override_bytes()
+        .or_else(|| {
+            let cgroup = cgroup_limit_bytes();
+            let available = mem_available_bytes();
+            match (cgroup, available) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (some, None) | (None, some) => some,
+            }
+            .map(|bytes| bytes / 5 * 3)
+        })
+        .unwrap_or(MIN);
+
+    detected.clamp(MIN, MAX)
+}
+
+/// Operator escape hatch, in MiB, for when the probes below read the wrong thing
+/// (an unusual container runtime, a shared host, a deliberately small cap).
+/// Applied verbatim rather than scaled -- an explicit number means what it says.
+fn budget_override_bytes() -> Option<usize> {
+    let raw = std::env::var("IFC2LBD_TOPOLOGY_MESH_BUDGET_MB").ok()?;
+    let mib: usize = raw.trim().parse().ok()?;
+    Some(mib << 20)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn cgroup_limit_bytes() -> Option<usize> {
+    None
+}
+
+#[cfg(target_arch = "wasm32")]
+fn mem_available_bytes() -> Option<usize> {
+    // No /proc under wasm, and the address space is 4 GiB at most. Let the
+    // clamp floor apply rather than pretending to a server-sized budget.
+    None
+}
+
+/// The container's memory limit, if this process is in a limited cgroup.
+/// cgroup v2 reports the literal string "max" when unlimited; v1 reports a
+/// sentinel near `u64::MAX`. Both mean "no limit" and yield `None`.
+#[cfg(not(target_arch = "wasm32"))]
+fn cgroup_limit_bytes() -> Option<usize> {
+    let v2 = std::fs::read_to_string("/sys/fs/cgroup/memory.max")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok());
+    let v1 = || {
+        std::fs::read_to_string("/sys/fs/cgroup/memory/memory.limit_in_bytes")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<usize>().ok())
+    };
+    // Anything at or above half the address space is the "unlimited" sentinel.
+    v2.or_else(v1).filter(|&bytes| bytes < (1_usize << 62))
+}
+
+/// Memory the kernel believes is available without swapping, which is the number
+/// that matters here -- `MemFree` understates it badly on a machine with page cache.
+#[cfg(not(target_arch = "wasm32"))]
+fn mem_available_bytes() -> Option<usize> {
+    let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
+    for line in meminfo.lines() {
+        let Some(rest) = line.strip_prefix("MemAvailable:") else {
+            continue;
+        };
+        let kib: usize = rest.split_whitespace().next()?.parse().ok()?;
+        return Some(kib << 10);
+    }
+    None
+}
 
 /// Estimate the resident byte footprint of a prepared Parry mesh for one flat
-/// geometry, used to enforce [`PREPARED_CACHE_BUDGET_BYTES`] without actually
+/// geometry, used to enforce [`prepared_cache_budget_bytes`] without actually
 /// allocating the mesh just to measure it.
 ///
 /// A Parry `TriMesh` stores 3 × f64 vertices + 3 × u32 indices per triangle
@@ -161,62 +242,144 @@ fn mesh_byte_estimate(flat: &tessellated_model::FlatMesh) -> usize {
     (triangles * 220) as usize
 }
 
-/// A shared, byte-budgeted cache of prepared Parry meshes for the extended BOT
-/// topology phase.
+/// Prepared Parry meshes for the verdict phase, in one of two regimes.
 ///
-/// Meshes are prepared once and reused across all candidate-pair verdicts
-/// (killing the per-chunk redundant rebuilds). The total resident size is
-/// capped at [`PREPARED_CACHE_BUDGET_BYTES`]; when inserting a mesh would
-/// exceed the budget the whole cache is dropped so peak memory stays bounded
-/// no matter how many Rayon threads are analysing pairs concurrently.
-struct SharedMeshCache {
+/// The split exists because the verdict phase is embarrassingly parallel and any
+/// shared mutable state in its inner loop shows up directly as lost throughput.
+/// Whenever the referenced meshes fit [`prepared_cache_budget_bytes`] -- which is
+/// the overwhelmingly common case -- they are prepared once up front and then read
+/// through an immutable map with no synchronisation at all.
+enum PreparedMeshes {
+    /// Every referenced mesh fits the budget: prepared once, in parallel, and read
+    /// lock-free for the rest of the phase.
+    Resident(HashMap<u64, Arc<PreparedFlatMesh>>),
+    /// Too large to hold at once: a locked cache with FIFO eviction. Meshes are
+    /// still built *outside* the lock, so preparation stays parallel here too.
+    Bounded(BoundedMeshCache),
+}
+
+impl PreparedMeshes {
+    fn get(
+        &self,
+        id: u64,
+        flat: &tessellated_model::FlatMesh,
+        kind: Option<TopologyNodeKind>,
+    ) -> Option<Arc<PreparedFlatMesh>> {
+        match self {
+            PreparedMeshes::Resident(meshes) => meshes.get(&id).cloned(),
+            PreparedMeshes::Bounded(cache) => cache.get_or_prepare(id, flat, kind),
+        }
+    }
+
+    fn builds(&self) -> usize {
+        match self {
+            PreparedMeshes::Resident(meshes) => meshes.len(),
+            PreparedMeshes::Bounded(cache) => cache.builds.load(Ordering::Relaxed),
+        }
+    }
+
+    fn cache_mode(&self) -> &'static str {
+        match self {
+            PreparedMeshes::Resident(_) => "shared-full",
+            PreparedMeshes::Bounded(_) => "shared-bounded",
+        }
+    }
+}
+
+/// Byte-budgeted mesh cache for models whose referenced meshes do not all fit in
+/// memory at once. Demand-loads, and evicts oldest-first to stay under budget.
+struct BoundedMeshCache {
     budget_bytes: usize,
+    builds: AtomicUsize,
     inner: Mutex<CacheState>,
 }
 
+struct CacheEntry {
+    mesh: Arc<PreparedFlatMesh>,
+    bytes: usize,
+}
+
 struct CacheState {
-    meshes: HashMap<u64, Arc<PreparedFlatMesh>>,
+    meshes: HashMap<u64, CacheEntry>,
+    /// Insertion order, so eviction can drop the oldest entry rather than the
+    /// whole cache.
+    order: VecDeque<u64>,
     total_bytes: usize,
 }
 
-impl SharedMeshCache {
-    fn new() -> Self {
-        SharedMeshCache {
-            budget_bytes: PREPARED_CACHE_BUDGET_BYTES,
+impl BoundedMeshCache {
+    fn new(budget_bytes: usize) -> Self {
+        BoundedMeshCache {
+            budget_bytes,
+            builds: AtomicUsize::new(0),
             inner: Mutex::new(CacheState {
                 meshes: HashMap::new(),
+                order: VecDeque::new(),
                 total_bytes: 0,
             }),
         }
     }
 
-    /// Fetch a prepared mesh by express id, preparing it on demand if absent.
-    /// If the running byte total would exceed the budget, the cache is dropped
-    /// first so a single mesh never pushes memory past the ceiling.
+    /// Fetch a prepared mesh by express id, building it on demand if absent.
+    ///
+    /// The lock is held only for the map lookup and the insert -- never across
+    /// `prepare_flat_mesh`, which builds a world `TriangleMesh` and its QBVH and is
+    /// by far the expensive part. Holding it there would put every Rayon worker
+    /// in a queue behind one mesh build at a time, turning the whole preparation
+    /// pass single-threaded no matter how many cores the pool has.
     fn get_or_prepare(
         &self,
         id: u64,
         flat: &tessellated_model::FlatMesh,
         kind: Option<TopologyNodeKind>,
     ) -> Option<Arc<PreparedFlatMesh>> {
-        let mut state = self.inner.lock().expect("mesh cache poisoned");
-        if let Some(hit) = state.meshes.get(&id) {
-            return Some(hit.clone());
+        if let Some(hit) = self
+            .inner
+            .lock()
+            .expect("mesh cache poisoned")
+            .meshes
+            .get(&id)
+        {
+            return Some(hit.mesh.clone());
         }
+
+        // Built with no lock held. Two threads racing on the same id both build
+        // it and one discards its copy -- a bounded, rare waste, and far cheaper
+        // than serialising every build in the pool behind a single mutex.
+        let prepared = Arc::new(prepare_flat_mesh(flat, kind)?);
+        self.builds.fetch_add(1, Ordering::Relaxed);
         let bytes = mesh_byte_estimate(flat);
+
+        let mut state = self.inner.lock().expect("mesh cache poisoned");
+        if let Some(winner) = state.meshes.get(&id) {
+            // Lost the race: keep the copy already cached so both callers share one.
+            return Some(winner.mesh.clone());
+        }
         if bytes > self.budget_bytes {
-            // A single mesh larger than the whole budget: don't cache it, just
-            // return it transiently for the caller to drop after one pair.
-            return prepare_flat_mesh(flat, kind).map(Arc::new);
+            // A single mesh larger than the entire budget: hand it back uncached
+            // rather than evicting everything else to make room for it.
+            return Some(prepared);
         }
-        if state.total_bytes + bytes > self.budget_bytes {
-            // Drop the entire cache to stay within the byte budget regardless
-            // of how many threads are concurrently pulling meshes.
-            state.meshes.clear();
-            state.total_bytes = 0;
+        // Evict oldest-first until this one fits. An evicted mesh stays alive for
+        // whoever is still analysing a pair with it -- they hold an `Arc` -- so the
+        // real peak is the budget plus the handful of meshes in flight, which is
+        // bounded by the thread count rather than by model size.
+        while state.total_bytes + bytes > self.budget_bytes {
+            let Some(oldest) = state.order.pop_front() else {
+                break;
+            };
+            if let Some(evicted) = state.meshes.remove(&oldest) {
+                state.total_bytes = state.total_bytes.saturating_sub(evicted.bytes);
+            }
         }
-        let prepared = prepare_flat_mesh(flat, kind).map(Arc::new)?;
-        state.meshes.insert(id, prepared.clone());
+        state.meshes.insert(
+            id,
+            CacheEntry {
+                mesh: prepared.clone(),
+                bytes,
+            },
+        );
+        state.order.push_back(id);
         state.total_bytes += bytes;
         Some(prepared)
     }
@@ -259,11 +422,12 @@ pub fn build_extended_topology_parallel(
 
 /// Run exact geometry checks on the producer-side Rayon pool.
 ///
-/// Every mesh referenced by a candidate pair is prepared once into a shared,
-/// byte-budgeted cache ([`SharedMeshCache`]) and reused across all verdicts.
-/// The cache ceiling is independent of the Rayon thread count, so peak memory
-/// does not grow with core count (previously it scaled with
-/// `threads × per-chunk` and ballooned into tens of GB on large servers).
+/// Every mesh referenced by a candidate pair is prepared exactly once and reused
+/// across all verdicts. When they all fit [`prepared_cache_budget_bytes`] they are
+/// prepared in parallel into an immutable map that the verdict phase reads without
+/// synchronisation; larger models fall back to a demand-loaded cache with
+/// oldest-first eviction. Either way the ceiling is independent of the Rayon
+/// thread count, so peak memory does not grow with core count.
 fn enrich_topology_parallel(
     graph: &mut TopologyGraph,
     model: &TessellatedModel,
@@ -278,93 +442,73 @@ fn enrich_topology_parallel(
         .collect();
     let options = ExactCheckOptions { tolerance };
 
-    let (verdicts, prepared_mesh_builds, cache_mode) = {
-        let cache = SharedMeshCache::new();
+    // Every mesh referenced by a candidate pair, exactly once.
+    let mut referenced_ids: Vec<u64> = candidates
+        .pairs
+        .iter()
+        .flat_map(|&(left, right)| [left, right])
+        .collect();
+    referenced_ids.sort_unstable();
+    referenced_ids.dedup();
 
-        // Every mesh referenced by a candidate pair, exactly once. Deduplicated
-        // so a mesh is never rebuilt for reuse (the previous per-chunk approach
-        // rebuilt shared meshes ~3.6×).
-        let mut referenced_ids: Vec<u64> = candidates
-            .pairs
-            .iter()
-            .flat_map(|&(left, right)| [left, right])
-            .collect();
-        referenced_ids.sort_unstable();
-        referenced_ids.dedup();
+    let total_estimate: usize = referenced_ids
+        .iter()
+        .filter_map(|&id| flat_by_id.get(&id))
+        .map(|flat| mesh_byte_estimate(flat))
+        .sum();
 
-        // Two regimes, chosen by whether the referenced meshes fit the byte
-        // budget:
-        //   * fits  → prepare them all (in parallel), keep them resident for the
-        //             whole verdict phase. Fast, no re-prep. Peak memory is the
-        //             total of all referenced meshes — fixed, and independent of
-        //             the Rayon thread count.
-        //   * too big → prepare in parallel batches, evicting as we go, so the
-        //             verdict phase re-prepares evicted meshes. Slower, but the
-        //             resident footprint stays under the budget no matter the
-        //             core count.
-        let total_estimate: usize = referenced_ids
-            .iter()
-            .filter_map(|&id| flat_by_id.get(&id))
-            .map(|flat| mesh_byte_estimate(flat))
-            .sum();
+    let budget_bytes = prepared_cache_budget_bytes();
+    tracing::info!(
+        "BOT extended topology mesh cache: {} referenced meshes, {:.1} GiB estimated, {:.1} GiB budget",
+        referenced_ids.len(),
+        total_estimate as f64 / (1u64 << 30) as f64,
+        budget_bytes as f64 / (1u64 << 30) as f64,
+    );
 
-        let prepared_mesh_builds: usize;
-        let cache_mode: &'static str;
-
-        if total_estimate <= cache.budget_bytes {
-            // Parallel prepare of all referenced meshes.
-            prepared_mesh_builds = referenced_ids
+    let meshes = if total_estimate <= budget_bytes {
+        // Fits: prepare them all in parallel, then read lock-free. Peak memory is
+        // the total of the referenced meshes -- fixed, and independent of how many
+        // threads are analysing pairs.
+        PreparedMeshes::Resident(
+            referenced_ids
                 .par_iter()
                 .filter_map(|&id| {
                     let flat = flat_by_id.get(&id)?;
                     let kind = graph.node_kinds.get(&id).copied();
-                    cache.get_or_prepare(id, flat, kind)
+                    prepare_flat_mesh(flat, kind).map(|mesh| (id, Arc::new(mesh)))
                 })
-                .count();
-            cache_mode = "shared-full";
-        } else {
-            // Too big to hold all at once: parallel batches with eviction.
-            const PREP_BATCH: usize = 128;
-            let mut builds = 0usize;
-            for batch in referenced_ids.chunks(PREP_BATCH) {
-                builds += batch
-                    .par_iter()
-                    .filter_map(|&id| {
-                        let flat = flat_by_id.get(&id)?;
-                        let kind = graph.node_kinds.get(&id).copied();
-                        cache.get_or_prepare(id, flat, kind)
-                    })
-                    .count();
-            }
-            prepared_mesh_builds = builds;
-            cache_mode = "shared-bounded";
-        }
-
-        // Verdict phase is cheap per pair (Parry analysis on already-prepared
-        // meshes) and highly parallel. Workers pull cheap `Arc` clones from the
-        // shared cache, so concurrency does not multiply mesh memory.
-        let verdicts: Vec<((u64, u64), PairOutcome)> = candidates
-            .pairs
-            .par_iter()
-            .map(|&(left, right)| {
-                let left_mesh = flat_by_id.get(&left).and_then(|f| {
-                    cache.get_or_prepare(left, f, graph.node_kinds.get(&left).copied())
-                });
-                let right_mesh = flat_by_id.get(&right).and_then(|f| {
-                    cache.get_or_prepare(right, f, graph.node_kinds.get(&right).copied())
-                });
-                let outcome = match (left_mesh, right_mesh) {
-                    (Some(left_mesh), Some(right_mesh)) => {
-                        analyze_pair(left, right, graph, &left_mesh, &right_mesh, &options)
-                    }
-                    _ => PairOutcome::Separated,
-                };
-                ((left, right), outcome)
-            })
-            .collect();
-
-        (verdicts, prepared_mesh_builds, cache_mode)
+                .collect(),
+        )
+    } else {
+        // Does not fit: demand-load during the verdict phase and evict as we go.
+        // No pre-warm pass -- filling a cache that must immediately evict most of
+        // what it just built is pure wasted work.
+        PreparedMeshes::Bounded(BoundedMeshCache::new(budget_bytes))
     };
+
+    let verdicts: Vec<((u64, u64), PairOutcome)> = candidates
+        .pairs
+        .par_iter()
+        .map(|&(left, right)| {
+            let left_mesh = flat_by_id
+                .get(&left)
+                .and_then(|f| meshes.get(left, f, graph.node_kinds.get(&left).copied()));
+            let right_mesh = flat_by_id
+                .get(&right)
+                .and_then(|f| meshes.get(right, f, graph.node_kinds.get(&right).copied()));
+            let outcome = match (left_mesh, right_mesh) {
+                (Some(left_mesh), Some(right_mesh)) => {
+                    analyze_pair(left, right, graph, &left_mesh, &right_mesh, &options)
+                }
+                _ => PairOutcome::Separated,
+            };
+            ((left, right), outcome)
+        })
+        .collect();
+
+    let prepared_mesh_builds = meshes.builds();
+    let cache_mode = meshes.cache_mode();
+    drop(meshes);
 
     let semantic_edge_count = graph.core_edges.len();
     let mut seen_edges: HashSet<_> = graph
@@ -704,26 +848,6 @@ fn interface_id((left, right): (u64, u64)) -> u64 {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     hash | (1_u64 << 63)
-}
-
-fn world_envelope(flat: &tessellated_model::FlatMesh) -> Option<AABB<[f64; 3]>> {
-    let mut min = [f64::INFINITY; 3];
-    let mut max = [f64::NEG_INFINITY; 3];
-    for geometry in &flat.geometries {
-        let transform = multiply(&geometry.world_transform, &geometry.local_transform);
-        for point in geometry.mesh.positions.chunks_exact(3) {
-            let world = transform_point(&transform, point);
-            for axis in 0..3 {
-                min[axis] = min[axis].min(world[axis]);
-                max[axis] = max[axis].max(world[axis]);
-            }
-        }
-    }
-    if !min[0].is_finite() {
-        None
-    } else {
-        Some(AABB::from_corners(min, max))
-    }
 }
 
 fn world_mesh(flat: &tessellated_model::FlatMesh) -> Option<TriangleMesh> {

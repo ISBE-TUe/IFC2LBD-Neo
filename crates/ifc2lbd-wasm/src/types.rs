@@ -269,7 +269,10 @@ pub struct ExecutionSettings {
     pub bsdd_compact: bool,
     pub bsdd_include_standard_attrs: bool,
     pub bsdd_dedup_properties: bool,
-    pub opm_level: lbd_converter::OpmLevel,
+    pub bsdd_opm_level: lbd_converter::OpmLevel,
+    pub props_opm_level: lbd_converter::OpmLevel,
+    pub omg_opm_level: lbd_converter::OpmLevel,
+    pub omg_emit_bounding_boxes: bool,
 }
 
 impl ExecutionSettings {

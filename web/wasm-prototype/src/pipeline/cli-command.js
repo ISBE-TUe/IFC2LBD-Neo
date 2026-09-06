@@ -30,6 +30,14 @@ const MODULE_DEFAULTS = {
 		compact: "false",
 		include_standard_attrs: "true",
 		dedup_properties: "false",
+		opm_level: "l2",
+	},
+	"neo-props-opm": {
+		opm_level: "l2",
+	},
+	"neo-omg-fog": {
+		opm_level: "l2",
+		emit_bounding_boxes: "true",
 	},
 	"neo-geometry-preprocess": {
 		metadata: "full",

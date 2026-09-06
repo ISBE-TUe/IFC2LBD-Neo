@@ -186,7 +186,10 @@ mod tests {
             bsdd_compact: false,
             bsdd_include_standard_attrs: false,
             bsdd_dedup_properties: false,
-            opm_level: lbd_converter::OpmLevel::L2,
+            bsdd_opm_level: lbd_converter::OpmLevel::L2,
+            props_opm_level: lbd_converter::OpmLevel::L2,
+            omg_opm_level: lbd_converter::OpmLevel::L2,
+            omg_emit_bounding_boxes: true,
         }
     }
 

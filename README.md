@@ -167,6 +167,25 @@ indexes all producer manifests. Producer partitioning is not compatible with
 | `compact`                | `true`, `false`                                     | `false` |
 | `include_standard_attrs` | `true`, `false`                                     | `true`  |
 | `dedup_properties`       | `true`, `false`                                     | `false` |
+| `opm_level`              | `l2`, `l3`                                          | `l2`    |
+
+### `neo-props-opm`
+
+| Option      | Values     | Default |
+| ----------- | ---------- | ------- |
+| `opm_level` | `l2`, `l3` | `l2`    |
+
+### `neo-omg-fog`
+
+| Option                | Values          | Default |
+| --------------------- | --------------- | ------- |
+| `opm_level`           | `l2`, `l3`      | `l2`    |
+| `emit_bounding_boxes` | `true`, `false` | `true`  |
+
+The OPM level is independent for each producer. L2 emits a direct `seas:value`;
+L3 emits the versioned OPM property-state chain. Disabling OMG-FOG bounding
+boxes keeps OMG geometry links and geometry hash states while omitting the
+GeoSPARQL bounding-box triples.
 
 ### `neo-geometry-preprocess`
 
@@ -264,7 +283,7 @@ For local testing with correct COOP/COEP headers (required for SharedArrayBuffer
 ```bash
 cd web/wasm-prototype
 docker compose up --build
-# served at http://localhost:3000
+# served at http://localhost:3001
 ```
 
 ---

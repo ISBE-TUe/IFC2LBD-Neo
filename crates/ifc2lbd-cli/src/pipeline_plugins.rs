@@ -106,7 +106,12 @@ pub fn module_option_keys(module_id: &str) -> Vec<String> {
             "compact".to_string(),
             "include_standard_attrs".to_string(),
             "dedup_properties".to_string(),
+            "opm_level".to_string(),
         ],
+        lbd_pipeline::PROPS_OPM_PRODUCER_ID => vec!["opm_level".to_string()],
+        lbd_pipeline::OMG_FOG_PRODUCER_ID => {
+            vec!["opm_level".to_string(), "emit_bounding_boxes".to_string()]
+        }
         lbd_pipeline::FILE_EXPORT_ID => vec!["output_stem".to_string(), "compress".to_string()],
         lbd_pipeline::LOG_EXPORT_ID => vec![],
         "neo-geometry-preprocess" => vec!["metadata".to_string()],
@@ -418,8 +423,8 @@ impl PipelinePlugin for OmgFogProducerPlugin {
             id: OMG_FOG_PRODUCER_ID,
             display_name: "OMG-FOG producer",
             stage: PipelineStage::Produce,
-            description: "Generates OMG/FOG geometry property triples.",
-            inputs: vec!["ifc-model"],
+            description: "Generates OMG links and GeoSPARQL bounding boxes when tessellated geometry is available.",
+            inputs: vec!["ifc-model", "tessellated-model (optional)"],
             outputs: vec!["omg-triples"],
             requires: vec![],
             conflicts_with: vec![],
@@ -448,22 +453,42 @@ impl ProducerPlugin for OmgFogProducerPlugin {
                 "OmgFogProducerPlugin: missing ConvertOptions in context".to_string(),
             )
         })?;
-        // Per-element geometry hashes for the OPM geometry states.
+        // Per-object geometry hashes and cached world-space bounding boxes.
         //
         // Computed here from the TessellatedModel rather than read from the geometry
-        // producer, deliberately: both are Produce-stage modules and run in parallel,
+        // producer: both are Produce-stage modules and run in parallel,
         // so omg cannot assume neo-geometry-producer has already run. The
         // TessellatedModel is a Preprocess output, so it is guaranteed present by the
         // time any producer starts.
         //
-        // Same input and same function as the artifact path, so the value cannot
-        // disagree with what gets serialised into the .frag.
+        // The model calculates its AABBs once during construction, so RDF and topology
+        // reuse the same values without scanning the meshes again.
         let options = match ctx.get::<tessellated_model::TessellatedModel>() {
             Some(tessellated) => {
                 let hashes = plugin_geometry_producer::stable_element_geometry_hashes(&tessellated);
-                let mut with_hashes = (*options).clone();
-                with_hashes.geometry_hashes = Some(std::sync::Arc::new(hashes));
-                std::sync::Arc::new(with_hashes)
+                let mut with_geometry = (*options).clone();
+                with_geometry.geometry_hashes = Some(std::sync::Arc::new(hashes));
+                if with_geometry.omg_emit_bounding_boxes {
+                    let boxes: std::collections::HashMap<_, _> = tessellated
+                        .world_bounding_boxes()
+                        .iter()
+                        .map(|(&id, &[x_min, x_max, y_min, y_max, z_min, z_max])| {
+                            (
+                                id,
+                                lbd_converter::BoundingBox {
+                                    x_min,
+                                    x_max,
+                                    y_min,
+                                    y_max,
+                                    z_min,
+                                    z_max,
+                                },
+                            )
+                        })
+                        .collect();
+                    with_geometry.geometry_bounding_boxes = Some(std::sync::Arc::new(boxes));
+                }
+                std::sync::Arc::new(with_geometry)
             }
             // No tessellation in this run (geometry preprocessing not enabled): emit the
             // structural links only, as before. Degrades rather than fails.

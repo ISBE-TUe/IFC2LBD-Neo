@@ -1035,7 +1035,7 @@ fn step_value_to_object(value: &StepValue) -> Option<Object> {
         }),
         // A non-finite real is not a measurement.
         StepValue::Real(v) => v.is_finite().then(|| Object::TypedLiteral {
-            value: v.to_string(),
+            value: crate::quantize_value(*v),
             datatype: format!("{XSD}decimal"),
         }),
         // A value its own type forbids — `IfcPositiveLengthMeasure(0.)` — is the
@@ -1244,7 +1244,7 @@ fn step_value_signature(value: &StepValue) -> String {
         StepValue::Enum(v) => format!("e:{v}"),
         StepValue::Bool(v) => format!("b:{v}"),
         StepValue::Int(v) => format!("i:{v}"),
-        StepValue::Real(v) => format!("r:{v}"),
+        StepValue::Real(v) => format!("r:{}", crate::quantize_value(*v)),
         StepValue::Typed { type_name, value } => {
             format!("t:{type_name}:{}", step_value_signature(value))
         }
@@ -1359,7 +1359,7 @@ pub fn stream_bsdd_with_cache(
     let dedup = options.bsdd_dedup_properties;
     let unit_by_type = build_unit_type_map(model);
     let generated_at = current_generated_at_rfc3339();
-    let opm_level = options.opm_level;
+    let opm_level = options.bsdd_opm_level;
 
     let mut batch = Vec::with_capacity(batch_size);
     let mut triples = 0_u64;
@@ -1603,6 +1603,10 @@ fn process_element_psets(
 
     let mut pset_ids = model.property_sets_for_object[&object_id].clone();
     pset_ids.sort_unstable();
+    pset_ids.dedup();
+
+    // Property nodes already linked to this element via bsddm:hasProperty.
+    let mut emitted_element_edges: HashSet<String> = HashSet::new();
 
     let mut local_batch: Vec<Triple> = Vec::new();
     let mut local_triples = 0_u64;
@@ -1614,14 +1618,19 @@ fn process_element_psets(
             continue;
         };
         let pset_name = pset.name.as_deref().unwrap_or_default();
+        // Scope on the set name rather than its GlobalId. Exporters re-mint the
+        // IfcPropertySet GlobalId on every export even when name and values are
+        // unchanged, which would make this element's property IRIs differ between
+        // two otherwise identical revisions.
+        let pset_scope = crate::set_scope_token(pset_name, &pset.guid);
         // In dedup mode: derive a canonical pset IRI from its content fingerprint so that
         // all elements whose pset has identical properties+values share one pset node.
-        // In non-dedup mode: use the per-entity IFC GUID as normal.
+        // In non-dedup mode: one node per (set scope, owning object).
         let pset_subject = if dedup.is_some() {
             let content = pset_content_repr(pset, model);
             crate::canonical_pset_resource_iri(base, pset_name, &content)
         } else {
-            crate::property_set_resource_iri(base, &pset.guid)
+            crate::property_set_resource_iri(base, &pset_scope, &object_guid)
         };
 
         // element → hasPropertySet is always per-element
@@ -1711,7 +1720,7 @@ fn process_element_psets(
                     &object_guid,
                     pset_name,
                     &pset_subject,
-                    &pset.guid,
+                    &pset_scope,
                     "containsProperty",
                     psv.name.as_str(),
                     raw_value,
@@ -1725,6 +1734,7 @@ fn process_element_psets(
                     compact,
                     opm_level,
                     dedup,
+                    &mut emitted_element_edges,
                     &mut local_unmatched,
                     &mut local_counter,
                     &mut local_batch,
@@ -1744,7 +1754,7 @@ fn process_element_psets(
                         &object_guid,
                         pset_name,
                         &pset_subject,
-                        &pset.guid,
+                        &pset_scope,
                         "containsProperty",
                         pev.name.as_str(),
                         Object::Literal(enum_value.to_string()),
@@ -1758,6 +1768,7 @@ fn process_element_psets(
                         compact,
                         opm_level,
                         dedup,
+                        &mut emitted_element_edges,
                         &mut local_unmatched,
                         &mut local_counter,
                         &mut local_batch,
@@ -1813,6 +1824,10 @@ fn process_element_quantities(
 
     let mut quantity_set_ids = model.quantities_for_object[&object_id].clone();
     quantity_set_ids.sort_unstable();
+    quantity_set_ids.dedup();
+
+    // Property nodes already linked to this element via bsddm:hasProperty.
+    let mut emitted_element_edges: HashSet<String> = HashSet::new();
 
     let mut local_batch: Vec<Triple> = Vec::new();
     let mut local_triples = 0_u64;
@@ -1824,6 +1839,7 @@ fn process_element_quantities(
             continue;
         };
         let quantity_set_name = quantity_set.name.as_deref().unwrap_or_default();
+        let quantity_set_scope = crate::set_scope_token(quantity_set_name, &quantity_set.guid);
         let quantity_set_subject = if dedup.is_some() {
             // Fingerprint for qsets: sorted "name=value_sig" from physical quantities.
             let mut pairs: Vec<String> = quantity_set
@@ -1842,7 +1858,7 @@ fn process_element_quantities(
             let content = pairs.join("|");
             crate::canonical_pset_resource_iri(base, quantity_set_name, &content)
         } else {
-            crate::quantity_set_resource_iri(base, &quantity_set.guid)
+            crate::quantity_set_resource_iri(base, &quantity_set_scope, &object_guid)
         };
 
         // element → hasQuantitySet is always per-element
@@ -1933,7 +1949,7 @@ fn process_element_quantities(
                 &object_guid,
                 quantity_set_name,
                 &quantity_set_subject,
-                &quantity_set.guid,
+                &quantity_set_scope,
                 "containsQuantity",
                 quantity.name.as_str(),
                 raw_value,
@@ -1947,6 +1963,7 @@ fn process_element_quantities(
                 compact,
                 opm_level,
                 dedup,
+                &mut emitted_element_edges,
                 &mut local_unmatched,
                 &mut local_counter,
                 &mut local_batch,
@@ -2064,7 +2081,9 @@ fn emit_property(
     object_guid: &str,
     pset_name: &str,
     pset_subject: &str,
-    pset_guid: &str,
+    // Revision-stable scope token for the owning set (see `crate::set_scope_token`),
+    // NOT the set's IFC GlobalId -- that is re-minted on every export.
+    pset_scope: &str,
     container_predicate: &str, // "containsProperty" for psets, "containsQuantity" for qsets
     prop_name: &str,
     value: Object,
@@ -2078,6 +2097,11 @@ fn emit_property(
     compact: bool,
     opm_level: crate::OpmLevel,
     dedup: Option<&Arc<Mutex<DedupSets>>>,
+    // Per-element set of property-node IRIs already linked to `subject`. Property
+    // nodes are content-addressed, so several psets/occurrences of one element can
+    // resolve to the same node; without this guard the edge is re-emitted once per
+    // traversal pass instead of once per fact.
+    emitted_element_edges: &mut HashSet<String>,
     unmatched_histogram: &mut HashMap<String, u64>,
     _property_counter: &mut u64,
     batch: &mut Vec<Triple>,
@@ -2127,29 +2151,32 @@ fn emit_property(
         )
     } else {
         (
-            crate::property_resource_iri(base, &predicate_local, object_guid, pset_guid),
+            crate::property_resource_iri(base, &predicate_local, object_guid, pset_scope),
             crate::property_state_iri(
                 base,
                 &predicate_local,
                 object_guid,
-                pset_guid,
+                pset_scope,
                 crate::object_value_repr(&value),
             ),
         )
     };
 
-    // Universal direct link: element → property (always per-element)
-    push(
-        batch,
-        sender,
-        batch_size,
-        Triple {
-            subject: subject.to_string(),
-            predicate: bsddm("hasProperty"),
-            object: Object::Iri(prop_subject.clone()),
-        },
-        triples,
-    )?;
+    // Universal direct link: element → property. Emitted once per distinct
+    // (element, property node) fact, not once per traversal that reaches it.
+    if emitted_element_edges.insert(prop_subject.clone()) {
+        push(
+            batch,
+            sender,
+            batch_size,
+            Triple {
+                subject: subject.to_string(),
+                predicate: bsddm("hasProperty"),
+                object: Object::Iri(prop_subject.clone()),
+            },
+            triples,
+        )?;
+    }
 
     // In dedup mode: gate the container link and all definition triples on first-seen.
     // The mutex is held only for the atomic check-and-insert — no I/O inside the lock.
@@ -2447,7 +2474,7 @@ fn emit_bsdd_standard_attrs(
                 "elevationIfcBuildingStorey",
                 guid,
                 Object::TypedLiteral {
-                    value: elevation.to_string(),
+                    value: crate::quantize_value(elevation),
                     datatype: format!("{XSD}double"),
                 },
                 generated_at,
@@ -2466,7 +2493,7 @@ fn emit_bsdd_standard_attrs(
                 "refElevationIfcSite",
                 guid,
                 Object::TypedLiteral {
-                    value: ref_elevation.to_string(),
+                    value: crate::quantize_value(ref_elevation),
                     datatype: format!("{XSD}double"),
                 },
                 generated_at,
@@ -2485,7 +2512,7 @@ fn emit_bsdd_standard_attrs(
                 "elevationOfRefHeightIfcBuilding",
                 guid,
                 Object::TypedLiteral {
-                    value: elev_ref_height.to_string(),
+                    value: crate::quantize_value(elev_ref_height),
                     datatype: format!("{XSD}double"),
                 },
                 generated_at,
@@ -2504,7 +2531,7 @@ fn emit_bsdd_standard_attrs(
                 "elevationOfTerrainIfcBuilding",
                 guid,
                 Object::TypedLiteral {
-                    value: elev_terrain.to_string(),
+                    value: crate::quantize_value(elev_terrain),
                     datatype: format!("{XSD}double"),
                 },
                 generated_at,
@@ -2612,7 +2639,7 @@ fn emit_bsdd_standard_attrs(
                 attr,
                 guid,
                 Object::TypedLiteral {
-                    value: overall_height.to_string(),
+                    value: crate::quantize_value(overall_height),
                     datatype: format!("{XSD}double"),
                 },
                 generated_at,
@@ -2636,7 +2663,7 @@ fn emit_bsdd_standard_attrs(
                 attr,
                 guid,
                 Object::TypedLiteral {
-                    value: overall_width.to_string(),
+                    value: crate::quantize_value(overall_width),
                     datatype: format!("{XSD}double"),
                 },
                 generated_at,
@@ -2693,7 +2720,7 @@ fn emit_bsdd_standard_attrs(
                 "riserHeightIfcStairFlight",
                 guid,
                 Object::TypedLiteral {
-                    value: h.to_string(),
+                    value: crate::quantize_value(h),
                     datatype: format!("{XSD}double"),
                 },
                 generated_at,
@@ -2712,7 +2739,7 @@ fn emit_bsdd_standard_attrs(
                 "treadLengthIfcStairFlight",
                 guid,
                 Object::TypedLiteral {
-                    value: l.to_string(),
+                    value: crate::quantize_value(l),
                     datatype: format!("{XSD}double"),
                 },
                 generated_at,

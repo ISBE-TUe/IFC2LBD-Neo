@@ -245,23 +245,30 @@ pub(crate) fn resolve_execution_settings(
         .map(|v| v == "true")
         .unwrap_or(false);
 
-    // OPM level can be set on any of the three OPM-emitting modules.
-    let opm_level = {
-        let raw = bsdd_entries
-            .and_then(|e| e.get("opm_level"))
-            .or_else(|| configs.get(PROPS_OPM_PRODUCER_ID).and_then(|e| e.get("opm_level")))
-            .or_else(|| configs.get(OMG_FOG_PRODUCER_ID).and_then(|e| e.get("opm_level")));
-        match raw.map(String::as_str) {
-            None => lbd_converter::OpmLevel::L2,
-            Some("l2") => lbd_converter::OpmLevel::L2,
-            Some("l3") => lbd_converter::OpmLevel::L3,
+    let resolve_opm_level = |module_id: &str| -> Result<lbd_converter::OpmLevel, WasmApiError> {
+        match configs
+            .get(module_id)
+            .and_then(|entries| entries.get("opm_level"))
+            .map(String::as_str)
+        {
+            None => Ok(lbd_converter::OpmLevel::L2),
+            Some("l2") => Ok(lbd_converter::OpmLevel::L2),
+            Some("l3") => Ok(lbd_converter::OpmLevel::L3),
             Some(other) => {
                 return Err(WasmApiError::Message(format!(
-                    "invalid `opm_level={other}` (expected l2 or l3)"
+                    "invalid `{module_id}.opm_level={other}` (expected l2 or l3)"
                 )));
             }
         }
     };
+    let bsdd_opm_level = resolve_opm_level(BSDD_PRODUCER_ID)?;
+    let props_opm_level = resolve_opm_level(PROPS_OPM_PRODUCER_ID)?;
+    let omg_opm_level = resolve_opm_level(OMG_FOG_PRODUCER_ID)?;
+    let omg_emit_bounding_boxes = configs
+        .get(OMG_FOG_PRODUCER_ID)
+        .and_then(|entries| entries.get("emit_bounding_boxes"))
+        .map(|value| value != "false")
+        .unwrap_or(true);
 
     Ok(ExecutionSettings {
         output_formats,
@@ -283,7 +290,10 @@ pub(crate) fn resolve_execution_settings(
         bsdd_compact,
         bsdd_include_standard_attrs,
         bsdd_dedup_properties,
-        opm_level,
+        bsdd_opm_level,
+        props_opm_level,
+        omg_opm_level,
+        omg_emit_bounding_boxes,
     })
 }
 
@@ -348,7 +358,7 @@ pub(crate) fn validate_typed_module_configs(
                     )));
                 }
             }
-            PROPS_OPM_PRODUCER_ID | OMG_FOG_PRODUCER_ID => {
+            PROPS_OPM_PRODUCER_ID => {
                 for (key, value) in entries {
                     match key.as_str() {
                         "opm_level" => {
@@ -361,6 +371,31 @@ pub(crate) fn validate_typed_module_configs(
                         other => {
                             return Err(WasmApiError::Message(format!(
                                 "unknown option `{module_id}.{other}` (supported: opm_level)"
+                            )));
+                        }
+                    }
+                }
+            }
+            OMG_FOG_PRODUCER_ID => {
+                for (key, value) in entries {
+                    match key.as_str() {
+                        "opm_level" => {
+                            if !["l2", "l3"].contains(&value.as_str()) {
+                                return Err(WasmApiError::Message(format!(
+                                    "`{module_id}.opm_level` must be l2 or l3, got `{value}`"
+                                )));
+                            }
+                        }
+                        "emit_bounding_boxes" => {
+                            if !["true", "false"].contains(&value.as_str()) {
+                                return Err(WasmApiError::Message(format!(
+                                    "`{module_id}.emit_bounding_boxes` must be true or false, got `{value}`"
+                                )));
+                            }
+                        }
+                        other => {
+                            return Err(WasmApiError::Message(format!(
+                                "unknown option `{module_id}.{other}` (supported: opm_level, emit_bounding_boxes)"
                             )));
                         }
                     }
@@ -668,4 +703,73 @@ pub(crate) fn validate_file_export_options(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request() -> ConversionRequest {
+        ConversionRequest {
+            module_ids: Vec::new(),
+            module_options: Vec::new(),
+            base_uri: None,
+            output_stem: None,
+            execution_mode: None,
+            memory_feasibility_mb: None,
+            stream_batch_size: None,
+            ifcowl_max_workers: None,
+            sink_chunk_size_bytes: None,
+            sink_max_pending_bytes: None,
+            input_format: None,
+            structured_data_files: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn resolves_independent_opm_levels_and_omg_bbox_switch() {
+        let plan = ActivationPlan {
+            enabled_ids: vec![
+                BSDD_PRODUCER_ID.to_string(),
+                PROPS_OPM_PRODUCER_ID.to_string(),
+                OMG_FOG_PRODUCER_ID.to_string(),
+                TURTLE_SERIALIZER_ID.to_string(),
+            ],
+        };
+        let configs = HashMap::from([
+            (
+                BSDD_PRODUCER_ID.to_string(),
+                HashMap::from([("opm_level".to_string(), "l3".to_string())]),
+            ),
+            (
+                PROPS_OPM_PRODUCER_ID.to_string(),
+                HashMap::from([("opm_level".to_string(), "l2".to_string())]),
+            ),
+            (
+                OMG_FOG_PRODUCER_ID.to_string(),
+                HashMap::from([
+                    ("opm_level".to_string(), "l3".to_string()),
+                    ("emit_bounding_boxes".to_string(), "false".to_string()),
+                ]),
+            ),
+        ]);
+
+        validate_typed_module_configs(&configs).unwrap();
+        let settings =
+            resolve_execution_settings(&plan, &configs, &request(), &mut Vec::new(), 0).unwrap();
+
+        assert_eq!(settings.bsdd_opm_level, lbd_converter::OpmLevel::L3);
+        assert_eq!(settings.props_opm_level, lbd_converter::OpmLevel::L2);
+        assert_eq!(settings.omg_opm_level, lbd_converter::OpmLevel::L3);
+        assert!(!settings.omg_emit_bounding_boxes);
+    }
+
+    #[test]
+    fn rejects_invalid_omg_bbox_switch_value() {
+        let configs = HashMap::from([(
+            OMG_FOG_PRODUCER_ID.to_string(),
+            HashMap::from([("emit_bounding_boxes".to_string(), "yes".to_string())]),
+        )]);
+        assert!(validate_typed_module_configs(&configs).is_err());
+    }
 }

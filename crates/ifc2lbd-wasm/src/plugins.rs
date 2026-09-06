@@ -76,7 +76,10 @@ pub(crate) fn module_option_keys(module_id: &str) -> Vec<String> {
             "compact".to_string(),
             "include_standard_attrs".to_string(),
             "dedup_properties".to_string(),
+            "opm_level".to_string(),
         ],
+        PROPS_OPM_PRODUCER_ID => vec!["opm_level".to_string()],
+        OMG_FOG_PRODUCER_ID => vec!["opm_level".to_string(), "emit_bounding_boxes".to_string()],
         FILE_EXPORT_ID => vec!["output_stem".to_string(), "compress".to_string()],
         LOG_EXPORT_ID => vec![],
         "neo-geometry-preprocess" => vec!["metadata".to_string()],
@@ -453,8 +456,8 @@ impl PipelinePlugin for OmgFogProducerPlugin {
             id: OMG_FOG_PRODUCER_ID,
             display_name: "OMG-FOG",
             stage: PipelineStage::Produce,
-            description: "Generates OMG geometry-link triples (omg:hasGeometry / omg:Geometry) for all elements and spatial nodes.",
-            inputs: vec!["ifc-model"],
+            description: "Generates OMG links and GeoSPARQL bounding boxes when tessellated geometry is available.",
+            inputs: vec!["ifc-model", "tessellated-model (optional)"],
             outputs: vec!["omg-triples"],
             requires: vec![],
             conflicts_with: vec![],
@@ -483,6 +486,35 @@ impl ProducerPlugin for OmgFogProducerPlugin {
                 "OmgFogProducerPlugin: missing ConvertOptions in context".to_string(),
             )
         })?;
+        let options = match ctx.get::<tessellated_model::TessellatedModel>() {
+            Some(tessellated) => {
+                let hashes = plugin_geometry_producer::stable_element_geometry_hashes(&tessellated);
+                let mut with_geometry = (*options).clone();
+                with_geometry.geometry_hashes = Some(std::sync::Arc::new(hashes));
+                if with_geometry.omg_emit_bounding_boxes {
+                    let boxes: std::collections::HashMap<_, _> = tessellated
+                        .world_bounding_boxes()
+                        .iter()
+                        .map(|(&id, &[x_min, x_max, y_min, y_max, z_min, z_max])| {
+                            (
+                                id,
+                                lbd_converter::BoundingBox {
+                                    x_min,
+                                    x_max,
+                                    y_min,
+                                    y_max,
+                                    z_min,
+                                    z_max,
+                                },
+                            )
+                        })
+                        .collect();
+                    with_geometry.geometry_bounding_boxes = Some(std::sync::Arc::new(boxes));
+                }
+                std::sync::Arc::new(with_geometry)
+            }
+            None => options,
+        };
 
         let (raw_sender, raw_receiver) =
             crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);

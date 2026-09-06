@@ -152,7 +152,8 @@ function render() {
 			const { moduleOptions } = getState();
 			const opts = { ...moduleOptions };
 			if (!opts[selectedPluginId]) opts[selectedPluginId] = {};
-			opts[selectedPluginId][key] = input.value;
+			opts[selectedPluginId][key] =
+				input.type === "checkbox" ? String(input.checked) : input.value;
 			update({ moduleOptions: opts });
 		});
 	}
@@ -368,6 +369,28 @@ function optionControl(pluginId, key) {
           <option value="false" ${dedupVal === "false" ? "selected" : ""}>Off — one instance per element</option>
           <option value="true" ${dedupVal === "true" ? "selected" : ""}>On — share instances with equal values</option>
         </select>
+      </div>`;
+	}
+	if (key === "opm_level") {
+		const levelVal = current || "l2";
+		return `
+      <div class="detail-row">
+        <span class="detail-label">OPM level</span>
+        <select data-option-key="opm_level" class="detail-select">
+          <option value="l2" ${levelVal === "l2" ? "selected" : ""}>L2 - direct SEAS value</option>
+          <option value="l3" ${levelVal === "l3" ? "selected" : ""}>L3 - versioned state chain</option>
+        </select>
+      </div>`;
+	}
+	if (key === "emit_bounding_boxes") {
+		const enabled = current === "" || current === "true";
+		return `
+      <div class="detail-row">
+        <span class="detail-label">bounding boxes</span>
+        <label class="detail-switch" title="Emit GeoSPARQL bounding-box geometry">
+          <input type="checkbox" data-option-key="emit_bounding_boxes" ${enabled ? "checked" : ""} aria-label="Emit bounding boxes" />
+          <span class="detail-switch-track"></span>
+        </label>
       </div>`;
 	}
 	if (key === "format") {

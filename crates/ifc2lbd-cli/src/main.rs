@@ -180,7 +180,10 @@ struct ExecutionSettings {
     bsdd_compact: bool,
     bsdd_include_standard_attrs: bool,
     bsdd_dedup_properties: bool,
-    opm_level: OpmLevel,
+    bsdd_opm_level: OpmLevel,
+    props_opm_level: OpmLevel,
+    omg_opm_level: OpmLevel,
+    omg_emit_bounding_boxes: bool,
     compress_output: bool,
 }
 
@@ -355,7 +358,10 @@ fn main() -> anyhow::Result<()> {
         bsdd_compact: settings.bsdd_compact,
         bsdd_include_standard_attrs: settings.bsdd_include_standard_attrs,
         bsdd_dedup_properties: settings.bsdd_dedup_properties,
-        opm_level: settings.opm_level,
+        bsdd_opm_level: settings.bsdd_opm_level,
+        props_opm_level: settings.props_opm_level,
+        omg_opm_level: settings.omg_opm_level,
+        omg_emit_bounding_boxes: settings.omg_emit_bounding_boxes,
     };
 
     let preprocess_ids: Vec<String> = activation_plan
@@ -1388,7 +1394,7 @@ fn validate_typed_module_configs(
             validate_opm_module_config("neo-props-opm", entries)?;
         }
         if module_id == lbd_pipeline::OMG_FOG_PRODUCER_ID {
-            validate_opm_module_config("neo-omg-fog", entries)?;
+            validate_omg_fog_module_config(entries)?;
         }
         if module_id == GEOMETRY_PRODUCER_ID {
             validate_geometry_producer_module_config(entries)?;
@@ -1471,6 +1477,33 @@ fn validate_opm_module_config(
             other => {
                 return Err(format!(
                     "unknown option `{module_name}.{other}` (supported: opm_level)"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_omg_fog_module_config(entries: &HashMap<String, String>) -> Result<(), String> {
+    for (key, value) in entries {
+        match key.as_str() {
+            "opm_level" => {
+                if !["l2", "l3"].contains(&value.as_str()) {
+                    return Err(format!(
+                        "`neo-omg-fog.opm_level` must be l2 or l3, got `{value}`"
+                    ));
+                }
+            }
+            "emit_bounding_boxes" => {
+                if !["true", "false"].contains(&value.as_str()) {
+                    return Err(format!(
+                        "`neo-omg-fog.emit_bounding_boxes` must be true or false, got `{value}`"
+                    ));
+                }
+            }
+            other => {
+                return Err(format!(
+                    "unknown option `neo-omg-fog.{other}` (supported: opm_level, emit_bounding_boxes)"
                 ));
             }
         }
@@ -1702,28 +1735,29 @@ fn resolve_execution_settings(
         .map(|v| v == "true")
         .unwrap_or(false);
 
-    // OPM level can be set on any of the three OPM-emitting modules.
-    // First one found wins (bsdd → props-opm → omg-fog).
-    let opm_level = {
-        let raw = bsdd_entries
-            .and_then(|e| e.get("opm_level"))
-            .or_else(|| {
-                configs
-                    .get(lbd_pipeline::PROPS_OPM_PRODUCER_ID)
-                    .and_then(|e| e.get("opm_level"))
-            })
-            .or_else(|| {
-                configs
-                    .get(lbd_pipeline::OMG_FOG_PRODUCER_ID)
-                    .and_then(|e| e.get("opm_level"))
-            });
-        match raw.map(String::as_str) {
-            None => OpmLevel::L2,
-            Some("l2") => OpmLevel::L2,
-            Some("l3") => OpmLevel::L3,
-            Some(other) => anyhow::bail!("invalid `opm_level={other}` (expected l2 or l3)"),
+    // Each OPM-emitting producer owns its level so active modules can differ.
+    let resolve_opm_level = |module_id: &str| -> anyhow::Result<OpmLevel> {
+        match configs
+            .get(module_id)
+            .and_then(|entries| entries.get("opm_level"))
+            .map(String::as_str)
+        {
+            None => Ok(OpmLevel::L2),
+            Some("l2") => Ok(OpmLevel::L2),
+            Some("l3") => Ok(OpmLevel::L3),
+            Some(other) => {
+                anyhow::bail!("invalid `{module_id}.opm_level={other}` (expected l2 or l3)")
+            }
         }
     };
+    let bsdd_opm_level = resolve_opm_level(lbd_pipeline::BSDD_PRODUCER_ID)?;
+    let props_opm_level = resolve_opm_level(lbd_pipeline::PROPS_OPM_PRODUCER_ID)?;
+    let omg_opm_level = resolve_opm_level(lbd_pipeline::OMG_FOG_PRODUCER_ID)?;
+    let omg_emit_bounding_boxes = configs
+        .get(lbd_pipeline::OMG_FOG_PRODUCER_ID)
+        .and_then(|entries| entries.get("emit_bounding_boxes"))
+        .map(|value| value != "false")
+        .unwrap_or(true);
 
     let file_export_entries = configs.get(lbd_pipeline::FILE_EXPORT_ID);
     let compress_output = file_export_entries
@@ -1751,7 +1785,10 @@ fn resolve_execution_settings(
         bsdd_compact,
         bsdd_include_standard_attrs,
         bsdd_dedup_properties,
-        opm_level,
+        bsdd_opm_level,
+        props_opm_level,
+        omg_opm_level,
+        omg_emit_bounding_boxes,
         compress_output,
     })
 }
@@ -2423,7 +2460,10 @@ mod tests {
             bsdd_compact: false,
             bsdd_include_standard_attrs: true,
             bsdd_dedup_properties: false,
-            opm_level: OpmLevel::L2,
+            bsdd_opm_level: OpmLevel::L2,
+            props_opm_level: OpmLevel::L2,
+            omg_opm_level: OpmLevel::L2,
+            omg_emit_bounding_boxes: true,
             compress_output: false,
         }
     }

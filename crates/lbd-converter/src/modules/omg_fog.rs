@@ -4,9 +4,10 @@ use ifc_step::EntityId;
 use lbd_ontology::{omg_geometry, omg_has_geometry, rdf_type, Object, Triple};
 
 use crate::{
-    current_generated_at_rfc3339, element_resource_iri, geometry_resource_iri, geometry_state_iri,
-    normalize_base_uri, sorted_values, spatial_resource_iri, ConvertOptions, StreamError,
-    MAX_STREAM_BATCH_SIZE, MIN_STREAM_BATCH_SIZE,
+    bounding_box_wkt_literal, current_generated_at_rfc3339, element_resource_iri,
+    emit_bounding_box_wkt, geometry_resource_iri, geometry_state_iri, normalize_base_uri,
+    sorted_values, spatial_resource_iri, ConvertOptions, StreamError, MAX_STREAM_BATCH_SIZE,
+    MIN_STREAM_BATCH_SIZE,
 };
 
 /// Emit OMG geometry-link triples for every element and spatial node.
@@ -15,11 +16,8 @@ use crate::{
 ///   `entity  omg:hasGeometry  geomNode`
 ///   `geomNode  rdf:type  omg:Geometry`
 ///
-/// When `options.geometry_bounding_boxes` is populated (requires neo-bbox-enricher
-/// to have run first), the geometry node also gets actual geometry content via the
-/// existing `emit_bounding_box_geometries` path, which adds geo/fog literals. This
-/// module only establishes the OMG structural links; literals are not duplicated here
-/// because they are already emitted by the bbox enricher pass.
+/// When `options.geometry_bounding_boxes` is populated from the tessellated model,
+/// each object is also linked to a dedicated GeoSPARQL bounding-box geometry.
 pub(crate) fn emit_omg_fog<E, F>(
     model: &IfcModel,
     options: &ConvertOptions,
@@ -45,6 +43,7 @@ where
             predicate: rdf_type(),
             object: Object::Iri(omg_geometry()),
         })?;
+        emit_bounding_box(options, base, &subject, &node.guid, node.id, emit)?;
         emit_geometry_state(options, base, &geom_node, node.id, &generated_at, emit)?;
     }
 
@@ -62,10 +61,38 @@ where
             predicate: rdf_type(),
             object: Object::Iri(omg_geometry()),
         })?;
+        emit_bounding_box(options, base, &subject, &element.guid, element.id, emit)?;
         emit_geometry_state(options, base, &geom_node, element.id, &generated_at, emit)?;
     }
 
     Ok(())
+}
+
+fn emit_bounding_box<E, F>(
+    options: &ConvertOptions,
+    base: &str,
+    feature_subject: &str,
+    guid: &str,
+    entity_id: EntityId,
+    emit: &mut F,
+) -> Result<(), E>
+where
+    F: FnMut(Triple) -> Result<(), E>,
+{
+    if !options.omg_emit_bounding_boxes {
+        return Ok(());
+    }
+    let Some(bbox) = options
+        .geometry_bounding_boxes
+        .as_ref()
+        .and_then(|boxes| boxes.get(&entity_id))
+    else {
+        return Ok(());
+    };
+    let Some(wkt) = bounding_box_wkt_literal(base, bbox) else {
+        return Ok(());
+    };
+    emit_bounding_box_wkt(feature_subject, guid, base, wkt, emit)
 }
 
 /// Hang an OPM state carrying this element's geometry content hash off its geometry
@@ -106,7 +133,7 @@ where
         Object::Literal(value),
         None,
         generated_at,
-        options.opm_level,
+        options.omg_opm_level,
         emit,
     )
 }
