@@ -1005,50 +1005,15 @@ fn normalize_ifc_entity(raw: &str) -> String {
 /// A property's value as an RDF object, or `None` where the file states no
 /// value at all.
 ///
-/// An exporter that has nothing to say about a field still writes the field:
-/// MagiCAD emits `Manufacturer`, `Product code` and a dozen more as empty
-/// strings, and dimensional fields the same way. Passing those through produced
-/// a property whose `schema:value` is the empty literal — which a viewer with a
-/// length datatype renders as **`0.000 m`**, an authoritative-looking zero for a
-/// diameter nobody ever entered.
-///
-/// These are the same guards `quantity_value_object` applies on the property
-/// path; this one never had them, so the two modules disagreed about the same
-/// data. Emitting nothing is what "the file does not say" looks like in RDF.
+/// Delegates to the converter every other module uses. This was a second,
+/// independent implementation, and the guards it was missing — empty strings,
+/// whitespace, MSVC's `-1.#IND`, non-finite reals, and values their own IFC type
+/// forbids such as `IfcPositiveLengthMeasure(0.)` — are exactly what leaked
+/// blank and zero properties into bSDD output.
 fn step_value_to_object(value: &StepValue) -> Option<Object> {
-    /// Empty, whitespace-only, or MSVC's textual NaN — all mean "not set".
-    fn meaningful(text: &str) -> Option<String> {
-        let trimmed = text.trim();
-        (!trimmed.is_empty() && trimmed != "-1.#IND").then(|| trimmed.to_string())
-    }
-
-    match value {
-        StepValue::String(s) => meaningful(&decode_ifc_unicode(s)).map(Object::Literal),
-        StepValue::Enum(s) => meaningful(&decode_ifc_unicode(s)).map(Object::Literal),
-        StepValue::Bool(v) => Some(Object::TypedLiteral {
-            value: v.to_string(),
-            datatype: format!("{XSD}boolean"),
-        }),
-        StepValue::Int(v) => Some(Object::TypedLiteral {
-            value: v.to_string(),
-            datatype: format!("{XSD}integer"),
-        }),
-        // A non-finite real is not a measurement.
-        StepValue::Real(v) => v.is_finite().then(|| Object::TypedLiteral {
-            value: crate::quantize_value(*v),
-            datatype: format!("{XSD}decimal"),
-        }),
-        // A value its own type forbids — `IfcPositiveLengthMeasure(0.)` — is the
-        // exporter's "not set", not a measurement. See
-        // `crate::violates_positive_constraint`.
-        StepValue::Typed { type_name, value } => {
-            (!crate::violates_positive_constraint(type_name, value))
-                .then(|| step_value_to_object(value))
-                .flatten()
-        }
-        _ => None,
-    }
+    crate::quantity_value_object(Some(value))
 }
+
 
 // ---------------------------------------------------------------------------
 // Public API

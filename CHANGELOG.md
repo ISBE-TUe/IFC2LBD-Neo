@@ -2,6 +2,25 @@
 
 All notable changes to IFC2LBD-Neo are documented in this file.
 
+## [0.7.4]
+
+### Changed — one converter for IFC values, not two
+
+`modules/bsdd.rs` carried its own implementation of the same job as
+`quantity_value_object`: turning an IFC value into an RDF object. The two drifted,
+and the bSDD copy was missing guards the other had — empty strings, whitespace,
+MSVC's `-1.#IND`, non-finite reals — so the same file produced different data
+depending on which module read it. That is what put blank fields and `0.000 m`
+diameters into bSDD output in the first place.
+
+0.7.2 fixed the symptom by adding the missing guards to the second copy. This
+removes the second copy: `step_value_to_object` is now a one-line delegation, so
+there is one place where the policy lives and nothing left to drift.
+
+No output change. Verified on a 146 MB MEP model: same byte count, and the two
+serialisations are identical once the per-run `prov:generatedAtTime` stamps are
+excluded.
+
 ## [0.7.2]
 
 ### Fixed — properties nobody filled in were emitted as `0.000 m`

@@ -2985,7 +2985,16 @@ pub(crate) fn violates_positive_constraint(type_name: &str, value: &StepValue) -
     }
 }
 
-fn quantity_value_object(value: Option<&StepValue>) -> Option<Object> {
+/// The one place an IFC value becomes an RDF object.
+///
+/// Every module that reads a property or a quantity goes through here. It used
+/// not to: the bSDD module carried a second implementation that lacked these
+/// guards, so the same file yielded different data depending on which module
+/// read it — blank fields became properties with an empty `schema:value`, and a
+/// diameter nobody entered was published as `0.000 m`. A rule that exists in one
+/// converter and not the one beside it is the shape most of this project's data
+/// defects have taken.
+pub(crate) fn quantity_value_object(value: Option<&StepValue>) -> Option<Object> {
     match value? {
         StepValue::String(value) => {
             let decoded = decode_ifc_unicode(value);
