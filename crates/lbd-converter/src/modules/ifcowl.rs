@@ -4,7 +4,9 @@ use crossbeam::channel::Sender;
 use ifc_step::{StepFile, StepSchema};
 use lbd_ontology::Triple;
 
-use crate::{ifcowl_entity_subjects, ifcowl_lookup, ifcowl_namespace, IfcOwlEmitter, IfcowlMode, StreamError};
+use crate::{
+    ifcowl_entity_subjects, ifcowl_lookup, ifcowl_namespace, IfcOwlEmitter, IfcowlMode, StreamError,
+};
 
 pub(crate) fn convert_ifcowl(
     step: &StepFile,

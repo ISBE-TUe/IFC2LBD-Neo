@@ -332,6 +332,12 @@ Export plugins decide **where** output bytes go. One export plugin may be active
 
 The orchestrator calls `start_session()` once. The returned `ExportSession` then handles:
 - `open_sink()` — called per output file (one per serialiser chunk)
+- `open_staged_sink()` / `commit_staged_sink()` — optional atomic publication
+  for completed streaming chunks; the default delegates to `open_sink()` and
+  makes commit a no-op
+- `published_filename()` — resolves a logical sink name to the externally
+  visible name; override it when the exporter changes extensions, such as
+  appending `.gz`, so generated manifests reference the real artefacts
 - `accept_derived_file()` — called once per sidecar file emitted by producers
 - `finalize()` — called after all writes are done; returns an audit summary
 
@@ -345,6 +351,23 @@ pub trait ExportSession: Send {
         mime_type: &str,
         role: &str,
     ) -> Result<Box<dyn std::io::Write + Send>, ExportError>;
+
+    fn open_staged_sink(
+        &mut self,
+        filename: &str,
+        mime_type: &str,
+        role: &str,
+    ) -> Result<Box<dyn std::io::Write + Send>, ExportError> {
+        self.open_sink(filename, mime_type, role)
+    }
+
+    fn commit_staged_sink(&mut self, filename: &str) -> Result<(), ExportError> {
+        Ok(())
+    }
+
+    fn published_filename(&self, filename: &str) -> String {
+        filename.to_string()
+    }
 
     fn accept_derived_file(&mut self, file: DerivedFile) -> Result<(), ExportError>;
 
@@ -564,6 +587,11 @@ These invariants **must not be violated** when modifying plugin infrastructure:
 | `neo-turtle-serializer` | `TURTLE_SERIALIZER_ID` | Streams Turtle to a single sink |
 | `neo-nquads-serializer` | `NQUADS_SERIALIZER_ID` | Streams N-Quads to a single sink |
 | `neo-nquads-chunked-serializer` | `NQUADS_CHUNKED_SERIALIZER_ID` | Streams N-Quads in parallel chunks |
+
+The chunked serializer supports `partitioning=producers`. In this mode each
+producer owns an independent line/byte chunk writer, allowing a completed BOT
+or BEO stream to be atomically published while slower producers continue. The
+global producer-partition manifest is published after every producer finishes.
 
 ### Exporters
 

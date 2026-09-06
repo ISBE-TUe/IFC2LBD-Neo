@@ -8,8 +8,8 @@ mod tests {
     use crate::runner::{convert_ifc_impl, resolve_plan_impl};
     use crate::types::ConversionRequest;
     use lbd_pipeline::{
-        BOT_PRODUCER_ID, FILE_EXPORT_ID, IFCOWL_PRODUCER_ID, NQUADS_SERIALIZER_ID,
-        TURTLE_SERIALIZER_ID,
+        BOT_PRODUCER_ID, BSDD_PRODUCER_ID, FILE_EXPORT_ID, IFCOWL_PRODUCER_ID,
+        NQUADS_SERIALIZER_ID, OMG_FOG_PRODUCER_ID, PROPS_OPM_PRODUCER_ID, TURTLE_SERIALIZER_ID,
     };
 
     fn tiny_ifc() -> Vec<u8> {
@@ -18,7 +18,8 @@ mod tests {
 
     #[test]
     fn list_modules_exposes_curated_browser_set() {
-        let ids: HashSet<String> = browser_registry()
+        let registry = browser_registry();
+        let ids: HashSet<String> = registry
             .manifests()
             .into_iter()
             .map(|m| m.id.to_string())
@@ -28,6 +29,14 @@ mod tests {
         assert!(ids.contains(TURTLE_SERIALIZER_ID));
         assert!(ids.contains(NQUADS_SERIALIZER_ID));
         assert!(ids.contains(FILE_EXPORT_ID));
+
+        let option_keys = |id| crate::plugins::module_option_keys(id);
+        assert!(option_keys(BSDD_PRODUCER_ID).contains(&"opm_level".to_string()));
+        assert!(option_keys(PROPS_OPM_PRODUCER_ID).contains(&"opm_level".to_string()));
+        assert_eq!(
+            option_keys(OMG_FOG_PRODUCER_ID),
+            vec!["opm_level".to_string(), "emit_bounding_boxes".to_string()]
+        );
     }
 
     #[test]

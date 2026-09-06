@@ -96,15 +96,22 @@ pub fn module_option_keys(module_id: &str) -> Vec<String> {
             "chunk_size_bytes".to_string(),
             "chunk_prefix".to_string(),
             "graph_naming".to_string(),
+            "partitioning".to_string(),
         ],
         lbd_pipeline::TURTLE_SERIALIZER_ID => vec!["grouping".to_string(), "layout".to_string()],
+        lbd_pipeline::BOT_PRODUCER_ID => vec!["mode".to_string()],
         lbd_pipeline::IFCOWL_PRODUCER_ID => vec!["mode".to_string()],
         lbd_pipeline::BSDD_PRODUCER_ID => vec![
             "profile".to_string(),
             "compact".to_string(),
             "include_standard_attrs".to_string(),
             "dedup_properties".to_string(),
+            "opm_level".to_string(),
         ],
+        lbd_pipeline::PROPS_OPM_PRODUCER_ID => vec!["opm_level".to_string()],
+        lbd_pipeline::OMG_FOG_PRODUCER_ID => {
+            vec!["opm_level".to_string(), "emit_bounding_boxes".to_string()]
+        }
         lbd_pipeline::FILE_EXPORT_ID => vec!["output_stem".to_string(), "compress".to_string()],
         lbd_pipeline::LOG_EXPORT_ID => vec![],
         "neo-geometry-preprocess" => vec!["metadata".to_string()],
@@ -179,7 +186,7 @@ impl PipelinePlugin for BotProducerPlugin {
             display_name: "BOT producer",
             stage: PipelineStage::Produce,
             description: "Generates BOT spatial-structure and element triples.",
-            inputs: vec!["ifc-model"],
+            inputs: vec!["ifc-model", "tessellated-model (extended mode)"],
             outputs: vec!["bot-triples"],
             requires: vec![],
             conflicts_with: vec![],
@@ -208,9 +215,52 @@ impl ProducerPlugin for BotProducerPlugin {
         })?;
         let (raw_sender, raw_receiver) =
             crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
-        let graph_iri = BatchKind::new(format!("{}bot", options.base_uri.trim_end_matches('/')));
+        let graph_iri = BatchKind::new(format!("{}/bot", options.base_uri.trim_end_matches('/')));
         forward_as_tagged(raw_receiver, graph_iri, sender.clone());
-        stream_bot(&model, &options, &raw_sender)
+        let bot_config = ctx
+            .get::<lbd_topology::BotConfig>()
+            .unwrap_or_else(|| std::sync::Arc::new(lbd_topology::BotConfig::default()));
+        let topology = match bot_config.mode {
+            lbd_topology::BotMode::Ifc => std::sync::Arc::new(lbd_topology::build_topology(&model)),
+            lbd_topology::BotMode::Extended => {
+                let tessellated = ctx
+                    .get::<tessellated_model::TessellatedModel>()
+                    .ok_or_else(|| {
+                        ProducerError::Conversion(
+                            "extended BOT mode requires neo-geometry-preprocess".to_string(),
+                        )
+                    })?;
+                let (graph, stats) = plugin_topology_full::build_extended_topology_parallel(
+                    &model,
+                    &tessellated,
+                    bot_config.tolerance,
+                );
+                ctx.write_log(
+                    lbd_pipeline::BOT_PRODUCER_ID,
+                    serde_json::json!({
+                        "mode": "extended",
+                        "semantic_edges": stats.semantic_edges,
+                        "geometry_edges": stats.geometry_edges,
+                        "indexed_meshes": stats.indexed_meshes,
+                        "rstar_candidate_pairs": stats.candidate_pairs,
+                        "rayon_threads": stats.rayon_threads,
+                        "cache_mode": stats.cache_mode,
+                        "prepared_mesh_builds": stats.prepared_mesh_builds,
+                        "parry_checks": stats.candidate_pairs,
+                        "parry_separated": stats.separated,
+                        "parry_touching": stats.touching,
+                        "parry_intersecting": stats.intersecting,
+                        "parry_contained": stats.contained,
+                        "subelement_relations": stats.propagated_from_subelements,
+                        "candidate_seconds": stats.candidate_seconds,
+                        "geometry_enrichment_seconds": stats.elapsed_seconds,
+                        "tolerance": bot_config.tolerance,
+                    }),
+                );
+                std::sync::Arc::new(graph)
+            }
+        };
+        lbd_converter::stream_bot_with_topology(&model, &options, &topology, &raw_sender)
             .map(|_| ())
             .map_err(|_| ProducerError::ChannelClosed)
     }
@@ -252,7 +302,7 @@ impl ProducerPlugin for BeoProducerPlugin {
         })?;
         let (raw_sender, raw_receiver) =
             crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
-        let graph_iri = BatchKind::new(format!("{}beo", options.base_uri.trim_end_matches('/')));
+        let graph_iri = BatchKind::new(format!("{}/beo", options.base_uri.trim_end_matches('/')));
         forward_as_tagged(raw_receiver, graph_iri, sender.clone());
         stream_beo(&model, &options, &raw_sender)
             .map(|_| ())
@@ -317,7 +367,7 @@ impl ProducerPlugin for BsddProducerPlugin {
         })?;
         let (raw_sender, raw_receiver) =
             crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
-        let graph_iri = BatchKind::new(format!("{}bsdd", options.base_uri.trim_end_matches('/')));
+        let graph_iri = BatchKind::new(format!("{}/bsdd", options.base_uri.trim_end_matches('/')));
         forward_as_tagged(raw_receiver, graph_iri, sender.clone());
         let cache = ctx.get::<BsddMatchCache>();
         let (_, dedup_stats) =
@@ -359,7 +409,7 @@ impl ProducerPlugin for PropsOpmProducerPlugin {
         })?;
         let (raw_sender, raw_receiver) =
             crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
-        let graph_iri = BatchKind::new(format!("{}props", options.base_uri.trim_end_matches('/')));
+        let graph_iri = BatchKind::new(format!("{}/props", options.base_uri.trim_end_matches('/')));
         forward_as_tagged(raw_receiver, graph_iri, sender.clone());
         stream_props_opm(&model, &options, &raw_sender)
             .map(|_| ())
@@ -373,8 +423,8 @@ impl PipelinePlugin for OmgFogProducerPlugin {
             id: OMG_FOG_PRODUCER_ID,
             display_name: "OMG-FOG producer",
             stage: PipelineStage::Produce,
-            description: "Generates OMG/FOG geometry property triples.",
-            inputs: vec!["ifc-model"],
+            description: "Generates OMG links and GeoSPARQL bounding boxes when tessellated geometry is available.",
+            inputs: vec!["ifc-model", "tessellated-model (optional)"],
             outputs: vec!["omg-triples"],
             requires: vec![],
             conflicts_with: vec![],
@@ -403,9 +453,51 @@ impl ProducerPlugin for OmgFogProducerPlugin {
                 "OmgFogProducerPlugin: missing ConvertOptions in context".to_string(),
             )
         })?;
+        // Per-object geometry hashes and cached world-space bounding boxes.
+        //
+        // Computed here from the TessellatedModel rather than read from the geometry
+        // producer: both are Produce-stage modules and run in parallel,
+        // so omg cannot assume neo-geometry-producer has already run. The
+        // TessellatedModel is a Preprocess output, so it is guaranteed present by the
+        // time any producer starts.
+        //
+        // The model calculates its AABBs once during construction, so RDF and topology
+        // reuse the same values without scanning the meshes again.
+        let options = match ctx.get::<tessellated_model::TessellatedModel>() {
+            Some(tessellated) => {
+                let hashes = plugin_geometry_producer::stable_element_geometry_hashes(&tessellated);
+                let mut with_geometry = (*options).clone();
+                with_geometry.geometry_hashes = Some(std::sync::Arc::new(hashes));
+                if with_geometry.omg_emit_bounding_boxes {
+                    let boxes: std::collections::HashMap<_, _> = tessellated
+                        .world_bounding_boxes()
+                        .iter()
+                        .map(|(&id, &[x_min, x_max, y_min, y_max, z_min, z_max])| {
+                            (
+                                id,
+                                lbd_converter::BoundingBox {
+                                    x_min,
+                                    x_max,
+                                    y_min,
+                                    y_max,
+                                    z_min,
+                                    z_max,
+                                },
+                            )
+                        })
+                        .collect();
+                    with_geometry.geometry_bounding_boxes = Some(std::sync::Arc::new(boxes));
+                }
+                std::sync::Arc::new(with_geometry)
+            }
+            // No tessellation in this run (geometry preprocessing not enabled): emit the
+            // structural links only, as before. Degrades rather than fails.
+            None => options,
+        };
+
         let (raw_sender, raw_receiver) =
             crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
-        let graph_iri = BatchKind::new(format!("{}omg", options.base_uri.trim_end_matches('/')));
+        let graph_iri = BatchKind::new(format!("{}/omg", options.base_uri.trim_end_matches('/')));
         forward_as_tagged(raw_receiver, graph_iri, sender.clone());
         stream_omg_fog(&model, &options, &raw_sender)
             .map(|_| ())
@@ -451,7 +543,8 @@ impl ProducerPlugin for IfcowlProducerPlugin {
         })?;
         let (ifcowl_sender, ifcowl_receiver) =
             crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
-        let graph_iri = BatchKind::new(format!("{}ifcowl", options.base_uri.trim_end_matches('/')));
+        let graph_iri =
+            BatchKind::new(format!("{}/ifcowl", options.base_uri.trim_end_matches('/')));
         forward_as_tagged(ifcowl_receiver, graph_iri, sender.clone());
         lbd_converter::modules::ifcowl::stream_ifcowl(
             &step,
@@ -575,6 +668,7 @@ impl ExportPlugin for FileExportPlugin {
             output_dir,
             compress,
             opened: Vec::new(),
+            staged: Vec::new(),
             derived: Vec::new(),
         }))
     }
@@ -584,6 +678,7 @@ struct CliFileExportSession {
     output_dir: PathBuf,
     compress: bool,
     opened: Vec<(String, String, String)>, // (filename, mime_type, role)
+    staged: Vec<(String, String, String)>, // (logical, temporary, final)
     derived: Vec<ExportFileSummary>,
 }
 
@@ -614,6 +709,64 @@ impl ExportSession for CliFileExportSession {
         }
     }
 
+    fn open_staged_sink(
+        &mut self,
+        filename: &str,
+        mime_type: &str,
+        role: &str,
+    ) -> Result<Box<dyn Write + Send>, ExportError> {
+        let actual_filename = if self.compress {
+            format!("{filename}.gz")
+        } else {
+            filename.to_string()
+        };
+        let temporary_filename = format!(".{actual_filename}.partial");
+        let path = self.output_dir.join(&temporary_filename);
+        let file = File::create(&path)
+            .map_err(|e| ExportError::Export(format!("cannot create {}: {e}", path.display())))?;
+        self.opened.push((
+            actual_filename.clone(),
+            mime_type.to_string(),
+            role.to_string(),
+        ));
+        self.staged
+            .push((filename.to_string(), temporary_filename, actual_filename));
+        if self.compress {
+            Ok(Box::new(GzEncoder::new(
+                BufWriter::new(file),
+                Compression::fast(),
+            )))
+        } else {
+            Ok(Box::new(BufWriter::new(file)))
+        }
+    }
+
+    fn commit_staged_sink(&mut self, filename: &str) -> Result<(), ExportError> {
+        let index = self
+            .staged
+            .iter()
+            .position(|(logical, _, _)| logical == filename)
+            .ok_or_else(|| ExportError::Export(format!("unknown staged sink {filename}")))?;
+        let (_, temporary_filename, actual_filename) = self.staged.remove(index);
+        let temporary_path = self.output_dir.join(&temporary_filename);
+        let final_path = self.output_dir.join(&actual_filename);
+        std::fs::rename(&temporary_path, &final_path).map_err(|e| {
+            ExportError::Export(format!(
+                "cannot publish {} as {}: {e}",
+                temporary_path.display(),
+                final_path.display()
+            ))
+        })
+    }
+
+    fn published_filename(&self, filename: &str) -> String {
+        if self.compress {
+            format!("{filename}.gz")
+        } else {
+            filename.to_string()
+        }
+    }
+
     fn accept_derived_file(&mut self, file: DerivedFile) -> Result<(), ExportError> {
         let path = self.output_dir.join(&file.filename);
         std::fs::write(&path, &file.bytes)
@@ -628,6 +781,12 @@ impl ExportSession for CliFileExportSession {
     }
 
     fn finalize(self: Box<Self>) -> Result<Vec<ExportFileSummary>, ExportError> {
+        if !self.staged.is_empty() {
+            return Err(ExportError::Export(format!(
+                "{} staged output sink(s) were not committed",
+                self.staged.len()
+            )));
+        }
         let mut summaries = self.derived;
         for (filename, mime_type, role) in &self.opened {
             let path = self.output_dir.join(filename);
@@ -673,6 +832,7 @@ impl ExportPlugin for LogExportPlugin {
         Ok(Box::new(CliLogExportSession {
             output_dir,
             opened: Vec::new(),
+            staged: Vec::new(),
             derived: Vec::new(),
             logs,
         }))
@@ -682,6 +842,7 @@ impl ExportPlugin for LogExportPlugin {
 struct CliLogExportSession {
     output_dir: PathBuf,
     opened: Vec<(String, String, String)>,
+    staged: Vec<(String, String)>, // (temporary, final)
     derived: Vec<ExportFileSummary>,
     logs: lbd_pipeline::PipelineLogBundle,
 }
@@ -704,6 +865,43 @@ impl ExportSession for CliLogExportSession {
         Ok(Box::new(BufWriter::new(file)))
     }
 
+    fn open_staged_sink(
+        &mut self,
+        filename: &str,
+        mime_type: &str,
+        role: &str,
+    ) -> Result<Box<dyn Write + Send>, ExportError> {
+        let temporary_filename = format!(".{filename}.partial");
+        let path = self.output_dir.join(&temporary_filename);
+        let file = File::create(&path)
+            .map_err(|e| ExportError::Export(format!("cannot create {}: {e}", path.display())))?;
+        self.opened.push((
+            filename.to_string(),
+            mime_type.to_string(),
+            role.to_string(),
+        ));
+        self.staged.push((temporary_filename, filename.to_string()));
+        Ok(Box::new(BufWriter::new(file)))
+    }
+
+    fn commit_staged_sink(&mut self, filename: &str) -> Result<(), ExportError> {
+        let index = self
+            .staged
+            .iter()
+            .position(|(_, final_name)| final_name == filename)
+            .ok_or_else(|| ExportError::Export(format!("unknown staged sink {filename}")))?;
+        let (temporary_filename, final_filename) = self.staged.remove(index);
+        let temporary_path = self.output_dir.join(&temporary_filename);
+        let final_path = self.output_dir.join(&final_filename);
+        std::fs::rename(&temporary_path, &final_path).map_err(|e| {
+            ExportError::Export(format!(
+                "cannot publish {} as {}: {e}",
+                temporary_path.display(),
+                final_path.display()
+            ))
+        })
+    }
+
     fn accept_derived_file(&mut self, file: DerivedFile) -> Result<(), ExportError> {
         let path = self.output_dir.join(&file.filename);
         std::fs::write(&path, &file.bytes)
@@ -718,6 +916,12 @@ impl ExportSession for CliLogExportSession {
     }
 
     fn finalize(self: Box<Self>) -> Result<Vec<ExportFileSummary>, ExportError> {
+        if !self.staged.is_empty() {
+            return Err(ExportError::Export(format!(
+                "{} staged output sink(s) were not committed",
+                self.staged.len()
+            )));
+        }
         let mut summaries = self.derived;
         for (filename, mime_type, role) in &self.opened {
             let path = self.output_dir.join(filename);
@@ -843,9 +1047,16 @@ impl Write for CountingStdoutWriter {
 
 #[cfg(test)]
 mod tests {
-    use lbd_pipeline::PipelineStage;
+    use std::io::{Read, Write};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::built_in_registry;
+    use flate2::read::GzDecoder;
+    use lbd_pipeline::{ExportSession, PipelineStage};
+
+    use crate::chunk_writer::{QuadChunkWriter, QuadChunkingMode};
+    use crate::session;
+
+    use super::{built_in_registry, CliFileExportSession};
 
     #[test]
     fn built_in_registry_exposes_expected_stage_counts() {
@@ -869,5 +1080,96 @@ mod tests {
         );
         // File, Log, Stdout
         assert_eq!(registry.manifests_for_stage(PipelineStage::Export).len(), 3);
+    }
+
+    #[test]
+    fn staged_file_sink_is_hidden_until_commit() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let output_dir = std::env::temp_dir().join(format!("ifc2lbd-staged-sink-{unique}"));
+        std::fs::create_dir_all(&output_dir).expect("mkdir");
+        let mut session = CliFileExportSession {
+            output_dir: output_dir.clone(),
+            compress: true,
+            opened: Vec::new(),
+            staged: Vec::new(),
+            derived: Vec::new(),
+        };
+
+        let mut sink = session
+            .open_staged_sink("part-000.nq", "application/n-quads", "chunk-data")
+            .expect("open staged sink");
+        sink.write_all(b"<s> <p> <o> <g> .\n").expect("write");
+        drop(sink);
+
+        let temporary = output_dir.join(".part-000.nq.gz.partial");
+        let published = output_dir.join("part-000.nq.gz");
+        assert!(temporary.exists());
+        assert!(!published.exists());
+
+        session
+            .commit_staged_sink("part-000.nq")
+            .expect("commit staged sink");
+        assert!(!temporary.exists());
+        assert!(published.exists());
+
+        let mut decoded = String::new();
+        GzDecoder::new(std::fs::File::open(&published).expect("open gzip"))
+            .read_to_string(&mut decoded)
+            .expect("decode gzip");
+        assert_eq!(decoded, "<s> <p> <o> <g> .\n");
+
+        std::fs::remove_dir_all(output_dir).ok();
+    }
+
+    #[test]
+    fn gzip_chunk_manifest_references_published_gzip_files() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let output_dir = std::env::temp_dir().join(format!("ifc2lbd-gzip-chunk-manifest-{unique}"));
+        std::fs::create_dir_all(&output_dir).expect("mkdir");
+        let export_session = CliFileExportSession {
+            output_dir: output_dir.clone(),
+            compress: true,
+            opened: Vec::new(),
+            staged: Vec::new(),
+            derived: Vec::new(),
+        };
+        let shared_session = session::new_shared(Box::new(export_session));
+        let mut writer = QuadChunkWriter::new(
+            shared_session,
+            "test".to_string(),
+            QuadChunkingMode::Lines,
+            1,
+            1024,
+            1,
+            None,
+        )
+        .expect("new writer");
+        writer
+            .write_all(b"<s1> <p> <o> <g> .\n<s2> <p> <o> <g> .\n")
+            .expect("write chunks");
+        writer.finish().expect("finish chunks");
+
+        let manifest_path = output_dir.join("test.manifest.json.gz");
+        let mut decoded = String::new();
+        GzDecoder::new(std::fs::File::open(&manifest_path).expect("open manifest"))
+            .read_to_string(&mut decoded)
+            .expect("decode manifest");
+        let manifest: serde_json::Value = serde_json::from_str(&decoded).expect("parse manifest");
+        let files = manifest["files"].as_array().expect("manifest files");
+        assert_eq!(files.len(), 2);
+        for (index, entry) in files.iter().enumerate() {
+            let filename = entry["file"].as_str().expect("manifest filename");
+            assert_eq!(filename, format!("test.part-{index:03}.nq.gz"));
+            assert!(output_dir.join(filename).exists());
+            assert!(!output_dir.join(format!("test.part-{index:03}.nq")).exists());
+        }
+
+        std::fs::remove_dir_all(output_dir).ok();
     }
 }

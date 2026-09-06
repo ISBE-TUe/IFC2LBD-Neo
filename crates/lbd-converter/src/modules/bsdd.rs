@@ -7,10 +7,7 @@ use flate2::read::GzDecoder;
 use ifc_model::IfcModel;
 use ifc_schema::SpatialType;
 use ifc_step::{decode_ifc_unicode, StepSchema, StepValue};
-use lbd_ontology::{
-    opm_current_property_state, opm_has_property_state, opm_property, prov_generated_at_time,
-    rdf_type, rdfs_label, schema_value, qudt_unit, Object, Triple, XSD,
-};
+use lbd_ontology::{opm_property, rdf_type, rdfs_label, Object, Triple, XSD};
 use serde::Deserialize;
 use serde_json::json;
 use strsim::jaro_winkler;
@@ -60,23 +57,18 @@ const FUZZY_THRESHOLD: f64 = 0.94;
 // Max candidates per class inspected during fuzzy; limits O(n) scan.
 const MAX_FUZZY_CANDIDATES: usize = 400;
 
-const EMBEDDED_BSDD_INDEX_GZ: &[u8] =
-    include_bytes!("../../resources/bsdd_ifc4x3_index.json.gz");
+const EMBEDDED_BSDD_INDEX_GZ: &[u8] = include_bytes!("../../resources/bsdd_ifc4x3_index.json.gz");
 
-const EMBEDDED_PROFILE_BASE: &str =
-    include_str!("../../resources/bsdd-profiles/base.json");
+const EMBEDDED_PROFILE_BASE: &str = include_str!("../../resources/bsdd-profiles/base.json");
 const EMBEDDED_PROFILE_REVIT_DACH: &str =
     include_str!("../../resources/bsdd-profiles/revit-dach.json");
 const EMBEDDED_PROFILE_ALLPLAN_DE: &str =
     include_str!("../../resources/bsdd-profiles/allplan-de.json");
-const EMBEDDED_PROFILE_TEKLA_EN: &str =
-    include_str!("../../resources/bsdd-profiles/tekla-en.json");
+const EMBEDDED_PROFILE_TEKLA_EN: &str = include_str!("../../resources/bsdd-profiles/tekla-en.json");
 
 const BSDDM_NS: &str = "https://w3id.org/ifc2lbd/bsdd-meta#";
-const BSDD_CLASS_NS: &str =
-    "https://identifier.buildingsmart.org/uri/buildingsmart/ifc/4.3/class/";
-const BSDD_PROP_NS: &str =
-    "https://identifier.buildingsmart.org/uri/buildingsmart/ifc/4.3/prop/";
+const BSDD_CLASS_NS: &str = "https://identifier.buildingsmart.org/uri/buildingsmart/ifc/4.3/class/";
+const BSDD_PROP_NS: &str = "https://identifier.buildingsmart.org/uri/buildingsmart/ifc/4.3/prop/";
 
 static BSDD_INDEX: OnceLock<Result<BsddIndex, String>> = OnceLock::new();
 static PROFILE_CACHE: OnceLock<Mutex<HashMap<String, BsddProfile>>> = OnceLock::new();
@@ -168,10 +160,7 @@ impl BsddProfile {
             self.prop_aliases.insert(k, v);
         }
         for (pset, map) in overlay.pset_prop_aliases {
-            self.pset_prop_aliases
-                .entry(pset)
-                .or_default()
-                .extend(map);
+            self.pset_prop_aliases.entry(pset).or_default().extend(map);
         }
         for (k, v) in overlay.hard_mappings {
             self.hard_mappings.insert(k, v);
@@ -365,7 +354,14 @@ impl BsddIndex {
         prop_name: &str,
         profile: &BsddProfile,
     ) -> MatchResult {
-        self.resolve_property_impl(schema, class_code_like, pset_name, prop_name, profile, false)
+        self.resolve_property_impl(
+            schema,
+            class_code_like,
+            pset_name,
+            prop_name,
+            profile,
+            false,
+        )
     }
 
     fn resolve_property_impl(
@@ -457,13 +453,11 @@ impl BsddIndex {
 
         // 2. Pset|prop candidates
         let pset_candidates = collect_candidates(
-            pset_norms
-                .iter()
-                .flat_map(|pset_norm| {
-                    prop_norms
-                        .iter()
-                        .map(move |prop_norm| format!("{pset_norm}|{prop_norm}"))
-                }),
+            pset_norms.iter().flat_map(|pset_norm| {
+                prop_norms
+                    .iter()
+                    .map(move |prop_norm| format!("{pset_norm}|{prop_norm}"))
+            }),
             &self.by_pset_prop,
         );
         match pset_candidates.len() {
@@ -492,13 +486,11 @@ impl BsddIndex {
 
         // 3. Class|prop candidates
         let class_candidates = collect_candidates(
-            class_norms
-                .iter()
-                .flat_map(|class_norm| {
-                    prop_norms
-                        .iter()
-                        .map(move |prop_norm| format!("{class_norm}|{prop_norm}"))
-                }),
+            class_norms.iter().flat_map(|class_norm| {
+                prop_norms
+                    .iter()
+                    .map(move |prop_norm| format!("{class_norm}|{prop_norm}"))
+            }),
             &self.by_class_prop,
         );
         match class_candidates.len() {
@@ -558,9 +550,13 @@ impl BsddIndex {
             let threshold = profile.fuzzy.threshold;
 
             for prop_norm in &prop_norms {
-                if let Some((code, score, all_close)) =
-                    self.resolve_fuzzy_class_scoped(class_norm, pset_norm, prop_norm, threshold, &profile.fuzzy.scope)
-                {
+                if let Some((code, score, all_close)) = self.resolve_fuzzy_class_scoped(
+                    class_norm,
+                    pset_norm,
+                    prop_norm,
+                    threshold,
+                    &profile.fuzzy.scope,
+                ) {
                     if all_close.len() == 1 {
                         return MatchResult {
                             status: MatchStatus::Normalized,
@@ -678,7 +674,9 @@ fn profile_cache() -> &'static Mutex<HashMap<String, BsddProfile>> {
 
 fn load_profile(name_or_path: &str) -> Result<BsddProfile, String> {
     // File path?
-    let is_path = name_or_path.contains('/') || name_or_path.contains('\\') || name_or_path.ends_with(".json");
+    let is_path = name_or_path.contains('/')
+        || name_or_path.contains('\\')
+        || name_or_path.ends_with(".json");
     if is_path {
         return load_profile_from_file(name_or_path);
     }
@@ -1037,7 +1035,7 @@ fn step_value_to_object(value: &StepValue) -> Option<Object> {
         }),
         // A non-finite real is not a measurement.
         StepValue::Real(v) => v.is_finite().then(|| Object::TypedLiteral {
-            value: v.to_string(),
+            value: crate::quantize_value(*v),
             datatype: format!("{XSD}decimal"),
         }),
         // A value its own type forbids — `IfcPositiveLengthMeasure(0.)` — is the
@@ -1089,7 +1087,11 @@ pub fn build_bsdd_match_cache(
                 let mut enqueue = |name: &str| {
                     let key = cache_key(model.schema, &class_name_like, pset_name, name, &profile);
                     unique.entry(key).or_insert_with(|| {
-                        (class_name_like.clone(), pset_name.to_string(), name.to_string())
+                        (
+                            class_name_like.clone(),
+                            pset_name.to_string(),
+                            name.to_string(),
+                        )
                     });
                 };
                 if let Some(psv) = model.property_single_values.get(prop_id) {
@@ -1110,15 +1112,19 @@ pub fn build_bsdd_match_cache(
         unique
             .into_par_iter()
             .map(|(key, (class_name, pset_name, prop_name))| {
-                let m = index.resolve_property(schema, &class_name, &pset_name, &prop_name, &profile);
-                (key, BsddPreparedMatch {
-                    status: m.status,
-                    property_code: m.property_code,
-                    ambiguous_candidates: m.ambiguous_candidates,
-                    exact_meta: m.exact_meta,
-                    method: m.method,
-                    confidence: m.confidence,
-                })
+                let m =
+                    index.resolve_property(schema, &class_name, &pset_name, &prop_name, &profile);
+                (
+                    key,
+                    BsddPreparedMatch {
+                        status: m.status,
+                        property_code: m.property_code,
+                        ambiguous_candidates: m.ambiguous_candidates,
+                        exact_meta: m.exact_meta,
+                        method: m.method,
+                        confidence: m.confidence,
+                    },
+                )
             })
             .collect()
     };
@@ -1127,14 +1133,17 @@ pub fn build_bsdd_match_cache(
         .into_iter()
         .map(|(key, (class_name, pset_name, prop_name))| {
             let m = index.resolve_property(schema, &class_name, &pset_name, &prop_name, &profile);
-            (key, BsddPreparedMatch {
-                status: m.status,
-                property_code: m.property_code,
-                ambiguous_candidates: m.ambiguous_candidates,
-                exact_meta: m.exact_meta,
-                method: m.method,
-                confidence: m.confidence,
-            })
+            (
+                key,
+                BsddPreparedMatch {
+                    status: m.status,
+                    property_code: m.property_code,
+                    ambiguous_candidates: m.ambiguous_candidates,
+                    exact_meta: m.exact_meta,
+                    method: m.method,
+                    confidence: m.confidence,
+                },
+            )
         })
         .collect();
 
@@ -1182,19 +1191,30 @@ pub fn dedup_model_property_sets(model: &IfcModel) -> IfcModel {
 /// Compute a stable content fingerprint for a pset: sorted "name=value_sig" pairs joined by "|".
 /// Two psets with identical properties and values produce the same fingerprint.
 fn pset_content_repr(pset: &ifc_model::PropertySet, model: &ifc_model::IfcModel) -> String {
-    let mut pairs: Vec<String> = pset.properties.iter().filter_map(|prop_id| {
-        if let Some(psv) = model.property_single_values.get(prop_id) {
-            let value_sig = psv.nominal_value.as_ref()
-                .map(step_value_signature)
-                .unwrap_or_else(|| "none".to_string());
-            Some(format!("{}={}", normalize(psv.name.as_str()), value_sig))
-        } else if let Some(pev) = model.property_enumerated_values.get(prop_id) {
-            let vals = pev.values.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",");
-            Some(format!("{}=[{}]", normalize(pev.name.as_str()), vals))
-        } else {
-            None
-        }
-    }).collect();
+    let mut pairs: Vec<String> = pset
+        .properties
+        .iter()
+        .filter_map(|prop_id| {
+            if let Some(psv) = model.property_single_values.get(prop_id) {
+                let value_sig = psv
+                    .nominal_value
+                    .as_ref()
+                    .map(step_value_signature)
+                    .unwrap_or_else(|| "none".to_string());
+                Some(format!("{}={}", normalize(psv.name.as_str()), value_sig))
+            } else if let Some(pev) = model.property_enumerated_values.get(prop_id) {
+                let vals = pev
+                    .values
+                    .iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                Some(format!("{}=[{}]", normalize(pev.name.as_str()), vals))
+            } else {
+                None
+            }
+        })
+        .collect();
     pairs.sort_unstable();
     pairs.join("|")
 }
@@ -1224,7 +1244,7 @@ fn step_value_signature(value: &StepValue) -> String {
         StepValue::Enum(v) => format!("e:{v}"),
         StepValue::Bool(v) => format!("b:{v}"),
         StepValue::Int(v) => format!("i:{v}"),
-        StepValue::Real(v) => format!("r:{v}"),
+        StepValue::Real(v) => format!("r:{}", crate::quantize_value(*v)),
         StepValue::Typed { type_name, value } => {
             format!("t:{type_name}:{}", step_value_signature(value))
         }
@@ -1301,8 +1321,8 @@ pub fn stream_bsdd_with_cache(
     match_cache: Option<&BsddMatchCache>,
 ) -> Result<(u64, BsddDedupStats), StreamError> {
     let index = load_bsdd_index().map_err(StreamError::Conversion)?;
-    let profile = load_active_profile(options.bsdd_profile.as_deref())
-        .map_err(StreamError::Conversion)?;
+    let profile =
+        load_active_profile(options.bsdd_profile.as_deref()).map_err(StreamError::Conversion)?;
 
     // Resolve the match cache to use for this run.
     //
@@ -1339,6 +1359,7 @@ pub fn stream_bsdd_with_cache(
     let dedup = options.bsdd_dedup_properties;
     let unit_by_type = build_unit_type_map(model);
     let generated_at = current_generated_at_rfc3339();
+    let opm_level = options.bsdd_opm_level;
 
     let mut batch = Vec::with_capacity(batch_size);
     let mut triples = 0_u64;
@@ -1372,7 +1393,7 @@ pub fn stream_bsdd_with_cache(
                 sender,
                 batch_size,
                 Triple {
-                    subject: spatial_resource_iri(&base, spatial.spatial_type, &spatial.guid),
+                    subject: spatial_resource_iri(&base, &spatial.guid),
                     predicate: rdf_type(),
                     object: Object::Iri(bsdd_class(class_code)),
                 },
@@ -1404,6 +1425,7 @@ pub fn stream_bsdd_with_cache(
                     &unit_by_type,
                     &generated_at,
                     compact,
+                    opm_level,
                     pset_dedup.as_ref(),
                     sender,
                     batch_size,
@@ -1430,6 +1452,7 @@ pub fn stream_bsdd_with_cache(
             &unit_by_type,
             &generated_at,
             compact,
+            opm_level,
             pset_dedup.as_ref(),
             sender,
             batch_size,
@@ -1462,6 +1485,7 @@ pub fn stream_bsdd_with_cache(
                         &unit_by_type,
                         &generated_at,
                         compact,
+                        opm_level,
                         qty_dedup.as_ref(),
                         sender,
                         batch_size,
@@ -1488,6 +1512,7 @@ pub fn stream_bsdd_with_cache(
             &unit_by_type,
             &generated_at,
             compact,
+            opm_level,
             qty_dedup.as_ref(),
             sender,
             batch_size,
@@ -1508,6 +1533,7 @@ pub fn stream_bsdd_with_cache(
             &base,
             &unit_by_type,
             &generated_at,
+            opm_level,
             sender,
             batch_size,
         )?;
@@ -1532,7 +1558,8 @@ pub fn stream_bsdd_with_cache(
             BsddDedupStats {
                 prop_instances_deduped: (pg.emitted_props.len() + qg.emitted_props.len()) as u64,
                 set_defs_deduped: (pg.emitted_set_defs.len() + qg.emitted_set_defs.len()) as u64,
-                set_contains_deduped: (pg.emitted_set_contains.len() + qg.emitted_set_contains.len()) as u64,
+                set_contains_deduped: (pg.emitted_set_contains.len()
+                    + qg.emitted_set_contains.len()) as u64,
             }
         }
         _ => BsddDedupStats::default(),
@@ -1552,6 +1579,7 @@ fn process_element_psets(
     unit_by_type: &HashMap<String, String>,
     generated_at: &str,
     compact: bool,
+    opm_level: crate::OpmLevel,
     dedup: Option<&Arc<Mutex<DedupSets>>>,
     sender: &Sender<Vec<Triple>>,
     batch_size: usize,
@@ -1565,7 +1593,7 @@ fn process_element_psets(
             )
         } else if let Some(spatial) = model.spatial_nodes.get(&object_id) {
             (
-                spatial_resource_iri(base, spatial.spatial_type, &spatial.guid),
+                spatial_resource_iri(base, &spatial.guid),
                 spatial.guid.to_string(),
                 spatial_ifc_class(spatial.spatial_type).to_string(),
             )
@@ -1575,6 +1603,10 @@ fn process_element_psets(
 
     let mut pset_ids = model.property_sets_for_object[&object_id].clone();
     pset_ids.sort_unstable();
+    pset_ids.dedup();
+
+    // Property nodes already linked to this element via bsddm:hasProperty.
+    let mut emitted_element_edges: HashSet<String> = HashSet::new();
 
     let mut local_batch: Vec<Triple> = Vec::new();
     let mut local_triples = 0_u64;
@@ -1586,14 +1618,19 @@ fn process_element_psets(
             continue;
         };
         let pset_name = pset.name.as_deref().unwrap_or_default();
+        // Scope on the set name rather than its GlobalId. Exporters re-mint the
+        // IfcPropertySet GlobalId on every export even when name and values are
+        // unchanged, which would make this element's property IRIs differ between
+        // two otherwise identical revisions.
+        let pset_scope = crate::set_scope_token(pset_name, &pset.guid);
         // In dedup mode: derive a canonical pset IRI from its content fingerprint so that
         // all elements whose pset has identical properties+values share one pset node.
-        // In non-dedup mode: use the per-entity IFC GUID as normal.
+        // In non-dedup mode: one node per (set scope, owning object).
         let pset_subject = if dedup.is_some() {
             let content = pset_content_repr(pset, model);
             crate::canonical_pset_resource_iri(base, pset_name, &content)
         } else {
-            crate::property_set_resource_iri(base, &pset.guid)
+            crate::property_set_resource_iri(base, &pset_scope, &object_guid)
         };
 
         // element → hasPropertySet is always per-element
@@ -1611,7 +1648,11 @@ fn process_element_psets(
 
         // pset type/label triples: emit once per pset IRI in dedup mode
         let emit_pset_def = match dedup {
-            Some(ds) => ds.lock().unwrap().emitted_set_defs.insert(pset_subject.clone()),
+            Some(ds) => ds
+                .lock()
+                .unwrap()
+                .emitted_set_defs
+                .insert(pset_subject.clone()),
             None => true,
         };
         if emit_pset_def {
@@ -1668,8 +1709,7 @@ fn process_element_psets(
 
         for prop_id in &pset.properties {
             if let Some(psv) = model.property_single_values.get(prop_id) {
-                let Some(raw_value) =
-                    psv.nominal_value.as_ref().and_then(step_value_to_object)
+                let Some(raw_value) = psv.nominal_value.as_ref().and_then(step_value_to_object)
                 else {
                     continue;
                 };
@@ -1680,7 +1720,7 @@ fn process_element_psets(
                     &object_guid,
                     pset_name,
                     &pset_subject,
-                    &pset.guid,
+                    &pset_scope,
                     "containsProperty",
                     psv.name.as_str(),
                     raw_value,
@@ -1692,7 +1732,9 @@ fn process_element_psets(
                     resolve_property_unit(psv, unit_by_type, model),
                     generated_at,
                     compact,
+                    opm_level,
                     dedup,
+                    &mut emitted_element_edges,
                     &mut local_unmatched,
                     &mut local_counter,
                     &mut local_batch,
@@ -1712,7 +1754,7 @@ fn process_element_psets(
                         &object_guid,
                         pset_name,
                         &pset_subject,
-                        &pset.guid,
+                        &pset_scope,
                         "containsProperty",
                         pev.name.as_str(),
                         Object::Literal(enum_value.to_string()),
@@ -1724,7 +1766,9 @@ fn process_element_psets(
                         None,
                         generated_at,
                         compact,
+                        opm_level,
                         dedup,
+                        &mut emitted_element_edges,
                         &mut local_unmatched,
                         &mut local_counter,
                         &mut local_batch,
@@ -1738,7 +1782,9 @@ fn process_element_psets(
     }
 
     if !local_batch.is_empty() {
-        sender.send(local_batch).map_err(|_| StreamError::ChannelClosed)?;
+        sender
+            .send(local_batch)
+            .map_err(|_| StreamError::ChannelClosed)?;
     }
     Ok((local_triples, local_unmatched))
 }
@@ -1754,6 +1800,7 @@ fn process_element_quantities(
     unit_by_type: &HashMap<String, String>,
     generated_at: &str,
     compact: bool,
+    opm_level: crate::OpmLevel,
     dedup: Option<&Arc<Mutex<DedupSets>>>,
     sender: &Sender<Vec<Triple>>,
     batch_size: usize,
@@ -1767,7 +1814,7 @@ fn process_element_quantities(
             )
         } else if let Some(spatial) = model.spatial_nodes.get(&object_id) {
             (
-                spatial_resource_iri(base, spatial.spatial_type, &spatial.guid),
+                spatial_resource_iri(base, &spatial.guid),
                 spatial.guid.to_string(),
                 spatial_ifc_class(spatial.spatial_type).to_string(),
             )
@@ -1777,6 +1824,10 @@ fn process_element_quantities(
 
     let mut quantity_set_ids = model.quantities_for_object[&object_id].clone();
     quantity_set_ids.sort_unstable();
+    quantity_set_ids.dedup();
+
+    // Property nodes already linked to this element via bsddm:hasProperty.
+    let mut emitted_element_edges: HashSet<String> = HashSet::new();
 
     let mut local_batch: Vec<Triple> = Vec::new();
     let mut local_triples = 0_u64;
@@ -1788,20 +1839,26 @@ fn process_element_quantities(
             continue;
         };
         let quantity_set_name = quantity_set.name.as_deref().unwrap_or_default();
+        let quantity_set_scope = crate::set_scope_token(quantity_set_name, &quantity_set.guid);
         let quantity_set_subject = if dedup.is_some() {
             // Fingerprint for qsets: sorted "name=value_sig" from physical quantities.
-            let mut pairs: Vec<String> = quantity_set.quantities.iter().filter_map(|qid| {
-                model.physical_quantities.get(qid).and_then(|q| {
-                    q.value.as_ref().map(step_value_signature).map(|sig| {
-                        format!("{}={}", normalize(q.name.as_str()), sig)
+            let mut pairs: Vec<String> = quantity_set
+                .quantities
+                .iter()
+                .filter_map(|qid| {
+                    model.physical_quantities.get(qid).and_then(|q| {
+                        q.value
+                            .as_ref()
+                            .map(step_value_signature)
+                            .map(|sig| format!("{}={}", normalize(q.name.as_str()), sig))
                     })
                 })
-            }).collect();
+                .collect();
             pairs.sort_unstable();
             let content = pairs.join("|");
             crate::canonical_pset_resource_iri(base, quantity_set_name, &content)
         } else {
-            crate::quantity_set_resource_iri(base, &quantity_set.guid)
+            crate::quantity_set_resource_iri(base, &quantity_set_scope, &object_guid)
         };
 
         // element → hasQuantitySet is always per-element
@@ -1819,7 +1876,11 @@ fn process_element_quantities(
 
         // qset type/label triples: emit once per qset IRI in dedup mode
         let emit_qset_def = match dedup {
-            Some(ds) => ds.lock().unwrap().emitted_set_defs.insert(quantity_set_subject.clone()),
+            Some(ds) => ds
+                .lock()
+                .unwrap()
+                .emitted_set_defs
+                .insert(quantity_set_subject.clone()),
             None => true,
         };
         if emit_qset_def {
@@ -1878,8 +1939,7 @@ fn process_element_quantities(
             let Some(quantity) = model.physical_quantities.get(quantity_id) else {
                 continue;
             };
-            let Some(raw_value) = quantity.value.as_ref().and_then(step_value_to_object)
-            else {
+            let Some(raw_value) = quantity.value.as_ref().and_then(step_value_to_object) else {
                 continue;
             };
             local_counter += 1;
@@ -1889,7 +1949,7 @@ fn process_element_quantities(
                 &object_guid,
                 quantity_set_name,
                 &quantity_set_subject,
-                &quantity_set.guid,
+                &quantity_set_scope,
                 "containsQuantity",
                 quantity.name.as_str(),
                 raw_value,
@@ -1901,7 +1961,9 @@ fn process_element_quantities(
                 resolve_quantity_unit(quantity.entity_name.as_str(), unit_by_type),
                 generated_at,
                 compact,
+                opm_level,
                 dedup,
+                &mut emitted_element_edges,
                 &mut local_unmatched,
                 &mut local_counter,
                 &mut local_batch,
@@ -1913,7 +1975,9 @@ fn process_element_quantities(
     }
 
     if !local_batch.is_empty() {
-        sender.send(local_batch).map_err(|_| StreamError::ChannelClosed)?;
+        sender
+            .send(local_batch)
+            .map_err(|_| StreamError::ChannelClosed)?;
     }
     Ok((local_triples, local_unmatched))
 }
@@ -2017,7 +2081,9 @@ fn emit_property(
     object_guid: &str,
     pset_name: &str,
     pset_subject: &str,
-    pset_guid: &str,
+    // Revision-stable scope token for the owning set (see `crate::set_scope_token`),
+    // NOT the set's IFC GlobalId -- that is re-minted on every export.
+    pset_scope: &str,
     container_predicate: &str, // "containsProperty" for psets, "containsQuantity" for qsets
     prop_name: &str,
     value: Object,
@@ -2029,7 +2095,13 @@ fn emit_property(
     unit: Option<String>,
     generated_at: &str,
     compact: bool,
+    opm_level: crate::OpmLevel,
     dedup: Option<&Arc<Mutex<DedupSets>>>,
+    // Per-element set of property-node IRIs already linked to `subject`. Property
+    // nodes are content-addressed, so several psets/occurrences of one element can
+    // resolve to the same node; without this guard the edge is re-emitted once per
+    // traversal pass instead of once per fact.
+    emitted_element_edges: &mut HashSet<String>,
     unmatched_histogram: &mut HashMap<String, u64>,
     _property_counter: &mut u64,
     batch: &mut Vec<Triple>,
@@ -2041,14 +2113,27 @@ fn emit_property(
     //   - cache hit (preprocess ran)  → O(1) HashMap get, no scanning
     //   - cache miss, fuzzy cache     → live full resolve (safety net, should be rare)
     //   - cache miss, no_fuzzy cache  → exact-only resolve: steps 1-4 only, fuzzy scan skipped
-    let match_result = resolve_from_cache(cache, schema, class_name_like, pset_name, prop_name, profile)
-        .unwrap_or_else(|| {
-            if cache.no_fuzzy {
-                index.resolve_property_exact_only(schema, class_name_like, pset_name, prop_name, profile)
-            } else {
-                index.resolve_property(schema, class_name_like, pset_name, prop_name, profile)
-            }
-        });
+    let match_result = resolve_from_cache(
+        cache,
+        schema,
+        class_name_like,
+        pset_name,
+        prop_name,
+        profile,
+    )
+    .unwrap_or_else(|| {
+        if cache.no_fuzzy {
+            index.resolve_property_exact_only(
+                schema,
+                class_name_like,
+                pset_name,
+                prop_name,
+                profile,
+            )
+        } else {
+            index.resolve_property(schema, class_name_like, pset_name, prop_name, profile)
+        }
+    });
     if matches!(match_result.status, MatchStatus::Unmapped) {
         let key = format!("{pset_name}|{prop_name}");
         *unmatched_histogram.entry(key).or_insert(0) += 1;
@@ -2066,23 +2151,32 @@ fn emit_property(
         )
     } else {
         (
-            crate::property_resource_iri(base, &predicate_local, object_guid, pset_guid),
-            crate::property_state_iri(base, &predicate_local, object_guid, pset_guid, crate::object_value_repr(&value)),
+            crate::property_resource_iri(base, &predicate_local, object_guid, pset_scope),
+            crate::property_state_iri(
+                base,
+                &predicate_local,
+                object_guid,
+                pset_scope,
+                crate::object_value_repr(&value),
+            ),
         )
     };
 
-    // Universal direct link: element → property (always per-element)
-    push(
-        batch,
-        sender,
-        batch_size,
-        Triple {
-            subject: subject.to_string(),
-            predicate: bsddm("hasProperty"),
-            object: Object::Iri(prop_subject.clone()),
-        },
-        triples,
-    )?;
+    // Universal direct link: element → property. Emitted once per distinct
+    // (element, property node) fact, not once per traversal that reaches it.
+    if emitted_element_edges.insert(prop_subject.clone()) {
+        push(
+            batch,
+            sender,
+            batch_size,
+            Triple {
+                subject: subject.to_string(),
+                predicate: bsddm("hasProperty"),
+                object: Object::Iri(prop_subject.clone()),
+            },
+            triples,
+        )?;
+    }
 
     // In dedup mode: gate the container link and all definition triples on first-seen.
     // The mutex is held only for the atomic check-and-insert — no I/O inside the lock.
@@ -2193,17 +2287,6 @@ fn emit_property(
         batch_size,
         Triple {
             subject: prop_subject.clone(),
-            predicate: opm_has_property_state(),
-            object: Object::Iri(state_subject.clone()),
-        },
-        triples,
-    )?;
-    push(
-        batch,
-        sender,
-        batch_size,
-        Triple {
-            subject: prop_subject.clone(),
             predicate: rdfs_label(),
             object: Object::Literal(format!("{pset_name}:{prop_name}")),
         },
@@ -2266,55 +2349,15 @@ fn emit_property(
         }
     } // end if !compact
 
-    push(
-        batch,
-        sender,
-        batch_size,
-        Triple {
-            subject: state_subject.clone(),
-            predicate: rdf_type(),
-            object: Object::Iri(opm_current_property_state()),
-        },
-        triples,
+    crate::emit_opm_value(
+        &prop_subject,
+        &state_subject,
+        value,
+        unit,
+        generated_at,
+        opm_level,
+        &mut |triple| push(batch, sender, batch_size, triple, triples),
     )?;
-    push(
-        batch,
-        sender,
-        batch_size,
-        Triple {
-            subject: state_subject.clone(),
-            predicate: prov_generated_at_time(),
-            object: Object::TypedLiteral {
-                value: generated_at.to_string(),
-                datatype: format!("{XSD}dateTime"),
-            },
-        },
-        triples,
-    )?;
-    push(
-        batch,
-        sender,
-        batch_size,
-        Triple {
-            subject: state_subject.clone(),
-            predicate: schema_value(),
-            object: value,
-        },
-        triples,
-    )?;
-    if let Some(unit) = unit {
-        push(
-            batch,
-            sender,
-            batch_size,
-            Triple {
-                subject: state_subject,
-                predicate: qudt_unit(),
-                object: Object::Iri(unit),
-            },
-            triples,
-        )?;
-    }
 
     Ok(())
 }
@@ -2331,6 +2374,7 @@ fn emit_bsdd_standard_attrs(
     base: &str,
     unit_by_type: &HashMap<String, String>,
     generated_at: &str,
+    opm_level: crate::OpmLevel,
     sender: &Sender<Vec<Triple>>,
     batch_size: usize,
 ) -> Result<u64, StreamError> {
@@ -2338,59 +2382,166 @@ fn emit_bsdd_standard_attrs(
     let mut triples = 0_u64;
 
     for spatial in sorted_values(&model.spatial_nodes) {
-        let subject = spatial_resource_iri(base, spatial.spatial_type, &spatial.guid);
+        let subject = spatial_resource_iri(base, &spatial.guid);
         let guid = spatial.guid.as_str();
 
-        emit_std_attr(&subject, base, "globalIdIfcRoot", guid,
-            Object::Literal(spatial.guid.to_string()), generated_at, None,
-            &mut batch, sender, batch_size, &mut triples)?;
+        emit_std_attr(
+            &subject,
+            base,
+            "globalIdIfcRoot",
+            guid,
+            Object::Literal(spatial.guid.to_string()),
+            generated_at,
+            None,
+            opm_level,
+            &mut batch,
+            sender,
+            batch_size,
+            &mut triples,
+        )?;
         if let Some(name) = &spatial.name {
-            emit_std_attr(&subject, base, "nameIfcRoot", guid,
-                Object::Literal(name.to_string()), generated_at, None,
-                &mut batch, sender, batch_size, &mut triples)?;
+            emit_std_attr(
+                &subject,
+                base,
+                "nameIfcRoot",
+                guid,
+                Object::Literal(name.to_string()),
+                generated_at,
+                None,
+                opm_level,
+                &mut batch,
+                sender,
+                batch_size,
+                &mut triples,
+            )?;
         }
         if let Some(desc) = spatial.description.as_ref().filter(|d| !d.is_empty()) {
-            emit_std_attr(&subject, base, "descriptionIfcRoot", guid,
-                Object::Literal(desc.to_string()), generated_at, None,
-                &mut batch, sender, batch_size, &mut triples)?;
+            emit_std_attr(
+                &subject,
+                base,
+                "descriptionIfcRoot",
+                guid,
+                Object::Literal(desc.to_string()),
+                generated_at,
+                None,
+                opm_level,
+                &mut batch,
+                sender,
+                batch_size,
+                &mut triples,
+            )?;
         }
         if let Some(object_type) = &spatial.object_type {
-            emit_std_attr(&subject, base, "objectTypeIfcObject", guid,
-                Object::Literal(object_type.to_string()), generated_at, None,
-                &mut batch, sender, batch_size, &mut triples)?;
+            emit_std_attr(
+                &subject,
+                base,
+                "objectTypeIfcObject",
+                guid,
+                Object::Literal(object_type.to_string()),
+                generated_at,
+                None,
+                opm_level,
+                &mut batch,
+                sender,
+                batch_size,
+                &mut triples,
+            )?;
         }
         if let Some(long_name) = &spatial.long_name {
             let attr = match model.schema {
                 ifc_step::StepSchema::Ifc2x3 => "longNameIfcSpatialStructureElement",
                 _ => "longNameIfcSpatialElement",
             };
-            emit_std_attr(&subject, base, attr, guid,
-                Object::Literal(long_name.to_string()), generated_at, None,
-                &mut batch, sender, batch_size, &mut triples)?;
+            emit_std_attr(
+                &subject,
+                base,
+                attr,
+                guid,
+                Object::Literal(long_name.to_string()),
+                generated_at,
+                None,
+                opm_level,
+                &mut batch,
+                sender,
+                batch_size,
+                &mut triples,
+            )?;
         }
         if let Some(elevation) = spatial.elevation {
-            emit_std_attr(&subject, base, "elevationIfcBuildingStorey", guid,
-                Object::TypedLiteral { value: elevation.to_string(), datatype: format!("{XSD}double") },
-                generated_at, unit_by_type.get("LENGTHUNIT").cloned(),
-                &mut batch, sender, batch_size, &mut triples)?;
+            emit_std_attr(
+                &subject,
+                base,
+                "elevationIfcBuildingStorey",
+                guid,
+                Object::TypedLiteral {
+                    value: crate::quantize_value(elevation),
+                    datatype: format!("{XSD}double"),
+                },
+                generated_at,
+                unit_by_type.get("LENGTHUNIT").cloned(),
+                opm_level,
+                &mut batch,
+                sender,
+                batch_size,
+                &mut triples,
+            )?;
         }
         if let Some(ref_elevation) = spatial.ref_elevation {
-            emit_std_attr(&subject, base, "refElevationIfcSite", guid,
-                Object::TypedLiteral { value: ref_elevation.to_string(), datatype: format!("{XSD}double") },
-                generated_at, unit_by_type.get("LENGTHUNIT").cloned(),
-                &mut batch, sender, batch_size, &mut triples)?;
+            emit_std_attr(
+                &subject,
+                base,
+                "refElevationIfcSite",
+                guid,
+                Object::TypedLiteral {
+                    value: crate::quantize_value(ref_elevation),
+                    datatype: format!("{XSD}double"),
+                },
+                generated_at,
+                unit_by_type.get("LENGTHUNIT").cloned(),
+                opm_level,
+                &mut batch,
+                sender,
+                batch_size,
+                &mut triples,
+            )?;
         }
         if let Some(elev_ref_height) = spatial.elevation_of_ref_height {
-            emit_std_attr(&subject, base, "elevationOfRefHeightIfcBuilding", guid,
-                Object::TypedLiteral { value: elev_ref_height.to_string(), datatype: format!("{XSD}double") },
-                generated_at, unit_by_type.get("LENGTHUNIT").cloned(),
-                &mut batch, sender, batch_size, &mut triples)?;
+            emit_std_attr(
+                &subject,
+                base,
+                "elevationOfRefHeightIfcBuilding",
+                guid,
+                Object::TypedLiteral {
+                    value: crate::quantize_value(elev_ref_height),
+                    datatype: format!("{XSD}double"),
+                },
+                generated_at,
+                unit_by_type.get("LENGTHUNIT").cloned(),
+                opm_level,
+                &mut batch,
+                sender,
+                batch_size,
+                &mut triples,
+            )?;
         }
         if let Some(elev_terrain) = spatial.elevation_of_terrain {
-            emit_std_attr(&subject, base, "elevationOfTerrainIfcBuilding", guid,
-                Object::TypedLiteral { value: elev_terrain.to_string(), datatype: format!("{XSD}double") },
-                generated_at, unit_by_type.get("LENGTHUNIT").cloned(),
-                &mut batch, sender, batch_size, &mut triples)?;
+            emit_std_attr(
+                &subject,
+                base,
+                "elevationOfTerrainIfcBuilding",
+                guid,
+                Object::TypedLiteral {
+                    value: crate::quantize_value(elev_terrain),
+                    datatype: format!("{XSD}double"),
+                },
+                generated_at,
+                unit_by_type.get("LENGTHUNIT").cloned(),
+                opm_level,
+                &mut batch,
+                sender,
+                batch_size,
+                &mut triples,
+            )?;
         }
     }
 
@@ -2398,28 +2549,83 @@ fn emit_bsdd_standard_attrs(
         let subject = element_resource_iri(base, element);
         let guid = element.guid.as_str();
 
-        emit_std_attr(&subject, base, "globalIdIfcRoot", guid,
-            Object::Literal(element.guid.to_string()), generated_at, None,
-            &mut batch, sender, batch_size, &mut triples)?;
+        emit_std_attr(
+            &subject,
+            base,
+            "globalIdIfcRoot",
+            guid,
+            Object::Literal(element.guid.to_string()),
+            generated_at,
+            None,
+            opm_level,
+            &mut batch,
+            sender,
+            batch_size,
+            &mut triples,
+        )?;
         if let Some(name) = &element.name {
-            emit_std_attr(&subject, base, "nameIfcRoot", guid,
-                Object::Literal(name.to_string()), generated_at, None,
-                &mut batch, sender, batch_size, &mut triples)?;
+            emit_std_attr(
+                &subject,
+                base,
+                "nameIfcRoot",
+                guid,
+                Object::Literal(name.to_string()),
+                generated_at,
+                None,
+                opm_level,
+                &mut batch,
+                sender,
+                batch_size,
+                &mut triples,
+            )?;
         }
         if let Some(desc) = element.description.as_ref().filter(|d| !d.is_empty()) {
-            emit_std_attr(&subject, base, "descriptionIfcRoot", guid,
-                Object::Literal(desc.to_string()), generated_at, None,
-                &mut batch, sender, batch_size, &mut triples)?;
+            emit_std_attr(
+                &subject,
+                base,
+                "descriptionIfcRoot",
+                guid,
+                Object::Literal(desc.to_string()),
+                generated_at,
+                None,
+                opm_level,
+                &mut batch,
+                sender,
+                batch_size,
+                &mut triples,
+            )?;
         }
         if let Some(object_type) = &element.object_type {
-            emit_std_attr(&subject, base, "objectTypeIfcObject", guid,
-                Object::Literal(object_type.to_string()), generated_at, None,
-                &mut batch, sender, batch_size, &mut triples)?;
+            emit_std_attr(
+                &subject,
+                base,
+                "objectTypeIfcObject",
+                guid,
+                Object::Literal(object_type.to_string()),
+                generated_at,
+                None,
+                opm_level,
+                &mut batch,
+                sender,
+                batch_size,
+                &mut triples,
+            )?;
         }
         if let Some(tag) = &element.tag {
-            emit_std_attr(&subject, base, "batid", guid,
-                Object::Literal(tag.to_string()), generated_at, None,
-                &mut batch, sender, batch_size, &mut triples)?;
+            emit_std_attr(
+                &subject,
+                base,
+                "batid",
+                guid,
+                Object::Literal(tag.to_string()),
+                generated_at,
+                None,
+                opm_level,
+                &mut batch,
+                sender,
+                batch_size,
+                &mut triples,
+            )?;
         }
         if let Some(overall_height) = element.overall_height {
             let attr = match element.entity_name.as_str() {
@@ -2427,10 +2633,23 @@ fn emit_bsdd_standard_attrs(
                 "IFCWINDOW" => "overallHeightIfcWindow",
                 _ => "overallHeight",
             };
-            emit_std_attr(&subject, base, attr, guid,
-                Object::TypedLiteral { value: overall_height.to_string(), datatype: format!("{XSD}double") },
-                generated_at, unit_by_type.get("LENGTHUNIT").cloned(),
-                &mut batch, sender, batch_size, &mut triples)?;
+            emit_std_attr(
+                &subject,
+                base,
+                attr,
+                guid,
+                Object::TypedLiteral {
+                    value: crate::quantize_value(overall_height),
+                    datatype: format!("{XSD}double"),
+                },
+                generated_at,
+                unit_by_type.get("LENGTHUNIT").cloned(),
+                opm_level,
+                &mut batch,
+                sender,
+                batch_size,
+                &mut triples,
+            )?;
         }
         if let Some(overall_width) = element.overall_width {
             let attr = match element.entity_name.as_str() {
@@ -2438,34 +2657,99 @@ fn emit_bsdd_standard_attrs(
                 "IFCWINDOW" => "overallWidthIfcWindow",
                 _ => "overallWidth",
             };
-            emit_std_attr(&subject, base, attr, guid,
-                Object::TypedLiteral { value: overall_width.to_string(), datatype: format!("{XSD}double") },
-                generated_at, unit_by_type.get("LENGTHUNIT").cloned(),
-                &mut batch, sender, batch_size, &mut triples)?;
+            emit_std_attr(
+                &subject,
+                base,
+                attr,
+                guid,
+                Object::TypedLiteral {
+                    value: crate::quantize_value(overall_width),
+                    datatype: format!("{XSD}double"),
+                },
+                generated_at,
+                unit_by_type.get("LENGTHUNIT").cloned(),
+                opm_level,
+                &mut batch,
+                sender,
+                batch_size,
+                &mut triples,
+            )?;
         }
         if let Some(n) = element.number_of_risers {
-            emit_std_attr(&subject, base, "numberOfRiserIfcStairFlight", guid,
-                Object::TypedLiteral { value: n.to_string(), datatype: format!("{XSD}integer") },
-                generated_at, None,
-                &mut batch, sender, batch_size, &mut triples)?;
+            emit_std_attr(
+                &subject,
+                base,
+                "numberOfRiserIfcStairFlight",
+                guid,
+                Object::TypedLiteral {
+                    value: n.to_string(),
+                    datatype: format!("{XSD}integer"),
+                },
+                generated_at,
+                None,
+                opm_level,
+                &mut batch,
+                sender,
+                batch_size,
+                &mut triples,
+            )?;
         }
         if let Some(n) = element.number_of_treads {
-            emit_std_attr(&subject, base, "numberOfTreadsIfcStairFlight", guid,
-                Object::TypedLiteral { value: n.to_string(), datatype: format!("{XSD}integer") },
-                generated_at, None,
-                &mut batch, sender, batch_size, &mut triples)?;
+            emit_std_attr(
+                &subject,
+                base,
+                "numberOfTreadsIfcStairFlight",
+                guid,
+                Object::TypedLiteral {
+                    value: n.to_string(),
+                    datatype: format!("{XSD}integer"),
+                },
+                generated_at,
+                None,
+                opm_level,
+                &mut batch,
+                sender,
+                batch_size,
+                &mut triples,
+            )?;
         }
         if let Some(h) = element.riser_height {
-            emit_std_attr(&subject, base, "riserHeightIfcStairFlight", guid,
-                Object::TypedLiteral { value: h.to_string(), datatype: format!("{XSD}double") },
-                generated_at, unit_by_type.get("LENGTHUNIT").cloned(),
-                &mut batch, sender, batch_size, &mut triples)?;
+            emit_std_attr(
+                &subject,
+                base,
+                "riserHeightIfcStairFlight",
+                guid,
+                Object::TypedLiteral {
+                    value: crate::quantize_value(h),
+                    datatype: format!("{XSD}double"),
+                },
+                generated_at,
+                unit_by_type.get("LENGTHUNIT").cloned(),
+                opm_level,
+                &mut batch,
+                sender,
+                batch_size,
+                &mut triples,
+            )?;
         }
         if let Some(l) = element.tread_length {
-            emit_std_attr(&subject, base, "treadLengthIfcStairFlight", guid,
-                Object::TypedLiteral { value: l.to_string(), datatype: format!("{XSD}double") },
-                generated_at, unit_by_type.get("LENGTHUNIT").cloned(),
-                &mut batch, sender, batch_size, &mut triples)?;
+            emit_std_attr(
+                &subject,
+                base,
+                "treadLengthIfcStairFlight",
+                guid,
+                Object::TypedLiteral {
+                    value: crate::quantize_value(l),
+                    datatype: format!("{XSD}double"),
+                },
+                generated_at,
+                unit_by_type.get("LENGTHUNIT").cloned(),
+                opm_level,
+                &mut batch,
+                sender,
+                batch_size,
+                &mut triples,
+            )?;
         }
     }
 
@@ -2485,6 +2769,7 @@ fn emit_std_attr(
     value: Object,
     generated_at: &str,
     unit: Option<String>,
+    opm_level: crate::OpmLevel,
     batch: &mut Vec<Triple>,
     sender: &Sender<Vec<Triple>>,
     batch_size: usize,
@@ -2502,56 +2787,59 @@ fn emit_std_attr(
 
     // Universal navigation — same shape as regular bSDD properties.
     // No named direct predicate (bsddm:batid etc.) — identity carried by rdfs:label.
-    push(batch, sender, batch_size, Triple {
-        subject: subject.to_string(),
-        predicate: bsddm("hasProperty"),
-        object: Object::Iri(prop_iri.clone()),
-    }, triples)?;
-    push(batch, sender, batch_size, Triple {
-        subject: prop_iri.clone(),
-        predicate: rdf_type(),
-        object: Object::Iri(opm_property()),
-    }, triples)?;
-    push(batch, sender, batch_size, Triple {
-        subject: prop_iri.clone(),
-        predicate: rdf_type(),
-        object: Object::Iri(bsddm("StandardAttribute")),
-    }, triples)?;
-    push(batch, sender, batch_size, Triple {
-        subject: prop_iri.clone(),
-        predicate: rdfs_label(),
-        object: Object::Literal(attr_local.to_string()),
-    }, triples)?;
-    push(batch, sender, batch_size, Triple {
-        subject: prop_iri.clone(),
-        predicate: opm_has_property_state(),
-        object: Object::Iri(state_iri.clone()),
-    }, triples)?;
-    push(batch, sender, batch_size, Triple {
-        subject: state_iri.clone(),
-        predicate: rdf_type(),
-        object: Object::Iri(opm_current_property_state()),
-    }, triples)?;
-    push(batch, sender, batch_size, Triple {
-        subject: state_iri.clone(),
-        predicate: prov_generated_at_time(),
-        object: Object::TypedLiteral {
-            value: generated_at.to_string(),
-            datatype: format!("{XSD}dateTime"),
+    push(
+        batch,
+        sender,
+        batch_size,
+        Triple {
+            subject: subject.to_string(),
+            predicate: bsddm("hasProperty"),
+            object: Object::Iri(prop_iri.clone()),
         },
-    }, triples)?;
-    push(batch, sender, batch_size, Triple {
-        subject: state_iri.clone(),
-        predicate: schema_value(),
-        object: value,
-    }, triples)?;
-    if let Some(unit) = unit {
-        push(batch, sender, batch_size, Triple {
-            subject: state_iri,
-            predicate: qudt_unit(),
-            object: Object::Iri(unit),
-        }, triples)?;
-    }
+        triples,
+    )?;
+    push(
+        batch,
+        sender,
+        batch_size,
+        Triple {
+            subject: prop_iri.clone(),
+            predicate: rdf_type(),
+            object: Object::Iri(opm_property()),
+        },
+        triples,
+    )?;
+    push(
+        batch,
+        sender,
+        batch_size,
+        Triple {
+            subject: prop_iri.clone(),
+            predicate: rdf_type(),
+            object: Object::Iri(bsddm("StandardAttribute")),
+        },
+        triples,
+    )?;
+    push(
+        batch,
+        sender,
+        batch_size,
+        Triple {
+            subject: prop_iri.clone(),
+            predicate: rdfs_label(),
+            object: Object::Literal(attr_local.to_string()),
+        },
+        triples,
+    )?;
+    crate::emit_opm_value(
+        &prop_iri,
+        &state_iri,
+        value,
+        unit,
+        generated_at,
+        opm_level,
+        &mut |triple| push(batch, sender, batch_size, triple, triples),
+    )?;
     Ok(())
 }
 
@@ -2604,9 +2892,18 @@ mod tests {
 
     fn test_index() -> BsddIndex {
         let mut exact = HashMap::new();
-        exact.insert("ifcwall|psetbeamcommon|isexternal".to_string(), "IsExternal".to_string());
-        exact.insert("ifcwall|psetwallcommon|isexternal".to_string(), "IsExternal".to_string());
-        exact.insert("ifcdoor|psetdoorcommon|isexternal".to_string(), "IsExternal".to_string());
+        exact.insert(
+            "ifcwall|psetbeamcommon|isexternal".to_string(),
+            "IsExternal".to_string(),
+        );
+        exact.insert(
+            "ifcwall|psetwallcommon|isexternal".to_string(),
+            "IsExternal".to_string(),
+        );
+        exact.insert(
+            "ifcdoor|psetdoorcommon|isexternal".to_string(),
+            "IsExternal".to_string(),
+        );
 
         let mut by_class_prop: HashMap<String, Vec<String>> = HashMap::new();
         by_class_prop.insert(
@@ -2635,14 +2932,8 @@ mod tests {
         );
 
         let mut by_prop: HashMap<String, Vec<String>> = HashMap::new();
-        by_prop.insert(
-            "isexternal".to_string(),
-            vec!["IsExternal".to_string()],
-        );
-        by_prop.insert(
-            "loadbearing".to_string(),
-            vec!["LoadBearing".to_string()],
-        );
+        by_prop.insert("isexternal".to_string(), vec!["IsExternal".to_string()]);
+        by_prop.insert("loadbearing".to_string(), vec!["LoadBearing".to_string()]);
 
         let mut class_code_by_norm = HashMap::new();
         class_code_by_norm.insert("ifcwall".to_string(), "IfcWall".to_string());
@@ -2734,7 +3025,10 @@ mod tests {
         // (may be Normalized or Unmapped depending on JW score — this test verifies
         // it does NOT cross-class match to a different entity's property)
         assert!(
-            matches!(result.status, MatchStatus::Normalized | MatchStatus::Unmapped),
+            matches!(
+                result.status,
+                MatchStatus::Normalized | MatchStatus::Unmapped
+            ),
             "expected Normalized or Unmapped, got {:?}",
             result.status
         );
@@ -2775,8 +3069,7 @@ mod tests {
     #[test]
     fn test_fuzzy_threshold_unchanged() {
         assert_eq!(
-            FUZZY_THRESHOLD,
-            0.94,
+            FUZZY_THRESHOLD, 0.94,
             "FUZZY_THRESHOLD changed — review all fuzzy-match tests before adjusting"
         );
     }
@@ -2785,8 +3078,7 @@ mod tests {
     #[test]
     fn test_max_fuzzy_candidates_unchanged() {
         assert_eq!(
-            MAX_FUZZY_CANDIDATES,
-            400,
+            MAX_FUZZY_CANDIDATES, 400,
             "MAX_FUZZY_CANDIDATES changed — review performance implications"
         );
     }

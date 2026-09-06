@@ -4,7 +4,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::types::{
     ConversionRequest, ExecutionSettings, NquadsChunkingMode, NquadsGraphNaming,
-    NquadsModuleOptions, OutputFormats, TurtleGrouping, TurtleLayout, WasmApiError,
+    NquadsModuleOptions, NquadsPartitioning, OutputFormats, TurtleGrouping, TurtleLayout,
+    WasmApiError,
 };
 use lbd_converter::IfcowlMode;
 use lbd_pipeline::ActivationPlan;
@@ -144,6 +145,34 @@ pub(crate) fn resolve_execution_settings(
             )));
         }
     };
+    let partitioning = match effective_nquads_entries
+        .and_then(|m| m.get("partitioning"))
+        .map(String::as_str)
+        .unwrap_or("mixed")
+    {
+        "mixed" => NquadsPartitioning::Mixed,
+        "producers" => NquadsPartitioning::Producers,
+        other => {
+            return Err(WasmApiError::Message(format!(
+                "invalid `neo-nquads-chunked-serializer.partitioning={}` (expected mixed|producers)",
+                other
+            )));
+        }
+    };
+    if partitioning == NquadsPartitioning::Producers && active.contains(ONTOLOGY_MAPPER_ID) {
+        return Err(WasmApiError::Message(
+            "`neo-nquads-chunked-serializer.partitioning=producers` is not compatible with the full-graph ontology mapper"
+                .to_string(),
+        ));
+    }
+    if partitioning == NquadsPartitioning::Producers
+        && !matches!(nquads_chunking_str.as_str(), "lines" | "bytes")
+    {
+        return Err(WasmApiError::Message(
+            "`neo-nquads-chunked-serializer.partitioning=producers` supports chunking=lines|bytes"
+                .to_string(),
+        ));
+    }
 
     let output_stem = configs
         .get(FILE_EXPORT_ID)
@@ -216,6 +245,31 @@ pub(crate) fn resolve_execution_settings(
         .map(|v| v == "true")
         .unwrap_or(false);
 
+    let resolve_opm_level = |module_id: &str| -> Result<lbd_converter::OpmLevel, WasmApiError> {
+        match configs
+            .get(module_id)
+            .and_then(|entries| entries.get("opm_level"))
+            .map(String::as_str)
+        {
+            None => Ok(lbd_converter::OpmLevel::L2),
+            Some("l2") => Ok(lbd_converter::OpmLevel::L2),
+            Some("l3") => Ok(lbd_converter::OpmLevel::L3),
+            Some(other) => {
+                return Err(WasmApiError::Message(format!(
+                    "invalid `{module_id}.opm_level={other}` (expected l2 or l3)"
+                )));
+            }
+        }
+    };
+    let bsdd_opm_level = resolve_opm_level(BSDD_PRODUCER_ID)?;
+    let props_opm_level = resolve_opm_level(PROPS_OPM_PRODUCER_ID)?;
+    let omg_opm_level = resolve_opm_level(OMG_FOG_PRODUCER_ID)?;
+    let omg_emit_bounding_boxes = configs
+        .get(OMG_FOG_PRODUCER_ID)
+        .and_then(|entries| entries.get("emit_bounding_boxes"))
+        .map(|value| value != "false")
+        .unwrap_or(true);
+
     Ok(ExecutionSettings {
         output_formats,
         active_plugin_ids: active.iter().map(|s| s.to_string()).collect(),
@@ -226,6 +280,7 @@ pub(crate) fn resolve_execution_settings(
             chunk_size_bytes,
             chunk_prefix,
             graph_naming,
+            partitioning,
         },
         output_stem,
         turtle_grouping,
@@ -235,6 +290,10 @@ pub(crate) fn resolve_execution_settings(
         bsdd_compact,
         bsdd_include_standard_attrs,
         bsdd_dedup_properties,
+        bsdd_opm_level,
+        props_opm_level,
+        omg_opm_level,
+        omg_emit_bounding_boxes,
     })
 }
 
@@ -291,12 +350,72 @@ pub(crate) fn validate_typed_module_configs(
             NQUADS_CHUNKED_SERIALIZER_ID => validate_nquads_chunked_serializer_options(entries)?,
             TURTLE_SERIALIZER_ID => validate_turtle_serializer_options(entries)?,
             FILE_EXPORT_ID => validate_file_export_options(entries)?,
-            BOT_PRODUCER_ID | BEO_PRODUCER_ID | PROPS_OPM_PRODUCER_ID | OMG_FOG_PRODUCER_ID => {
+            BEO_PRODUCER_ID => {
                 if !entries.is_empty() {
                     return Err(WasmApiError::Message(format!(
                         "module `{}` does not support options",
                         module_id
                     )));
+                }
+            }
+            PROPS_OPM_PRODUCER_ID => {
+                for (key, value) in entries {
+                    match key.as_str() {
+                        "opm_level" => {
+                            if !["l2", "l3"].contains(&value.as_str()) {
+                                return Err(WasmApiError::Message(format!(
+                                    "`{module_id}.opm_level` must be l2 or l3, got `{value}`"
+                                )));
+                            }
+                        }
+                        other => {
+                            return Err(WasmApiError::Message(format!(
+                                "unknown option `{module_id}.{other}` (supported: opm_level)"
+                            )));
+                        }
+                    }
+                }
+            }
+            OMG_FOG_PRODUCER_ID => {
+                for (key, value) in entries {
+                    match key.as_str() {
+                        "opm_level" => {
+                            if !["l2", "l3"].contains(&value.as_str()) {
+                                return Err(WasmApiError::Message(format!(
+                                    "`{module_id}.opm_level` must be l2 or l3, got `{value}`"
+                                )));
+                            }
+                        }
+                        "emit_bounding_boxes" => {
+                            if !["true", "false"].contains(&value.as_str()) {
+                                return Err(WasmApiError::Message(format!(
+                                    "`{module_id}.emit_bounding_boxes` must be true or false, got `{value}`"
+                                )));
+                            }
+                        }
+                        other => {
+                            return Err(WasmApiError::Message(format!(
+                                "unknown option `{module_id}.{other}` (supported: opm_level, emit_bounding_boxes)"
+                            )));
+                        }
+                    }
+                }
+            }
+            BOT_PRODUCER_ID => {
+                for (key, value) in entries {
+                    match key.as_str() {
+                        "mode" if matches!(value.as_str(), "ifc" | "extended") => {}
+                        "mode" => {
+                            return Err(WasmApiError::Message(format!(
+                                "`neo-bot-producer.mode` must be ifc|extended, got `{value}`"
+                            )))
+                        }
+                        other => {
+                            return Err(WasmApiError::Message(format!(
+                                "unknown option `neo-bot-producer.{other}`"
+                            )))
+                        }
+                    }
                 }
             }
             IFCOWL_PRODUCER_ID => validate_ifcowl_producer_options(entries)?,
@@ -464,9 +583,17 @@ pub(crate) fn validate_bsdd_producer_options(
                     )));
                 }
             }
+            "opm_level" => {
+                if !["l2", "l3"].contains(&value.as_str()) {
+                    return Err(WasmApiError::Message(format!(
+                        "`neo-bsdd-producer.opm_level` must be l2 or l3, got `{}`",
+                        value
+                    )));
+                }
+            }
             other => {
                 return Err(WasmApiError::Message(format!(
-                    "unknown option `neo-bsdd-producer.{}` (supported: profile, compact, include_standard_attrs, dedup_properties)",
+                    "unknown option `neo-bsdd-producer.{}` (supported: profile, compact, include_standard_attrs, dedup_properties, opm_level)",
                     other
                 )));
             }
@@ -508,6 +635,7 @@ pub(crate) fn validate_nquads_chunked_serializer_options(
         "chunk_size_bytes",
         "chunk_prefix",
         "graph_naming",
+        "partitioning",
     ];
     for (key, value) in entries {
         if !allowed.contains(&key.as_str()) {
@@ -533,6 +661,12 @@ pub(crate) fn validate_nquads_chunked_serializer_options(
         if key == "graph_naming" && !matches!(value.as_str(), "producers" | "filename") {
             return Err(WasmApiError::Message(format!(
                 "invalid `neo-nquads-chunked-serializer.graph_naming={}` (expected producers|filename)",
+                value
+            )));
+        }
+        if key == "partitioning" && !matches!(value.as_str(), "mixed" | "producers") {
+            return Err(WasmApiError::Message(format!(
+                "invalid `neo-nquads-chunked-serializer.partitioning={}` (expected mixed|producers)",
                 value
             )));
         }
@@ -569,4 +703,73 @@ pub(crate) fn validate_file_export_options(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request() -> ConversionRequest {
+        ConversionRequest {
+            module_ids: Vec::new(),
+            module_options: Vec::new(),
+            base_uri: None,
+            output_stem: None,
+            execution_mode: None,
+            memory_feasibility_mb: None,
+            stream_batch_size: None,
+            ifcowl_max_workers: None,
+            sink_chunk_size_bytes: None,
+            sink_max_pending_bytes: None,
+            input_format: None,
+            structured_data_files: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn resolves_independent_opm_levels_and_omg_bbox_switch() {
+        let plan = ActivationPlan {
+            enabled_ids: vec![
+                BSDD_PRODUCER_ID.to_string(),
+                PROPS_OPM_PRODUCER_ID.to_string(),
+                OMG_FOG_PRODUCER_ID.to_string(),
+                TURTLE_SERIALIZER_ID.to_string(),
+            ],
+        };
+        let configs = HashMap::from([
+            (
+                BSDD_PRODUCER_ID.to_string(),
+                HashMap::from([("opm_level".to_string(), "l3".to_string())]),
+            ),
+            (
+                PROPS_OPM_PRODUCER_ID.to_string(),
+                HashMap::from([("opm_level".to_string(), "l2".to_string())]),
+            ),
+            (
+                OMG_FOG_PRODUCER_ID.to_string(),
+                HashMap::from([
+                    ("opm_level".to_string(), "l3".to_string()),
+                    ("emit_bounding_boxes".to_string(), "false".to_string()),
+                ]),
+            ),
+        ]);
+
+        validate_typed_module_configs(&configs).unwrap();
+        let settings =
+            resolve_execution_settings(&plan, &configs, &request(), &mut Vec::new(), 0).unwrap();
+
+        assert_eq!(settings.bsdd_opm_level, lbd_converter::OpmLevel::L3);
+        assert_eq!(settings.props_opm_level, lbd_converter::OpmLevel::L2);
+        assert_eq!(settings.omg_opm_level, lbd_converter::OpmLevel::L3);
+        assert!(!settings.omg_emit_bounding_boxes);
+    }
+
+    #[test]
+    fn rejects_invalid_omg_bbox_switch_value() {
+        let configs = HashMap::from([(
+            OMG_FOG_PRODUCER_ID.to_string(),
+            HashMap::from([("emit_bounding_boxes".to_string(), "yes".to_string())]),
+        )]);
+        assert!(validate_typed_module_configs(&configs).is_err());
+    }
 }

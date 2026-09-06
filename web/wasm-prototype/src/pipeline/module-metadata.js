@@ -62,6 +62,15 @@ export const MODULES = [
 		"Optional",
 		["metadata"],
 	),
+	mod(
+		"neo-bot-topology-preprocess",
+		"BOT topology reconstruction",
+		"Preprocess",
+		"Builds an enriched topology graph with R-tree candidate search and Parry geometry checks",
+		"Required",
+		[],
+		{ requires: ["neo-geometry-preprocess"] },
+	),
 
 	// Produce
 	mod(
@@ -70,7 +79,7 @@ export const MODULES = [
 		"Produce",
 		"Building Topology Ontology — spatial structure and zones",
 		"Required",
-		[],
+		["mode"],
 		{ outputs: ["bot"] },
 	),
 	mod(
@@ -88,7 +97,13 @@ export const MODULES = [
 		"Produce",
 		"buildingSMART Data Dictionary properties",
 		"Required",
-		["profile", "compact", "include_standard_attrs", "dedup_properties"],
+		[
+			"profile",
+			"compact",
+			"include_standard_attrs",
+			"dedup_properties",
+			"opm_level",
+		],
 		{ outputs: ["props"] },
 	),
 	mod(
@@ -97,7 +112,7 @@ export const MODULES = [
 		"Produce",
 		"OPM property set modeling",
 		"Required",
-		[],
+		["opm_level"],
 		{ outputs: ["props"] },
 	),
 	mod(
@@ -106,7 +121,7 @@ export const MODULES = [
 		"Produce",
 		"Ontology for Managing Geometry / Fog features",
 		"Required",
-		[],
+		["opm_level", "emit_bounding_boxes"],
 		{ outputs: ["omg"] },
 	),
 	mod(
@@ -175,6 +190,7 @@ export const MODULES = [
 			"chunk_size_bytes",
 			"chunk_prefix",
 			"graph_naming",
+			"partitioning",
 		],
 	),
 
@@ -192,8 +208,12 @@ export const MODULES = [
 // Resolve a module activation plan — mirrors the Rust resolvePlan() logic.
 // In Electron mode we use a simplified version that just returns the
 // requested modules plus any required dependencies.
-export function resolvePlanStatic(requestedModules, _moduleOptions) {
+export function resolvePlanStatic(requestedModules, moduleOptions) {
 	const requested = new Set(requestedModules);
+	if (moduleOptions.includes("neo-bot-producer.mode=extended")) {
+		requested.add("neo-geometry-preprocess");
+		requested.add("neo-bot-topology-preprocess");
+	}
 
 	// File export is always required
 	requested.add("neo-file-export");

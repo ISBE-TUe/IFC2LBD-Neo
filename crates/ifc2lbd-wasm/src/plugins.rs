@@ -66,15 +66,20 @@ pub(crate) fn module_option_keys(module_id: &str) -> Vec<String> {
             "chunk_size_bytes".to_string(),
             "chunk_prefix".to_string(),
             "graph_naming".to_string(),
+            "partitioning".to_string(),
         ],
         TURTLE_SERIALIZER_ID => vec!["grouping".to_string(), "layout".to_string()],
+        BOT_PRODUCER_ID => vec!["mode".to_string()],
         IFCOWL_PRODUCER_ID => vec!["mode".to_string()],
         BSDD_PRODUCER_ID => vec![
             "profile".to_string(),
             "compact".to_string(),
             "include_standard_attrs".to_string(),
             "dedup_properties".to_string(),
+            "opm_level".to_string(),
         ],
+        PROPS_OPM_PRODUCER_ID => vec!["opm_level".to_string()],
+        OMG_FOG_PRODUCER_ID => vec!["opm_level".to_string(), "emit_bounding_boxes".to_string()],
         FILE_EXPORT_ID => vec!["output_stem".to_string(), "compress".to_string()],
         LOG_EXPORT_ID => vec![],
         "neo-geometry-preprocess" => vec!["metadata".to_string()],
@@ -183,7 +188,7 @@ impl PipelinePlugin for BotProducerPlugin {
             display_name: "BOT",
             stage: PipelineStage::Produce,
             description: "Generates BOT spatial hierarchy and element-type triples.",
-            inputs: vec!["ifc-model"],
+            inputs: vec!["ifc-model", "tessellated-model (extended mode)"],
             outputs: vec!["bot-triples"],
             requires: vec![],
             conflicts_with: vec![],
@@ -213,10 +218,53 @@ impl ProducerPlugin for BotProducerPlugin {
 
         let (raw_sender, raw_receiver) =
             crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
-        let graph_iri = BatchKind::new(format!("{}bot", options.base_uri.trim_end_matches('/')));
+        let graph_iri = BatchKind::new(format!("{}/bot", options.base_uri.trim_end_matches('/')));
         forward_as_tagged(raw_receiver, graph_iri, sender.clone());
 
-        stream_bot(&model, &options, &raw_sender)
+        let bot_config = ctx
+            .get::<lbd_topology::BotConfig>()
+            .unwrap_or_else(|| std::sync::Arc::new(lbd_topology::BotConfig::default()));
+        let topology = match bot_config.mode {
+            lbd_topology::BotMode::Ifc => std::sync::Arc::new(lbd_topology::build_topology(&model)),
+            lbd_topology::BotMode::Extended => {
+                let tessellated = ctx
+                    .get::<tessellated_model::TessellatedModel>()
+                    .ok_or_else(|| {
+                        ProducerError::Conversion(
+                            "extended BOT mode requires neo-geometry-preprocess".to_string(),
+                        )
+                    })?;
+                let (graph, stats) = plugin_topology_full::build_extended_topology_parallel(
+                    &model,
+                    &tessellated,
+                    bot_config.tolerance,
+                );
+                ctx.write_log(
+                    lbd_pipeline::BOT_PRODUCER_ID,
+                    serde_json::json!({
+                        "mode": "extended",
+                        "semantic_edges": stats.semantic_edges,
+                        "geometry_edges": stats.geometry_edges,
+                        "indexed_meshes": stats.indexed_meshes,
+                        "rstar_candidate_pairs": stats.candidate_pairs,
+                        "rayon_threads": stats.rayon_threads,
+                        "cache_mode": stats.cache_mode,
+                        "prepared_mesh_builds": stats.prepared_mesh_builds,
+                        "parry_checks": stats.candidate_pairs,
+                        "parry_separated": stats.separated,
+                        "parry_touching": stats.touching,
+                        "parry_intersecting": stats.intersecting,
+                        "parry_contained": stats.contained,
+                        "subelement_relations": stats.propagated_from_subelements,
+                        "candidate_seconds": stats.candidate_seconds,
+                        "geometry_enrichment_seconds": stats.elapsed_seconds,
+                        "tolerance": bot_config.tolerance,
+                    }),
+                );
+                std::sync::Arc::new(graph)
+            }
+        };
+        lbd_converter::stream_bot_with_topology(&model, &options, &topology, &raw_sender)
             .map(|_| ())
             .map_err(|_| ProducerError::ChannelClosed)
     }
@@ -266,7 +314,7 @@ impl ProducerPlugin for BeoProducerPlugin {
 
         let (raw_sender, raw_receiver) =
             crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
-        let graph_iri = BatchKind::new(format!("{}beo", options.base_uri.trim_end_matches('/')));
+        let graph_iri = BatchKind::new(format!("{}/beo", options.base_uri.trim_end_matches('/')));
         forward_as_tagged(raw_receiver, graph_iri, sender.clone());
 
         stream_beo(&model, &options, &raw_sender)
@@ -317,7 +365,7 @@ impl ProducerPlugin for BsddProducerPlugin {
 
         let (raw_sender, raw_receiver) =
             crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
-        let graph_iri = BatchKind::new(format!("{}bsdd", options.base_uri.trim_end_matches('/')));
+        let graph_iri = BatchKind::new(format!("{}/bsdd", options.base_uri.trim_end_matches('/')));
         forward_as_tagged(raw_receiver, graph_iri, sender.clone());
 
         let cache = ctx.get::<BsddMatchCache>();
@@ -387,7 +435,7 @@ impl ProducerPlugin for PropsOpmProducerPlugin {
 
         let (raw_sender, raw_receiver) =
             crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
-        let graph_iri = BatchKind::new(format!("{}props", options.base_uri.trim_end_matches('/')));
+        let graph_iri = BatchKind::new(format!("{}/props", options.base_uri.trim_end_matches('/')));
         forward_as_tagged(raw_receiver, graph_iri, sender.clone());
 
         stream_props_opm(&model, &options, &raw_sender)
@@ -408,8 +456,8 @@ impl PipelinePlugin for OmgFogProducerPlugin {
             id: OMG_FOG_PRODUCER_ID,
             display_name: "OMG-FOG",
             stage: PipelineStage::Produce,
-            description: "Generates OMG geometry-link triples (omg:hasGeometry / omg:Geometry) for all elements and spatial nodes.",
-            inputs: vec!["ifc-model"],
+            description: "Generates OMG links and GeoSPARQL bounding boxes when tessellated geometry is available.",
+            inputs: vec!["ifc-model", "tessellated-model (optional)"],
             outputs: vec!["omg-triples"],
             requires: vec![],
             conflicts_with: vec![],
@@ -438,10 +486,39 @@ impl ProducerPlugin for OmgFogProducerPlugin {
                 "OmgFogProducerPlugin: missing ConvertOptions in context".to_string(),
             )
         })?;
+        let options = match ctx.get::<tessellated_model::TessellatedModel>() {
+            Some(tessellated) => {
+                let hashes = plugin_geometry_producer::stable_element_geometry_hashes(&tessellated);
+                let mut with_geometry = (*options).clone();
+                with_geometry.geometry_hashes = Some(std::sync::Arc::new(hashes));
+                if with_geometry.omg_emit_bounding_boxes {
+                    let boxes: std::collections::HashMap<_, _> = tessellated
+                        .world_bounding_boxes()
+                        .iter()
+                        .map(|(&id, &[x_min, x_max, y_min, y_max, z_min, z_max])| {
+                            (
+                                id,
+                                lbd_converter::BoundingBox {
+                                    x_min,
+                                    x_max,
+                                    y_min,
+                                    y_max,
+                                    z_min,
+                                    z_max,
+                                },
+                            )
+                        })
+                        .collect();
+                    with_geometry.geometry_bounding_boxes = Some(std::sync::Arc::new(boxes));
+                }
+                std::sync::Arc::new(with_geometry)
+            }
+            None => options,
+        };
 
         let (raw_sender, raw_receiver) =
             crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
-        let graph_iri = BatchKind::new(format!("{}omg", options.base_uri.trim_end_matches('/')));
+        let graph_iri = BatchKind::new(format!("{}/omg", options.base_uri.trim_end_matches('/')));
         forward_as_tagged(raw_receiver, graph_iri, sender.clone());
 
         stream_omg_fog(&model, &options, &raw_sender)
@@ -500,7 +577,8 @@ impl ProducerPlugin for IfcowlProducerPlugin {
 
         let (ifcowl_sender, ifcowl_receiver) =
             crossbeam::channel::bounded(ctx.resource_limits.channel_capacity);
-        let graph_iri = BatchKind::new(format!("{}ifcowl", options.base_uri.trim_end_matches('/')));
+        let graph_iri =
+            BatchKind::new(format!("{}/ifcowl", options.base_uri.trim_end_matches('/')));
         forward_as_tagged(ifcowl_receiver, graph_iri, sender.clone());
 
         lbd_converter::modules::ifcowl::stream_ifcowl(

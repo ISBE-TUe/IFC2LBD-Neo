@@ -23,7 +23,7 @@ where
 
     if options.emit_ifcowl_links {
         for node in sorted_values(&model.spatial_nodes) {
-            let subject = crate::spatial_resource_iri(base, node.spatial_type, &node.guid);
+            let subject = crate::spatial_resource_iri(base, &node.guid);
             emit(Triple {
                 subject,
                 predicate: owl_same_as(),

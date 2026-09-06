@@ -7,6 +7,9 @@ import { getState } from "./state.js";
 // Default option values per module, matching the Rust-side defaults.
 // Only options that differ from these will appear in the command.
 const MODULE_DEFAULTS = {
+	"neo-bot-producer": {
+		mode: "ifc",
+	},
 	"neo-turtle-serializer": {
 		grouping: "streaming",
 		layout: "joined",
@@ -17,6 +20,7 @@ const MODULE_DEFAULTS = {
 		chunk_size_bytes: "268435456",
 		chunk_prefix: "out",
 		graph_naming: "producers",
+		partitioning: "mixed",
 	},
 	"neo-nquads-serializer": {
 		graph_naming: "producers",
@@ -26,6 +30,14 @@ const MODULE_DEFAULTS = {
 		compact: "false",
 		include_standard_attrs: "true",
 		dedup_properties: "false",
+		opm_level: "l2",
+	},
+	"neo-props-opm": {
+		opm_level: "l2",
+	},
+	"neo-omg-fog": {
+		opm_level: "l2",
+		emit_bounding_boxes: "true",
 	},
 	"neo-geometry-preprocess": {
 		metadata: "full",

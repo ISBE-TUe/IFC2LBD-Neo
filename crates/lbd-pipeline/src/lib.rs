@@ -425,6 +425,38 @@ pub trait ExportSession: Send {
         role: &str,
     ) -> Result<Box<dyn std::io::Write + Send>, ExportError>;
 
+    /// Open a sink whose contents must not become visible under `filename`
+    /// until [`ExportSession::commit_staged_sink`] is called.
+    ///
+    /// File exporters should write to a temporary sibling and atomically rename
+    /// it on commit. Exporters without publication semantics may use the default
+    /// implementation, which behaves like `open_sink()`.
+    fn open_staged_sink(
+        &mut self,
+        filename: &str,
+        mime_type: &str,
+        role: &str,
+    ) -> Result<Box<dyn std::io::Write + Send>, ExportError> {
+        self.open_sink(filename, mime_type, role)
+    }
+
+    /// Publish a staged sink after its writer has been flushed and dropped.
+    ///
+    /// The default is a no-op for streaming or in-memory exporters where
+    /// `open_staged_sink()` delegates directly to `open_sink()`.
+    fn commit_staged_sink(&mut self, _filename: &str) -> Result<(), ExportError> {
+        Ok(())
+    }
+
+    /// Resolve the externally visible name for a logical sink name.
+    ///
+    /// Exporters that transform names (for example by appending `.gz`) must
+    /// override this so manifests reference the artefacts that were actually
+    /// published. The default preserves the suggested filename unchanged.
+    fn published_filename(&self, filename: &str) -> String {
+        filename.to_string()
+    }
+
     /// Accept a sidecar artefact emitted by a producer plugin.
     ///
     /// May be called zero or more times before `finalize()`.

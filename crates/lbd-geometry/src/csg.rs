@@ -16,7 +16,8 @@ use parry3d::bounding_volume::Aabb;
 use parry3d::math::{Pose, Real, Vector};
 use parry3d::query::contact;
 use parry3d::query::intersection_test;
-use parry3d::shape::TriMesh;
+use parry3d::query::{Ray, RayCast};
+use parry3d::shape::{TriMesh, TriMeshFlags};
 use tracing::{debug, info};
 
 use crate::{
@@ -869,10 +870,7 @@ fn profile_placement_transform(step: &StepFile, pos_id: EntityId) -> Affine3 {
         "IFCAXIS2PLACEMENT3D" => axis2placement3d_to_affine(step, pos_id),
         "IFCAXIS2PLACEMENT2D" => {
             let origin = match entity.args.first() {
-                Some(StepValue::Ref(id)) => {
-                    
-                    cartesian_point_3d(step, *id)
-                }
+                Some(StepValue::Ref(id)) => cartesian_point_3d(step, *id),
                 _ => [0.0, 0.0, 0.0],
             };
             let ref_dir = match entity.args.get(1) {
@@ -1031,7 +1029,7 @@ fn axis2placement3d_to_affine(step: &StepFile, id: EntityId) -> Affine3 {
 
 /// Build a parry3d TriMesh from our TriangleMesh.
 /// Returns None if the mesh has no valid triangles.
-fn build_parry_mesh(mesh: &TriangleMesh) -> Option<TriMesh> {
+fn parry_buffers(mesh: &TriangleMesh) -> Option<(Vec<Vector>, Vec<[u32; 3]>)> {
     if mesh.triangle_count() == 0 {
         return None;
     }
@@ -1054,7 +1052,30 @@ fn build_parry_mesh(mesh: &TriangleMesh) -> Option<TriMesh> {
         })
         .collect();
 
-    TriMesh::new(vertices, indices).ok()
+    Some((vertices, indices))
+}
+
+fn build_parry_mesh(mesh: &TriangleMesh) -> Option<(TriMesh, Vec<Vector>)> {
+    let (vertices, indices) = parry_buffers(mesh)?;
+    let flags = TriMeshFlags::MERGE_DUPLICATE_VERTICES | TriMeshFlags::CONNECTED_COMPONENTS;
+    let mut trimesh = TriMesh::with_flags(vertices, indices, flags).ok()?;
+    let representative_points = trimesh
+        .connected_components()
+        .map(|components| {
+            components
+                .ranges
+                .windows(2)
+                .filter_map(|range| {
+                    let face = *components.grouped_faces.get(range[0])?;
+                    Some(trimesh.triangle(face).a)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    // Component metadata is needed only to retain one test point per disconnected
+    // solid. Drop it before caching the mesh so large models do not pay for it.
+    trimesh.set_flags(TriMeshFlags::empty()).ok()?;
+    Some((trimesh, representative_points))
 }
 
 /// Compute the bounding box of a mesh in parry3d Aabb format.
@@ -1097,13 +1118,172 @@ fn aabb_disjoint(a: &Aabb, b: &Aabb) -> bool {
 
 /// Result of parry3d mesh contact analysis.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) enum ContactType {
+pub enum ContactType {
     /// Meshes are penetrating (interior overlap) → IntersectingElement
     Intersecting,
     /// Meshes are touching at boundary (zero-distance) → InterfaceOf
     Touching,
     /// Meshes are separated → no relation
     Separated,
+}
+
+/// A triangle mesh converted once into Parry's query representation.
+///
+/// `TriMesh::new` builds Parry's internal acceleration data. Keeping this
+/// object alive lets callers analyze many candidate pairs without rebuilding
+/// the same mesh for every pair.
+pub struct PreparedTriangleMesh {
+    trimesh: TriMesh,
+    aabb: Aabb,
+    representative_points: Vec<Vector>,
+}
+
+/// A closed triangle shell prepared for solid-containment queries.
+///
+/// Construction fails for open or non-manifold shells. That deliberately turns
+/// uncertain containment into no assertion instead of publishing a false BOT
+/// `containsElement` relation.
+pub struct PreparedContainmentMesh {
+    trimesh: TriMesh,
+    aabb: Aabb,
+}
+
+/// Convert a world-space triangle mesh into a reusable Parry query mesh.
+pub fn prepare_triangle_mesh(mesh: &TriangleMesh) -> Option<PreparedTriangleMesh> {
+    let (trimesh, representative_points) = build_parry_mesh(mesh)?;
+    Some(PreparedTriangleMesh {
+        trimesh,
+        aabb: mesh_aabb(mesh)?,
+        representative_points,
+    })
+}
+
+/// Prepare a mesh only when it is a closed, consistently-oriented manifold.
+pub fn prepare_containment_mesh(mesh: &TriangleMesh) -> Option<PreparedContainmentMesh> {
+    let (vertices, indices) = parry_buffers(mesh)?;
+    let flags = TriMeshFlags::MERGE_DUPLICATE_VERTICES | TriMeshFlags::HALF_EDGE_TOPOLOGY;
+    let trimesh = TriMesh::with_flags(vertices, indices, flags).ok()?;
+    let topology = trimesh.topology()?;
+    if topology
+        .half_edges
+        .iter()
+        .any(|half_edge| half_edge.twin == u32::MAX)
+    {
+        return None;
+    }
+    Some(PreparedContainmentMesh {
+        trimesh,
+        aabb: mesh_aabb(mesh)?,
+    })
+}
+
+/// Return true only when every disconnected component of `containee` lies
+/// inside the closed `container` shell.
+///
+/// Call this only after a surface-contact query returned `Separated`. With no
+/// boundary crossing, one representative point per connected component is
+/// sufficient to classify that complete component. Three independent parity
+/// rays avoid treating an edge/vertex grazing event as containment.
+pub fn prepared_mesh_contains_mesh(
+    container: &PreparedContainmentMesh,
+    containee: &PreparedTriangleMesh,
+    tolerance: f64,
+) -> bool {
+    if containee.representative_points.is_empty()
+        || !aabb_contains(&container.aabb, &containee.aabb, tolerance as Real)
+    {
+        return false;
+    }
+    containee.representative_points.iter().all(|&point| {
+        point_inside_closed_mesh(&container.trimesh, &container.aabb, point, tolerance)
+    })
+}
+
+fn aabb_contains(container: &Aabb, containee: &Aabb, tolerance: Real) -> bool {
+    containee.mins.x >= container.mins.x - tolerance
+        && containee.mins.y >= container.mins.y - tolerance
+        && containee.mins.z >= container.mins.z - tolerance
+        && containee.maxs.x <= container.maxs.x + tolerance
+        && containee.maxs.y <= container.maxs.y + tolerance
+        && containee.maxs.z <= container.maxs.z + tolerance
+}
+
+fn point_inside_closed_mesh(mesh: &TriMesh, aabb: &Aabb, point: Vector, tolerance: f64) -> bool {
+    let directions = [
+        Vector::new(1.0, 0.371, 0.529).normalize(),
+        Vector::new(0.417, 1.0, 0.263).normalize(),
+        Vector::new(0.293, 0.487, 1.0).normalize(),
+    ];
+    directions
+        .iter()
+        .filter(|&&direction| ray_crossing_parity(mesh, aabb, point, direction, tolerance))
+        .count()
+        >= 2
+}
+
+fn ray_crossing_parity(
+    mesh: &TriMesh,
+    aabb: &Aabb,
+    point: Vector,
+    direction: Vector,
+    tolerance: f64,
+) -> bool {
+    let extent = (aabb.maxs - aabb.mins).length().max(1.0);
+    let epsilon = (tolerance as Real).max(extent * 1.0e-6).max(1.0e-6);
+    let mut origin = point;
+    let mut crossings = 0usize;
+    // A valid closed mesh cannot require more boundary crossings than it has
+    // triangles. The cap also guarantees termination on numerical edge cases.
+    for _ in 0..=mesh.num_triangles() {
+        let ray = Ray::new(origin, direction);
+        let Some(toi) = mesh.cast_local_ray(&ray, extent * 4.0, false) else {
+            break;
+        };
+        crossings += 1;
+        origin = ray.point_at(toi + epsilon);
+    }
+    crossings % 2 == 1
+}
+
+/// Analyze two already-prepared Parry meshes.
+pub fn prepared_meshes_analyze(
+    left: &PreparedTriangleMesh,
+    right: &PreparedTriangleMesh,
+    options: &ExactCheckOptions,
+) -> ContactType {
+    if aabb_disjoint(&left.aabb, &right.aabb) {
+        return ContactType::Separated;
+    }
+
+    match contact(
+        &Pose::identity(),
+        &left.trimesh,
+        &Pose::identity(),
+        &right.trimesh,
+        options.tolerance as Real,
+    ) {
+        Ok(Some(contact)) => {
+            if contact.dist < -options.tolerance as Real {
+                ContactType::Intersecting
+            } else {
+                ContactType::Touching
+            }
+        }
+        Ok(None) => ContactType::Separated,
+        Err(_) => {
+            debug!("parry: contact unsupported for pair");
+            // Fallback: use intersection_test (conservative — treats touching as intersecting)
+            match intersection_test(
+                &Pose::identity(),
+                &left.trimesh,
+                &Pose::identity(),
+                &right.trimesh,
+            ) {
+                Ok(true) => ContactType::Intersecting,
+                _ => ContactType::Separated,
+            }
+        }
+    }
 }
 
 /// Analyze two meshes using parry3d BVH-accelerated contact detection.
@@ -1122,62 +1302,13 @@ pub fn meshes_analyze(
     right_mesh: &TriangleMesh,
     options: &ExactCheckOptions,
 ) -> ContactType {
-    let left_tri_count = left_mesh.triangle_count();
-    let right_tri_count = right_mesh.triangle_count();
-
-    if left_tri_count == 0 || right_tri_count == 0 {
-        return ContactType::Separated;
-    }
-
-    // Build parry3d meshes
-    let Some(left_trimesh) = build_parry_mesh(left_mesh) else {
+    let Some(left) = prepare_triangle_mesh(left_mesh) else {
         return ContactType::Separated;
     };
-    let Some(right_trimesh) = build_parry_mesh(right_mesh) else {
+    let Some(right) = prepare_triangle_mesh(right_mesh) else {
         return ContactType::Separated;
     };
-
-    // Quick AABB pre-filter
-    let left_aabb = mesh_aabb(left_mesh);
-    let right_aabb = mesh_aabb(right_mesh);
-
-    if let (Some(la), Some(ra)) = (&left_aabb, &right_aabb) {
-        if aabb_disjoint(la, ra) {
-            return ContactType::Separated;
-        }
-    }
-
-    // parry3d contact query — returns signed distance between shapes
-    // Pose::identity() means meshes are in the same coordinate space (already transformed)
-    match contact(
-        &Pose::identity(),
-        &left_trimesh,
-        &Pose::identity(),
-        &right_trimesh,
-        options.tolerance as Real,
-    ) {
-        Ok(Some(contact)) => {
-            if contact.dist < -options.tolerance as Real {
-                ContactType::Intersecting
-            } else {
-                ContactType::Touching
-            }
-        }
-        Ok(None) => ContactType::Separated,
-        Err(_) => {
-            debug!("parry: contact unsupported for pair");
-            // Fallback: use intersection_test (conservative — treats touching as intersecting)
-            match intersection_test(
-                &Pose::identity(),
-                &left_trimesh,
-                &Pose::identity(),
-                &right_trimesh,
-            ) {
-                Ok(true) => ContactType::Intersecting,
-                _ => ContactType::Separated,
-            }
-        }
-    }
+    prepared_meshes_analyze(&left, &right, options)
 }
 
 // ---------------------------------------------------------------------------
@@ -1587,5 +1718,55 @@ impl ExactGeometryKernel for ParryGeometryKernel {
             "ParryGeometryKernel: use derive_relations_with_csg_batched for pair analysis"
         );
         Ok(ExactPairAnalysis::default())
+    }
+}
+
+#[cfg(test)]
+mod containment_tests {
+    use super::*;
+
+    fn box_mesh(min: [f64; 3], max: [f64; 3]) -> TriangleMesh {
+        let vertices = vec![
+            min[0], min[1], min[2], max[0], min[1], min[2], max[0], max[1], min[2], min[0], max[1],
+            min[2], min[0], min[1], max[2], max[0], min[1], max[2], max[0], max[1], max[2], min[0],
+            max[1], max[2],
+        ];
+        let indices = vec![
+            0, 2, 1, 0, 3, 2, // bottom
+            4, 5, 6, 4, 6, 7, // top
+            0, 1, 5, 0, 5, 4, // front
+            3, 7, 6, 3, 6, 2, // back
+            0, 4, 7, 0, 7, 3, // left
+            1, 2, 6, 1, 6, 5, // right
+        ];
+        TriangleMesh { vertices, indices }
+    }
+
+    #[test]
+    fn closed_shell_contains_a_disjoint_inner_mesh() {
+        let outer = box_mesh([0.0, 0.0, 0.0], [10.0, 10.0, 10.0]);
+        let inner = box_mesh([2.0, 2.0, 2.0], [3.0, 3.0, 3.0]);
+        let outer = prepare_containment_mesh(&outer).expect("closed outer shell");
+        let inner = prepare_triangle_mesh(&inner).expect("inner collision mesh");
+
+        assert!(prepared_mesh_contains_mesh(&outer, &inner, 1.0e-4));
+    }
+
+    #[test]
+    fn closed_shell_does_not_contain_an_outside_mesh() {
+        let outer = box_mesh([0.0, 0.0, 0.0], [10.0, 10.0, 10.0]);
+        let outside = box_mesh([12.0, 2.0, 2.0], [13.0, 3.0, 3.0]);
+        let outer = prepare_containment_mesh(&outer).expect("closed outer shell");
+        let outside = prepare_triangle_mesh(&outside).expect("outside collision mesh");
+
+        assert!(!prepared_mesh_contains_mesh(&outer, &outside, 1.0e-4));
+    }
+
+    #[test]
+    fn open_shell_is_rejected_for_containment() {
+        let mut open = box_mesh([0.0, 0.0, 0.0], [10.0, 10.0, 10.0]);
+        open.indices.truncate(open.indices.len() - 6);
+
+        assert!(prepare_containment_mesh(&open).is_none());
     }
 }

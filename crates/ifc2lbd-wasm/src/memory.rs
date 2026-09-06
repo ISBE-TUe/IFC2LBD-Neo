@@ -153,7 +153,7 @@ mod tests {
     use super::*;
     use crate::types::{
         ExecutionSettings, NquadsChunkingMode, NquadsGraphNaming, NquadsModuleOptions,
-        OutputFormats, TurtleGrouping, TurtleLayout,
+        NquadsPartitioning, OutputFormats, TurtleGrouping, TurtleLayout,
     };
     use lbd_converter::IfcowlMode;
 
@@ -176,6 +176,7 @@ mod tests {
                 chunk_size_bytes: 4 * 1024 * 1024,
                 chunk_prefix: "chunk".to_string(),
                 graph_naming: NquadsGraphNaming::Producers,
+                partitioning: NquadsPartitioning::Mixed,
             },
             output_stem: "model".to_string(),
             turtle_grouping: TurtleGrouping::Sorted,
@@ -185,6 +186,10 @@ mod tests {
             bsdd_compact: false,
             bsdd_include_standard_attrs: false,
             bsdd_dedup_properties: false,
+            bsdd_opm_level: lbd_converter::OpmLevel::L2,
+            props_opm_level: lbd_converter::OpmLevel::L2,
+            omg_opm_level: lbd_converter::OpmLevel::L2,
+            omg_emit_bounding_boxes: true,
         }
     }
 

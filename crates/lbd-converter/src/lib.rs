@@ -18,41 +18,39 @@ pub use modules::bsdd::{
 
 // LBD sub-module public streaming API — each produces its own named graph.
 // To add a new module: create modules/<name>.rs, pub mod it in modules/mod.rs, add pub use here.
-pub use modules::bot::stream_bot;
+pub use lbd_geometry::BoundingBox;
 pub use modules::beo::stream_beo;
+pub use modules::bot::{stream_bot, stream_bot_with_topology};
 pub use modules::ifcowl::stream_ifcowl;
 pub use modules::omg_fog::stream_omg_fog;
 pub use modules::props_opm::stream_props_opm;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::OnceLock;
 
 use crossbeam::channel::Sender;
-use ifc_model::{
-    expand_ifc_guid, IfcModel, PropertyEnumeratedValue, PropertySingleValue,
-    Unit,
-};
+use ifc_model::{expand_ifc_guid, IfcModel, PropertyEnumeratedValue, PropertySingleValue, Unit};
 use ifc_schema::SpatialType;
 use ifc_step::{decode_ifc_unicode, EntityId, StepFile, StepSchema, StepValue};
 use lbd_geometry::{
-    derive_relations_from_bounding_boxes, BoundingBox, GeometryRelation, GeometryRelationKind,
+    derive_relations_from_bounding_boxes, GeometryRelation, GeometryRelationKind,
     MapBoundingBoxProvider,
 };
 use lbd_ontology::{
     beo_class, bot_adjacent_element, bot_adjacent_zone, bot_building, bot_contains_element,
     bot_contains_zone, bot_has_sub_element, bot_interface, bot_interface_of,
-    bot_intersecting_element, bot_site, bot_space, bot_storey, bot_zone, express_has_boolean,
-    express_has_double, express_has_integer, express_has_logical, express_has_string,
-    express_logical_value, geo_as_wkt, geo_geometry, geo_wkt_literal,
-    dicp_construction_project, lbd_has_bounding_box, list_has_contents, list_has_next,
-    opm_current_property_state, opm_has_property_state,
-    opm_property, owl_imports, owl_object_property, owl_ontology, props_property,
-    prov_generated_at_time, qudt_unit, rdf_li, rdf_seq, rdf_type, rdfs_comment, rdfs_label,
-    schema_value, unit_iri, Object, Triple, EXPRESS, XSD,
+    bot_intersecting_element, bot_site, bot_space, bot_storey, bot_zone, dicp_construction_project,
+    express_has_boolean, express_has_double, express_has_integer, express_has_logical,
+    express_has_string, express_logical_value, geo_as_wkt, geo_feature, geo_geometry,
+    geo_has_bounding_box, geo_wkt_literal, list_has_contents, list_has_next,
+    opm_current_property_state, opm_has_property_state, opm_property, opm_property_state,
+    owl_imports, owl_object_property, owl_ontology, props_property, prov_generated_at_time,
+    qudt_unit, rdf_li, rdf_seq, rdf_type, rdfs_comment, rdfs_label, schema_value, seas_value,
+    unit_iri, Object, Triple, EXPRESS, XSD,
 };
 #[cfg(test)]
-use lbd_ontology::{bot_has_building, owl_same_as, rdf_member};
+use lbd_ontology::{bot_has_building, omg_has_geometry, owl_same_as, rdf_member};
 use lbd_topology::{
     build_topology, build_topology_with_enricher, IfcRelationEvidenceEnricher, TopologyEdgeKind,
     TopologyGraph, TopologyNodeKind,
@@ -77,6 +75,19 @@ pub struct ConvertOptions {
     pub geometry_relations: Option<Arc<Vec<GeometryRelation>>>,
     pub geometry_bounding_boxes: Option<Arc<HashMap<EntityId, BoundingBox>>>,
     pub geometry_wkts: Option<Arc<HashMap<EntityId, String>>>,
+    /// Per-element geometry content hashes, from
+    /// `plugin_geometry_producer::stable_element_geometry_hashes`.
+    ///
+    /// When present, the OMG producer hangs an `opm:PropertyState` off each geometry
+    /// node carrying the hash as `schema:value`, which is what turns "did this
+    /// element's geometry change between revisions" into a graph query instead of a
+    /// mesh comparison. `None` simply omits the states, so the module degrades to its
+    /// previous behaviour rather than failing.
+    ///
+    /// Deliberately a plain map of primitives: `lbd-converter` does not depend on
+    /// `tessellated-model` or `ifc-geometry`, and it should not have to in order to
+    /// emit a number computed upstream.
+    pub geometry_hashes: Option<Arc<HashMap<EntityId, u64>>>,
     pub geometry_tolerance: f64,
     pub low_memory_mode: bool,
     pub stream_batch_size: usize,
@@ -98,6 +109,29 @@ pub struct ConvertOptions {
     /// elements sharing height=3m point to one canonical property node instead of N copies.
     /// The element→hasProperty link is still emitted per element. Default false.
     pub bsdd_dedup_properties: bool,
+    /// OPM emission level for the bSDD producer. Default L2.
+    pub bsdd_opm_level: OpmLevel,
+    /// OPM emission level for the Props-OPM producer. Default L2.
+    pub props_opm_level: OpmLevel,
+    /// OPM emission level for OMG geometry hash states. Default L2.
+    pub omg_opm_level: OpmLevel,
+    /// Emit GeoSPARQL bounding-box geometry from OMG-FOG when geometry is available.
+    /// Default true to preserve the existing output.
+    pub omg_emit_bounding_boxes: bool,
+}
+
+/// OPM emission level.
+///
+/// - **L2** (default): flat — `seas:value` and `qudt:unit` directly on the
+///   property node. No state node, no `hasPropertyState`, no `generatedAtTime`,
+///   no `schema:value`.
+/// - **L3**: three-hop state chain — `opm:hasPropertyState` link from property
+///   to a state node carrying `schema:value`, `qudt:unit`, and `prov:generatedAtTime`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OpmLevel {
+    #[default]
+    L2,
+    L3,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,6 +152,7 @@ impl Default for ConvertOptions {
             geometry_relations: None,
             geometry_bounding_boxes: None,
             geometry_wkts: None,
+            geometry_hashes: None,
             geometry_tolerance: 1e-6,
             low_memory_mode: false,
             stream_batch_size: STREAM_BATCH_SIZE,
@@ -127,6 +162,10 @@ impl Default for ConvertOptions {
             bsdd_compact: false,
             bsdd_include_standard_attrs: true,
             bsdd_dedup_properties: false,
+            bsdd_opm_level: OpmLevel::default(),
+            props_opm_level: OpmLevel::default(),
+            omg_opm_level: OpmLevel::default(),
+            omg_emit_bounding_boxes: true,
         }
     }
 }
@@ -281,7 +320,6 @@ where
     F: FnMut(Triple) -> Result<(), E>,
 {
     if !options.topology_only {
-        emit_geometry_declarations(&mut emit)?;
         modules::core_entities::emit_core_entities(model, options, base, &mut emit)?;
     }
 
@@ -391,13 +429,33 @@ where
                 })?;
             }
 
+            // Group both endpoints per interface before minting the IRI, so it can
+            // be keyed on their GUIDs rather than on churn-prone STEP entity ids —
+            // see `topology_interface_iri_for_guids`. Kept in lockstep with the
+            // modular path in `modules::bot::emit_topology_edges`; the two must
+            // agree or the WASM and CLI paths emit different interface IRIs.
+            let mut interface_targets: BTreeMap<EntityId, Vec<(String, String)>> = BTreeMap::new();
             for (interface_id, target_id) in
                 topology.core_pairs_of_kind(TopologyEdgeKind::InterfaceOf)
             {
-                let interface_subject = topology_interface_resource_iri(base, interface_id);
-                let Some(target) = object_subject(model, base, target_id) else {
+                let Some((target_iri, target_guid)) =
+                    object_subject_and_guid(model, base, target_id)
+                else {
                     continue;
                 };
+                interface_targets
+                    .entry(interface_id)
+                    .or_default()
+                    .push((target_iri, target_guid));
+            }
+
+            for targets in interface_targets.values() {
+                // An interface joins exactly two elements; any other arity means an
+                // endpoint failed to resolve, so skip rather than mint an unstable IRI.
+                let [first, second] = targets.as_slice() else {
+                    continue;
+                };
+                let interface_subject = topology_interface_iri_for_guids(base, &first.1, &second.1);
                 if emitted_interface_types.insert(interface_subject.clone()) {
                     emit(Triple {
                         subject: interface_subject.clone(),
@@ -405,11 +463,13 @@ where
                         object: Object::Iri(bot_interface()),
                     })?;
                 }
-                emit(Triple {
-                    subject: interface_subject,
-                    predicate: bot_interface_of(),
-                    object: Object::Iri(target),
-                })?;
+                for target in [first, second] {
+                    emit(Triple {
+                        subject: interface_subject.clone(),
+                        predicate: bot_interface_of(),
+                        object: Object::Iri(target.0.clone()),
+                    })?;
+                }
             }
 
             if options.enable_topology_extension {
@@ -462,8 +522,7 @@ where
             let Some(structure) = model.spatial_nodes.get(&structure_id) else {
                 continue;
             };
-            let structure_subject =
-                spatial_resource_iri(base, structure.spatial_type, &structure.guid);
+            let structure_subject = spatial_resource_iri(base, &structure.guid);
             for contained_id in baseline_containment_closure(model, element_id) {
                 let Some(contained_element) = model.elements.get(&contained_id) else {
                     continue;
@@ -490,7 +549,7 @@ where
             let Some(storey) = model.spatial_nodes.get(&storey_id) else {
                 continue;
             };
-            let structure_subject = spatial_resource_iri(base, storey.spatial_type, &storey.guid);
+            let structure_subject = spatial_resource_iri(base, &storey.guid);
             let mut child_space_ids = model
                 .children_of
                 .get(&storey_id)
@@ -581,6 +640,12 @@ where
             let Some(property_set) = model.property_sets.get(&property_set_id) else {
                 continue;
             };
+            // Scope on the set name, not its GlobalId: the GlobalId is re-minted on
+            // every export and would make every property IRI revision-unstable.
+            let set_scope = set_scope_token(
+                property_set.name.as_deref().unwrap_or_default(),
+                &property_set.guid,
+            );
             for property_id in &property_set.properties {
                 // --- IfcPropertySingleValue ---
                 if let Some(property) = model.property_single_values.get(property_id) {
@@ -603,10 +668,11 @@ where
                                     &decode_ifc_unicode(&property.name),
                                 )),
                                 &object_guid,
-                                &property_set.guid,
+                                &set_scope,
                                 value,
                                 resolve_property_unit(property, &unit_by_type, model),
                                 &generated_at,
+                                options.props_opm_level,
                                 &mut emit,
                             )?;
                         }
@@ -634,10 +700,11 @@ where
                                 &decode_ifc_unicode(&property.name),
                             )),
                             &object_guid,
-                            &property_set.guid,
+                            &set_scope,
                             value,
                             None,
                             &generated_at,
+                            options.props_opm_level,
                             &mut emit,
                         )?;
                     }
@@ -658,6 +725,10 @@ where
             let Some(quantity_set) = model.element_quantities.get(&quantity_set_id) else {
                 continue;
             };
+            let set_scope = set_scope_token(
+                quantity_set.name.as_deref().unwrap_or_default(),
+                &quantity_set.guid,
+            );
             for quantity_id in &quantity_set.quantities {
                 let Some(quantity) = model.physical_quantities.get(quantity_id) else {
                     continue;
@@ -683,10 +754,11 @@ where
                             &decode_ifc_unicode(&quantity.name),
                         )),
                         &object_guid,
-                        &quantity_set.guid,
+                        &set_scope,
                         value,
                         resolve_quantity_unit(quantity.entity_name.as_str(), &unit_by_type),
                         &generated_at,
+                        options.props_opm_level,
                         &mut emit,
                     )?;
                 }
@@ -709,6 +781,7 @@ where
         base,
         &unit_by_type,
         &generated_at,
+        options.props_opm_level,
         &mut declared_standard_attributes,
         &mut declared_standard_attribute_comments,
         &mut emit,
@@ -1271,11 +1344,9 @@ impl<'a> IfcOwlEmitter<'a> {
         if let StepValue::List(items) = value {
             if matches!(self.mode, IfcowlMode::Projected) {
                 if let Some(components) = projected_inline_components(predicate_local_name) {
-                    let (_, item_expected_range) =
-                        self.resolve_list_shape(expected_range, items);
+                    let (_, item_expected_range) = self.resolve_list_shape(expected_range, items);
                     for (component, item) in components.iter().zip(items.iter()) {
-                        if let Some(object) =
-                            self.emit_value(item_expected_range.as_deref(), item)
+                        if let Some(object) = self.emit_value(item_expected_range.as_deref(), item)
                         {
                             self.triples.push(Triple {
                                 subject: subject.to_string(),
@@ -1289,9 +1360,7 @@ impl<'a> IfcOwlEmitter<'a> {
             }
             if matches!(self.mode, IfcowlMode::Projected)
                 && !is_list_class_name(expected_range)
-                && items
-                    .iter()
-                    .all(|item| !matches!(item, StepValue::List(_)))
+                && items.iter().all(|item| !matches!(item, StepValue::List(_)))
             {
                 for item in items {
                     if let Some(object) = self.emit_value(expected_range, item) {
@@ -1347,10 +1416,18 @@ impl<'a> IfcOwlEmitter<'a> {
     fn emit_value(&mut self, expected_range: Option<&str>, value: &StepValue) -> Option<Object> {
         match value {
             StepValue::Ref(id) => self.entity_subjects.get(id).cloned().map(Object::Iri),
-            StepValue::String(value) => self.emit_scalar_value(expected_range, ScalarValue::String(value.to_string())),
-            StepValue::Int(value) => self.emit_scalar_value(expected_range, ScalarValue::Integer(*value)),
-            StepValue::Real(value) => self.emit_scalar_value(expected_range, ScalarValue::Double(*value)),
-            StepValue::Bool(value) => self.emit_scalar_value(expected_range, ScalarValue::Boolean(*value)),
+            StepValue::String(value) => {
+                self.emit_scalar_value(expected_range, ScalarValue::String(value.to_string()))
+            }
+            StepValue::Int(value) => {
+                self.emit_scalar_value(expected_range, ScalarValue::Integer(*value))
+            }
+            StepValue::Real(value) => {
+                self.emit_scalar_value(expected_range, ScalarValue::Double(*value))
+            }
+            StepValue::Bool(value) => {
+                self.emit_scalar_value(expected_range, ScalarValue::Boolean(*value))
+            }
             StepValue::Enum(value) => Some(Object::Iri(format!("{}{value}", self.namespace))),
             StepValue::Null => None,
             StepValue::Derived => None,
@@ -1373,10 +1450,18 @@ impl<'a> IfcOwlEmitter<'a> {
             .map(str::to_owned)
             .unwrap_or_else(|| pascal_ifc_name(type_name));
         match value {
-            StepValue::String(value) => self.emit_scalar_value(Some(&local_name), ScalarValue::String(value.to_string())),
-            StepValue::Int(value) => self.emit_scalar_value(Some(&local_name), ScalarValue::Integer(*value)),
-            StepValue::Real(value) => self.emit_scalar_value(Some(&local_name), ScalarValue::Double(*value)),
-            StepValue::Bool(value) => self.emit_scalar_value(Some(&local_name), ScalarValue::Boolean(*value)),
+            StepValue::String(value) => {
+                self.emit_scalar_value(Some(&local_name), ScalarValue::String(value.to_string()))
+            }
+            StepValue::Int(value) => {
+                self.emit_scalar_value(Some(&local_name), ScalarValue::Integer(*value))
+            }
+            StepValue::Real(value) => {
+                self.emit_scalar_value(Some(&local_name), ScalarValue::Double(*value))
+            }
+            StepValue::Bool(value) => {
+                self.emit_scalar_value(Some(&local_name), ScalarValue::Boolean(*value))
+            }
             StepValue::List(items) => self.emit_list(Some(&local_name), items),
             _ => self.emit_value(expected_range.or(Some(&local_name)), value),
         }
@@ -1683,6 +1768,7 @@ fn emit_property_state<E, F>(
     value: Object,
     unit: Option<String>,
     generated_at: &str,
+    opm_level: OpmLevel,
     emit: &mut F,
 ) -> Result<String, E>
 where
@@ -1714,37 +1800,111 @@ where
             object: Object::Literal(label),
         })?;
     }
-    emit(Triple {
-        subject: property_subject.clone(),
-        predicate: opm_has_property_state(),
-        object: Object::Iri(state_subject.clone()),
-    })?;
-    emit(Triple {
-        subject: state_subject.clone(),
-        predicate: rdf_type(),
-        object: Object::Iri(opm_current_property_state()),
-    })?;
-    emit(Triple {
-        subject: state_subject.clone(),
-        predicate: prov_generated_at_time(),
-        object: Object::TypedLiteral {
-            value: generated_at.to_string(),
-            datatype: format!("{XSD}dateTime"),
-        },
-    })?;
-    emit(Triple {
-        subject: state_subject.clone(),
-        predicate: schema_value(),
-        object: value,
-    })?;
-    if let Some(unit) = unit {
-        emit(Triple {
-            subject: state_subject,
-            predicate: qudt_unit(),
-            object: Object::Iri(unit),
-        })?;
-    }
+    emit_opm_value(
+        &property_subject,
+        &state_subject,
+        value,
+        unit,
+        generated_at,
+        opm_level,
+        emit,
+    )?;
     Ok(property_subject)
+}
+
+/// Emit the OPM value block shared by every property-state producer.
+///
+/// This is the single definition of what a property's value looks like. The
+/// `props` producer, bSDD properties (`modules::bsdd::emit_property`), bSDD
+/// standard attributes (`modules::bsdd::emit_std_attr`), and the OMG geometry
+/// hash producer (`modules::omg_fog::emit_geometry_state`) all route through
+/// here, so a change to the value shape lands once instead of being hand-copied.
+///
+/// Generic over the emit closure so the batching producers in `modules::bsdd`
+/// can pass a wrapper around their `push` helper.
+///
+/// # OPM levels
+///
+/// - **L2** (default): flat — `seas:value` and `qudt:unit` directly on the
+///   property node. No state node, no `hasPropertyState`, no `generatedAtTime`,
+///   no `schema:value`. This is SEAS L2 (context-free evaluation).
+///
+/// - **L3**: three-hop state chain — `opm:hasPropertyState` link from property
+///   to a state node carrying `schema:value`, `qudt:unit`, and
+///   `prov:generatedAtTime`. This is the original behaviour.
+pub(crate) fn emit_opm_value<E, F>(
+    property_subject: &str,
+    state_subject: &str,
+    value: Object,
+    unit: Option<String>,
+    generated_at: &str,
+    opm_level: OpmLevel,
+    emit: &mut F,
+) -> Result<(), E>
+where
+    F: FnMut(Triple) -> Result<(), E>,
+{
+    match opm_level {
+        OpmLevel::L2 => {
+            // Flat: seas:value + qudt:unit directly on the property node.
+            emit(Triple {
+                subject: property_subject.to_string(),
+                predicate: seas_value(),
+                object: value,
+            })?;
+            if let Some(unit) = unit {
+                emit(Triple {
+                    subject: property_subject.to_string(),
+                    predicate: qudt_unit(),
+                    object: Object::Iri(unit),
+                })?;
+            }
+        }
+        OpmLevel::L3 => {
+            // Three-hop state chain (original behaviour).
+            emit(Triple {
+                subject: property_subject.to_string(),
+                predicate: opm_has_property_state(),
+                object: Object::Iri(state_subject.to_string()),
+            })?;
+            // Both classes, deliberately. CurrentPropertyState is a subclass of
+            // PropertyState, but consumers run with `axiomsClass=NoAxioms`, so
+            // nothing infers the superclass. Without the base type asserted,
+            // "give me every state of this property, current or outdated"
+            // matches nothing.
+            emit(Triple {
+                subject: state_subject.to_string(),
+                predicate: rdf_type(),
+                object: Object::Iri(opm_property_state()),
+            })?;
+            emit(Triple {
+                subject: state_subject.to_string(),
+                predicate: rdf_type(),
+                object: Object::Iri(opm_current_property_state()),
+            })?;
+            emit(Triple {
+                subject: state_subject.to_string(),
+                predicate: prov_generated_at_time(),
+                object: Object::TypedLiteral {
+                    value: generated_at.to_string(),
+                    datatype: format!("{XSD}dateTime"),
+                },
+            })?;
+            emit(Triple {
+                subject: state_subject.to_string(),
+                predicate: schema_value(),
+                object: value,
+            })?;
+            if let Some(unit) = unit {
+                emit(Triple {
+                    subject: state_subject.to_string(),
+                    predicate: qudt_unit(),
+                    object: Object::Iri(unit),
+                })?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn emit_standard_attribute_triples<E, F>(
@@ -1752,6 +1912,7 @@ fn emit_standard_attribute_triples<E, F>(
     base: &str,
     unit_by_type: &HashMap<String, String>,
     generated_at: &str,
+    opm_level: OpmLevel,
     declared_object_properties: &mut HashSet<String>,
     declared_property_comments: &mut HashSet<(String, String)>,
     emit: &mut F,
@@ -1760,7 +1921,7 @@ where
     F: FnMut(Triple) -> Result<(), E>,
 {
     for node in sorted_values(&model.spatial_nodes) {
-        let subject = spatial_resource_iri(base, node.spatial_type, &node.guid);
+        let subject = spatial_resource_iri(base, &node.guid);
         emit_standard_attribute(
             &subject,
             base,
@@ -1771,6 +1932,7 @@ where
             None,
             declared_object_properties,
             declared_property_comments,
+            opm_level,
             emit,
         )?;
         if let Some(name) = node.name.as_ref() {
@@ -1784,6 +1946,7 @@ where
                 None,
                 declared_object_properties,
                 declared_property_comments,
+                opm_level,
                 emit,
             )?;
         }
@@ -1798,6 +1961,7 @@ where
                 None,
                 declared_object_properties,
                 declared_property_comments,
+                opm_level,
                 emit,
             )?;
         }
@@ -1812,6 +1976,7 @@ where
                 None,
                 declared_object_properties,
                 declared_property_comments,
+                opm_level,
                 emit,
             )?;
         }
@@ -1829,6 +1994,7 @@ where
                 None,
                 declared_object_properties,
                 declared_property_comments,
+                opm_level,
                 emit,
             )?;
         }
@@ -1839,13 +2005,14 @@ where
                 "elevationIfcBuildingStorey",
                 &node.guid,
                 Object::TypedLiteral {
-                    value: elevation.to_string(),
+                    value: quantize_value(elevation),
                     datatype: format!("{XSD}double"),
                 },
                 generated_at,
                 unit_by_type.get("LENGTHUNIT").cloned(),
                 declared_object_properties,
                 declared_property_comments,
+                opm_level,
                 emit,
             )?;
         }
@@ -1856,13 +2023,14 @@ where
                 "refElevationIfcSite",
                 &node.guid,
                 Object::TypedLiteral {
-                    value: ref_elevation.to_string(),
+                    value: quantize_value(ref_elevation),
                     datatype: format!("{XSD}double"),
                 },
                 generated_at,
                 unit_by_type.get("LENGTHUNIT").cloned(),
                 declared_object_properties,
                 declared_property_comments,
+                opm_level,
                 emit,
             )?;
         }
@@ -1873,13 +2041,14 @@ where
                 "elevationOfRefHeightIfcBuilding",
                 &node.guid,
                 Object::TypedLiteral {
-                    value: elevation_of_ref_height.to_string(),
+                    value: quantize_value(elevation_of_ref_height),
                     datatype: format!("{XSD}double"),
                 },
                 generated_at,
                 unit_by_type.get("LENGTHUNIT").cloned(),
                 declared_object_properties,
                 declared_property_comments,
+                opm_level,
                 emit,
             )?;
         }
@@ -1890,13 +2059,14 @@ where
                 "elevationOfTerrainIfcBuilding",
                 &node.guid,
                 Object::TypedLiteral {
-                    value: elevation_of_terrain.to_string(),
+                    value: quantize_value(elevation_of_terrain),
                     datatype: format!("{XSD}double"),
                 },
                 generated_at,
                 unit_by_type.get("LENGTHUNIT").cloned(),
                 declared_object_properties,
                 declared_property_comments,
+                opm_level,
                 emit,
             )?;
         }
@@ -1914,6 +2084,7 @@ where
             None,
             declared_object_properties,
             declared_property_comments,
+            opm_level,
             emit,
         )?;
         if let Some(name) = element.name.as_ref() {
@@ -1927,6 +2098,7 @@ where
                 None,
                 declared_object_properties,
                 declared_property_comments,
+                opm_level,
                 emit,
             )?;
         }
@@ -1941,6 +2113,7 @@ where
                 None,
                 declared_object_properties,
                 declared_property_comments,
+                opm_level,
                 emit,
             )?;
         }
@@ -1955,6 +2128,7 @@ where
                 None,
                 declared_object_properties,
                 declared_property_comments,
+                opm_level,
                 emit,
             )?;
         }
@@ -1969,6 +2143,7 @@ where
                 None,
                 declared_object_properties,
                 declared_property_comments,
+                opm_level,
                 emit,
             )?;
         }
@@ -1983,13 +2158,14 @@ where
                 },
                 &element.guid,
                 Object::TypedLiteral {
-                    value: overall_height.to_string(),
+                    value: quantize_value(overall_height),
                     datatype: format!("{XSD}double"),
                 },
                 generated_at,
                 unit_by_type.get("LENGTHUNIT").cloned(),
                 declared_object_properties,
                 declared_property_comments,
+                opm_level,
                 emit,
             )?;
         }
@@ -2004,13 +2180,14 @@ where
                 },
                 &element.guid,
                 Object::TypedLiteral {
-                    value: overall_width.to_string(),
+                    value: quantize_value(overall_width),
                     datatype: format!("{XSD}double"),
                 },
                 generated_at,
                 unit_by_type.get("LENGTHUNIT").cloned(),
                 declared_object_properties,
                 declared_property_comments,
+                opm_level,
                 emit,
             )?;
         }
@@ -2028,6 +2205,7 @@ where
                 None,
                 declared_object_properties,
                 declared_property_comments,
+                opm_level,
                 emit,
             )?;
         }
@@ -2045,6 +2223,7 @@ where
                 None,
                 declared_object_properties,
                 declared_property_comments,
+                opm_level,
                 emit,
             )?;
         }
@@ -2055,13 +2234,14 @@ where
                 "riserHeightIfcStairFlight",
                 &element.guid,
                 Object::TypedLiteral {
-                    value: riser_height.to_string(),
+                    value: quantize_value(riser_height),
                     datatype: format!("{XSD}double"),
                 },
                 generated_at,
                 unit_by_type.get("LENGTHUNIT").cloned(),
                 declared_object_properties,
                 declared_property_comments,
+                opm_level,
                 emit,
             )?;
         }
@@ -2079,6 +2259,7 @@ where
                 unit_by_type.get("LENGTHUNIT").cloned(),
                 declared_object_properties,
                 declared_property_comments,
+                opm_level,
                 emit,
             )?;
         }
@@ -2111,38 +2292,17 @@ where
             continue;
         };
         let wkt = if let Some(wkt_map) = wkts.and_then(|m| m.get(&object_id)) {
-            wkt_map.clone()
+            scoped_wkt_literal(base, wkt_map)
         } else if let Some(bbox) = boxes.and_then(|m| m.get(&object_id)) {
-            let dx = (bbox.x_max - bbox.x_min).abs();
-            let dy = (bbox.y_max - bbox.y_min).abs();
-            let dz = (bbox.z_max - bbox.z_min).abs();
-            if dx <= f64::EPSILON && dy <= f64::EPSILON && dz <= f64::EPSILON {
+            let Some(wkt) = bounding_box_wkt_literal(base, bbox) else {
                 continue;
-            }
-            bbox_wkt_polyhedral_surface(bbox)
+            };
+            wkt
         } else {
             continue;
         };
 
-        let geometry_subject = geometry_resource_iri(base, &object_guid);
-        emit(Triple {
-            subject: subject.clone(),
-            predicate: lbd_has_bounding_box(),
-            object: Object::Iri(geometry_subject.clone()),
-        })?;
-        emit(Triple {
-            subject: geometry_subject.clone(),
-            predicate: rdf_type(),
-            object: Object::Iri(geo_geometry()),
-        })?;
-        emit(Triple {
-            subject: geometry_subject,
-            predicate: geo_as_wkt(),
-            object: Object::TypedLiteral {
-                value: wkt,
-                datatype: geo_wkt_literal(),
-            },
-        })?;
+        emit_bounding_box_wkt(&subject, &object_guid, base, wkt, emit)?;
     }
     Ok(())
 }
@@ -2157,6 +2317,7 @@ fn emit_standard_attribute<E, F>(
     unit: Option<String>,
     declared_object_properties: &mut HashSet<String>,
     declared_property_comments: &mut HashSet<(String, String)>,
+    opm_level: OpmLevel,
     emit: &mut F,
 ) -> Result<(), E>
 where
@@ -2189,20 +2350,9 @@ where
         value,
         unit,
         generated_at,
+        opm_level,
         emit,
     )?;
-    Ok(())
-}
-
-fn emit_geometry_declarations<E, F>(emit: &mut F) -> Result<(), E>
-where
-    F: FnMut(Triple) -> Result<(), E>,
-{
-    emit(Triple {
-        subject: lbd_has_bounding_box(),
-        predicate: rdf_type(),
-        object: Object::Iri(owl_object_property()),
-    })?;
     Ok(())
 }
 
@@ -2296,24 +2446,128 @@ pub(crate) use ifc_model::iri::{
 /// Property node IRI — deterministic hash of (predicate_local, set_scope, element_guid).
 /// Shared between the props and bSDD modules so the same logical property produces the
 /// same IRI node in both named graphs, enabling natural join in a triplestore.
-pub(crate) fn property_resource_iri(base: &str, predicate_local: &str, guid: &str, set_scope: &str) -> String {
+pub(crate) fn property_resource_iri(
+    base: &str,
+    predicate_local: &str,
+    guid: &str,
+    set_scope: &str,
+) -> String {
     let key = format!("{predicate_local}|{set_scope}|{guid}");
     format!("{base}/p_{:016x}", fnv1a64(key.as_bytes()))
 }
 
-pub(crate) fn property_set_resource_iri(base: &str, guid: &str) -> String {
-    let suffix = prefix_safe_guid_token(guid);
-    format!("{base}/ps_{suffix}")
+/// Revision-stable scope token for an `IfcPropertySet` / `IfcElementQuantity`.
+///
+/// Authoring tools (Tekla, Revit, ...) mint a fresh `GlobalId` for the property-set
+/// entity on every export, even when its name and every value inside it are
+/// byte-identical to the previous export. Keying instance IRIs on that GUID makes
+/// each re-export produce different `p_`/`s_`/`ps_`/`qs_` IRIs, so an
+/// element whose properties never changed still serialises a different RDF fragment
+/// -- and any downstream content hash over that fragment reports it as edited.
+///
+/// The set *name* is authored data and survives re-export, so it is the scope token.
+/// Only a set with no name at all falls back to the GUID: that keeps two distinct
+/// unnamed sets on one object from collapsing into a single node, at the cost of
+/// revision stability in a case IFC exporters do not really produce.
+pub(crate) fn set_scope_token(set_name: &str, set_guid: &str) -> String {
+    let trimmed = set_name.trim();
+    if trimmed.is_empty() {
+        format!("guid:{set_guid}")
+    } else {
+        trimmed.to_string()
+    }
 }
 
-pub(crate) fn quantity_set_resource_iri(base: &str, guid: &str) -> String {
-    let suffix = prefix_safe_guid_token(guid);
-    format!("{base}/qs_{suffix}")
+/// Property-set node IRI for the non-dedup path -- hash of (set_scope, owning object).
+///
+/// Scoped by the owning object because the property nodes hanging off it are already
+/// per-object (`property_resource_iri` keys on the element GUID); one node shared
+/// by every object referencing the same `IfcPropertySet` entity would gather the
+/// property nodes of all of them under a single set.
+pub(crate) fn property_set_resource_iri(base: &str, set_scope: &str, object_guid: &str) -> String {
+    let key = format!("{set_scope}|{object_guid}");
+    format!("{base}/ps_{:016x}", fnv1a64(key.as_bytes()))
+}
+
+/// Quantity-set counterpart of [`property_set_resource_iri`].
+pub(crate) fn quantity_set_resource_iri(base: &str, set_scope: &str, object_guid: &str) -> String {
+    let key = format!("{set_scope}|{object_guid}");
+    format!("{base}/qs_{:016x}", fnv1a64(key.as_bytes()))
 }
 
 pub(crate) fn geometry_resource_iri(base: &str, guid: &str) -> String {
     let suffix = prefix_safe_guid_token(guid);
     format!("{base}/geometry_{suffix}")
+}
+
+pub(crate) fn bounding_box_resource_iri(base: &str, guid: &str) -> String {
+    let suffix = prefix_safe_guid_token(guid);
+    format!("{base}/bbox_{suffix}")
+}
+
+fn model_local_crs_iri(base: &str) -> String {
+    format!("{base}/crs/model-local")
+}
+
+fn scoped_wkt_literal(base: &str, wkt: &str) -> String {
+    if wkt.trim_start().starts_with('<') {
+        wkt.to_string()
+    } else {
+        format!("<{}> {wkt}", model_local_crs_iri(base))
+    }
+}
+
+pub(crate) fn bounding_box_wkt_literal(base: &str, bbox: &BoundingBox) -> Option<String> {
+    let values = [
+        bbox.x_min, bbox.x_max, bbox.y_min, bbox.y_max, bbox.z_min, bbox.z_max,
+    ];
+    if !values.iter().all(|value| value.is_finite()) {
+        return None;
+    }
+    let dx = (bbox.x_max - bbox.x_min).abs();
+    let dy = (bbox.y_max - bbox.y_min).abs();
+    let dz = (bbox.z_max - bbox.z_min).abs();
+    if dx <= f64::EPSILON && dy <= f64::EPSILON && dz <= f64::EPSILON {
+        return None;
+    }
+    Some(scoped_wkt_literal(base, &bbox_wkt_polyhedral_surface(bbox)))
+}
+
+pub(crate) fn emit_bounding_box_wkt<E, F>(
+    feature_subject: &str,
+    guid: &str,
+    base: &str,
+    wkt: String,
+    emit: &mut F,
+) -> Result<(), E>
+where
+    F: FnMut(Triple) -> Result<(), E>,
+{
+    let bbox_subject = bounding_box_resource_iri(base, guid);
+    emit(Triple {
+        subject: feature_subject.to_string(),
+        predicate: rdf_type(),
+        object: Object::Iri(geo_feature()),
+    })?;
+    emit(Triple {
+        subject: feature_subject.to_string(),
+        predicate: geo_has_bounding_box(),
+        object: Object::Iri(bbox_subject.clone()),
+    })?;
+    emit(Triple {
+        subject: bbox_subject.clone(),
+        predicate: rdf_type(),
+        object: Object::Iri(geo_geometry()),
+    })?;
+    emit(Triple {
+        subject: bbox_subject,
+        predicate: geo_as_wkt(),
+        object: Object::TypedLiteral {
+            value: wkt,
+            datatype: geo_wkt_literal(),
+        },
+    })?;
+    Ok(())
 }
 
 // canonical_guid_token / prefix_safe_guid_token now live in ifc_model::iri
@@ -2331,8 +2585,36 @@ fn bbox_wkt_polyhedral_surface(bbox: &BoundingBox) -> String {
     )
 }
 
-fn topology_interface_resource_iri(base: &str, interface_id: EntityId) -> String {
-    format!("{base}/interface_{interface_id}")
+/// Stable IRI for a derived topology interface, keyed on the GUIDs of the two
+/// elements it joins.
+///
+/// The topology plugin identifies interfaces by hashing the two elements' STEP
+/// entity ids (`plugin_topology_full::interface_id`). Those are instance numbers
+/// (`#1234`) that the authoring tool reassigns on **every** export, so an IRI
+/// derived from them changed on every re-export even when nothing in the model
+/// moved — interfaces were undiffable, and no versioning scheme could rest on
+/// them.
+///
+/// GUIDs are the stable anchor, so the IRI is re-derived from them here, at the
+/// point identity is actually minted, rather than threading a GUID lookup down
+/// through the geometry pipeline.
+///
+/// The pair is sorted so the same two elements produce the same IRI regardless of
+/// which order the topology pass happened to visit them in. GUIDs are spelled out
+/// rather than hashed: it costs ~45 characters of local name, and in exchange the
+/// IRI says which two elements it joins, so an adjacency diff between revisions is
+/// readable without a reverse lookup.
+pub(crate) fn topology_interface_iri_for_guids(base: &str, guid_a: &str, guid_b: &str) -> String {
+    let (first, second) = if guid_a <= guid_b {
+        (guid_a, guid_b)
+    } else {
+        (guid_b, guid_a)
+    };
+    format!(
+        "{base}/interface_{}_{}",
+        prefix_safe_guid_token(first),
+        prefix_safe_guid_token(second)
+    )
 }
 
 /// Deterministic state IRI keyed on (predicate_local, set_scope, element_guid, value_repr).
@@ -2349,17 +2631,43 @@ pub(crate) fn property_state_iri(
     format!("{base}/s_{:016x}", fnv1a64(key.as_bytes()))
 }
 
+/// Deterministic IRI for a geometry `opm:PropertyState`, keyed on (geometry node, value).
+///
+/// Follows the `s_`/`cs_` property-state convention — an FNV-1a-64 of the key rather
+/// than a readable composite — with a `gs_` discriminator so geometry states are
+/// distinguishable from property states at a glance in a query result.
+///
+/// Value-derived, so an unchanged mesh reuses the same state node across conversions
+/// while a changed one mints a new IRI for free. Note this means an element whose
+/// geometry reverts to an earlier value reuses the earlier state IRI; once revisions
+/// exist, the revision has to enter this key (see PLAN-opm-versioning section 5.4)
+/// or the `Current`/`Outdated` typing of that shared node becomes ambiguous.
+pub(crate) fn geometry_state_iri(base: &str, geom_node: &str, value_repr: &str) -> String {
+    let key = format!("{geom_node}|{value_repr}");
+    format!("{base}/gs_{:016x}", fnv1a64(key.as_bytes()))
+}
+
 /// Canonical property IRI shared across elements when (pset_name, prop_name, value) is identical.
 /// Key: (predicate_local, pset_name, value_repr) — no element GUID, no pset GUID.
 /// Scoping by pset_name prevents "Height" in Pset_WallCommon from merging with
 /// "Height" in a custom pset.
-pub(crate) fn canonical_property_resource_iri(base: &str, predicate_local: &str, pset_name: &str, value_repr: &str) -> String {
+pub(crate) fn canonical_property_resource_iri(
+    base: &str,
+    predicate_local: &str,
+    pset_name: &str,
+    value_repr: &str,
+) -> String {
     let key = format!("{predicate_local}|{pset_name}|{value_repr}");
     format!("{base}/cp_{:016x}", fnv1a64(key.as_bytes()))
 }
 
 /// Canonical state IRI — same key as the property IRI.
-pub(crate) fn canonical_property_state_iri(base: &str, predicate_local: &str, pset_name: &str, value_repr: &str) -> String {
+pub(crate) fn canonical_property_state_iri(
+    base: &str,
+    predicate_local: &str,
+    pset_name: &str,
+    value_repr: &str,
+) -> String {
     let key = format!("{predicate_local}|{pset_name}|{value_repr}");
     format!("{base}/cs_{:016x}", fnv1a64(key.as_bytes()))
 }
@@ -2367,7 +2675,11 @@ pub(crate) fn canonical_property_state_iri(base: &str, predicate_local: &str, ps
 /// Canonical pset IRI shared across elements whose pset has identical content.
 /// Key: (pset_name, sorted fingerprint of all prop_name=value pairs).
 /// If any single property value differs, the fingerprint differs → different IRI → no sharing.
-pub(crate) fn canonical_pset_resource_iri(base: &str, pset_name: &str, content_repr: &str) -> String {
+pub(crate) fn canonical_pset_resource_iri(
+    base: &str,
+    pset_name: &str,
+    content_repr: &str,
+) -> String {
     let key = format!("{pset_name}|{content_repr}");
     format!("{base}/cps_{:016x}", fnv1a64(key.as_bytes()))
 }
@@ -2515,7 +2827,7 @@ fn is_express_scalar_class(class_name: &str) -> bool {
 
 fn object_subject(model: &IfcModel, base: &str, object_id: EntityId) -> Option<String> {
     if let Some(node) = model.spatial_nodes.get(&object_id) {
-        return Some(spatial_resource_iri(base, node.spatial_type, &node.guid));
+        return Some(spatial_resource_iri(base, &node.guid));
     }
     if let Some(element) = model.elements.get(&object_id) {
         return Some(element_resource_iri(base, element));
@@ -2530,7 +2842,7 @@ fn object_subject_and_guid(
 ) -> Option<(String, String)> {
     if let Some(node) = model.spatial_nodes.get(&object_id) {
         return Some((
-            spatial_resource_iri(base, node.spatial_type, &node.guid),
+            spatial_resource_iri(base, &node.guid),
             node.guid.to_string(),
         ));
     }
@@ -2689,7 +3001,7 @@ fn quantity_value_object(value: Option<&StepValue>) -> Option<Object> {
             datatype: format!("{XSD}integer"),
         }),
         StepValue::Real(value) => value.is_finite().then(|| Object::TypedLiteral {
-            value: canonicalize_decimal(*value),
+            value: quantize_value(*value),
             datatype: format!("{XSD}decimal"),
         }),
         StepValue::Bool(value) => Some(Object::TypedLiteral {
@@ -2705,11 +3017,9 @@ fn quantity_value_object(value: Option<&StepValue>) -> Option<Object> {
                 Some(Object::Literal(trimmed.to_string()))
             }
         }
-        StepValue::Typed { type_name, value } => {
-            (!violates_positive_constraint(type_name, value))
-                .then(|| quantity_value_object(Some(value.as_ref())))
-                .flatten()
-        }
+        StepValue::Typed { type_name, value } => (!violates_positive_constraint(type_name, value))
+            .then(|| quantity_value_object(Some(value.as_ref())))
+            .flatten(),
         _ => None,
     }
 }
@@ -2718,6 +3028,50 @@ fn should_skip_named_self_value(name: &str, value: &Object) -> bool {
     match value {
         Object::Literal(literal) => literal.trim() == name.trim(),
         _ => false,
+    }
+}
+
+/// Significant digits kept when canonicalising property/quantity values.
+///
+/// Six digits (≈1e-6 relative grid) sit well below BIM measurement precision
+/// but are coarse enough to absorb authoring-tool float noise: tools recompute
+/// quantities on every export and the last 2–3 bits of the f64 wobble, which at
+/// building scale (1e0–1e4) lands in the 11th–13th digit. An *absolute* grid
+/// cannot absorb that noise for all magnitudes — a fixed 1e-9 step keeps 12–14
+/// significant digits at building scale, so the noise survived into literals
+/// and content-hash keys (4,728 phantom edits on one revision pair, plus 2,076
+/// precision-rounding ones). A relative grid collapses it by construction.
+const VALUE_SIG_DIGITS: usize = 6;
+
+/// Canonical string form for a property/quantity value that feeds both the
+/// emitted literal and every content-hash IRI key (cp_/cs_/ps_/cps_).
+///
+/// Quantizes to [`VALUE_SIG_DIGITS`] significant digits (relative grid) so two
+/// conversions that disagree only in low-order float noise produce byte-identical
+/// values and therefore identical node IRIs. Must stay idempotent: keys and
+/// literals derive from the same string, so re-canonicalizing an already
+/// canonicalized value must be a no-op.
+///
+/// The IfcOWL sidecar deliberately keeps [`canonicalize_decimal`]'s absolute
+/// 1e-9 grid instead: it is a faithful EXPRESS mirror of the file, not a
+/// dedup key source.
+pub(crate) fn quantize_value(value: f64) -> String {
+    if !value.is_finite() {
+        return value.to_string();
+    }
+    if value == 0.0 || value.abs() < 5e-10 {
+        // Dead zone: anything below half the former 1e-9 step is exporter
+        // noise, not a measurement. A relative grid cannot collapse values
+        // around zero (it preserves magnitudes), so keep the absolute
+        // zero-threshold from the previous canonicalization.
+        return "0".to_string();
+    }
+    // Scientific-notation round trip: the formatter scales the mantissa, so
+    // rounding always cuts at the 6th significant digit without powf
+    // overflow/underflow, for any finite input.
+    match format!("{:.*e}", VALUE_SIG_DIGITS - 1, value).parse::<f64>() {
+        Ok(q) if q.is_finite() => format!("{q}"),
+        _ => value.to_string(),
     }
 }
 
@@ -2853,9 +3207,9 @@ mod tests {
     use super::*;
     use ifc_model::build_model;
     use ifc_step::{parse_step_bytes, parse_step_file};
-    use std::convert::Infallible;
     use std::collections::HashMap;
     use std::collections::HashSet;
+    use std::convert::Infallible;
     use std::path::PathBuf;
     use std::sync::Arc;
 
@@ -2887,6 +3241,7 @@ mod tests {
                 geometry_relations: None,
                 geometry_bounding_boxes: None,
                 geometry_wkts: None,
+                geometry_hashes: None,
                 geometry_tolerance: 1e-6,
                 low_memory_mode: false,
                 stream_batch_size: 8 * 1024,
@@ -2896,6 +3251,10 @@ mod tests {
                 bsdd_compact: false,
                 bsdd_include_standard_attrs: true,
                 bsdd_dedup_properties: false,
+                bsdd_opm_level: OpmLevel::L2,
+                props_opm_level: OpmLevel::L2,
+                omg_opm_level: OpmLevel::L2,
+                omg_emit_bounding_boxes: true,
             },
         );
 
@@ -2930,11 +3289,7 @@ mod tests {
             .values()
             .find(|node| node.spatial_type == SpatialType::Project)
             .unwrap();
-        let subject = spatial_resource_iri(
-            "https://example.test/base",
-            project.spatial_type,
-            &project.guid,
-        );
+        let subject = spatial_resource_iri("https://example.test/base", &project.guid);
         assert!(subject.contains(project.guid.as_str()));
         assert!(!subject.contains('-'));
     }
@@ -2982,10 +3337,6 @@ mod tests {
         assert!(result.triples.iter().any(|triple| {
             triple.predicate == qudt_unit()
                 && matches!(&triple.object, Object::Iri(iri) if iri == "http://qudt.org/vocab/unit/M2")
-        }));
-        assert!(result.triples.iter().any(|triple| {
-            triple.predicate == lbd_has_bounding_box()
-                && matches!(&triple.object, Object::Iri(iri) if iri.contains("/geometry_"))
         }));
     }
 
@@ -3045,8 +3396,12 @@ mod tests {
         )
         .unwrap();
         let namespace = ifcowl_namespace(step.header.schema);
-        let triples =
-            modules::ifcowl::convert_ifcowl(&step, "https://example.test/base", step.header.schema, IfcowlMode::Full);
+        let triples = modules::ifcowl::convert_ifcowl(
+            &step,
+            "https://example.test/base",
+            step.header.schema,
+            IfcowlMode::Full,
+        );
 
         assert!(triples.iter().any(|triple| {
             triple.subject == "https://example.test/base/IfcCartesianPoint_1"
@@ -3090,8 +3445,12 @@ mod tests {
         )
         .unwrap();
         let namespace = ifcowl_namespace(step.header.schema);
-        let triples =
-            modules::ifcowl::convert_ifcowl(&step, "https://example.test/base", step.header.schema, IfcowlMode::Full);
+        let triples = modules::ifcowl::convert_ifcowl(
+            &step,
+            "https://example.test/base",
+            step.header.schema,
+            IfcowlMode::Full,
+        );
 
         assert!(triples.iter().any(|triple| {
             triple.subject == "https://example.test/base/IfcOrganization_1"
@@ -3115,8 +3474,12 @@ mod tests {
         )
         .unwrap();
         let namespace = ifcowl_namespace(step.header.schema);
-        let triples =
-            modules::ifcowl::convert_ifcowl(&step, "https://example.test/base", step.header.schema, IfcowlMode::Full);
+        let triples = modules::ifcowl::convert_ifcowl(
+            &step,
+            "https://example.test/base",
+            step.header.schema,
+            IfcowlMode::Full,
+        );
 
         assert!(triples.iter().any(|triple| {
             triple.subject == "https://example.test/base/IfcArbitraryProfileDefWithVoids_4"
@@ -3135,8 +3498,12 @@ mod tests {
         )
         .unwrap();
         let namespace = ifcowl_namespace(step.header.schema);
-        let triples =
-            modules::ifcowl::convert_ifcowl(&step, "https://example.test/base", step.header.schema, IfcowlMode::Full);
+        let triples = modules::ifcowl::convert_ifcowl(
+            &step,
+            "https://example.test/base",
+            step.header.schema,
+            IfcowlMode::Full,
+        );
 
         assert!(triples.iter().any(|triple| {
             triple.subject == "https://example.test/base/IfcCompositeCurve_5"
@@ -3155,8 +3522,12 @@ mod tests {
             b"ISO-10303-21;\nHEADER;\nFILE_SCHEMA(('IFC2X3'));\nENDSEC;\nDATA;\n#1=IFCCOMPOSITECURVE((#2),.F.);\n#2=IFCCOMPOSITECURVESEGMENT(.CONTINUOUS.,.T.,#3);\n#3=IFCPOLYLINE((#4,#5));\n#4=IFCCARTESIANPOINT((0.,0.));\n#5=IFCCARTESIANPOINT((1.,1.));\nENDSEC;\n",
         )
         .unwrap();
-        let triples =
-            modules::ifcowl::convert_ifcowl(&step, "https://example.test/base", step.header.schema, IfcowlMode::Full);
+        let triples = modules::ifcowl::convert_ifcowl(
+            &step,
+            "https://example.test/base",
+            step.header.schema,
+            IfcowlMode::Full,
+        );
 
         assert!(triples.iter().any(|triple| {
             triple.predicate == express_has_logical()
@@ -3170,8 +3541,12 @@ mod tests {
             b"ISO-10303-21;\nHEADER;\nFILE_SCHEMA(('IFC2X3'));\nENDSEC;\nDATA;\n#1=IFCLOCALTIME(12,0,0,$,IFCCOMPOUNDPLANEANGLEMEASURE((41,52,27,840000)),$);\nENDSEC;\n",
         )
         .unwrap();
-        let triples =
-            modules::ifcowl::convert_ifcowl(&step, "https://example.test/base", step.header.schema, IfcowlMode::Full);
+        let triples = modules::ifcowl::convert_ifcowl(
+            &step,
+            "https://example.test/base",
+            step.header.schema,
+            IfcowlMode::Full,
+        );
 
         assert!(triples.iter().any(|triple| {
             triple.subject.contains("/IfcCompoundPlaneAngleMeasure_")
@@ -3199,6 +3574,42 @@ mod tests {
         assert_eq!(canonicalize_decimal(-0.0000000001), "0");
     }
 
+    /// The 6-significant-digit relative grid must collapse the two phantom-edit
+    /// classes observed downstream: 11th–13th digit float wobble between
+    /// authoring-tool re-exports, and pure precision-rounding variants.
+    #[test]
+    fn test_quantize_value_collapses_float_wobble() {
+        assert_eq!(quantize_value(1234.567890123), "1234.57");
+        assert_eq!(quantize_value(1234.567890124), "1234.57");
+        assert_eq!(quantize_value(1234.567890123456), "1234.57");
+        assert_eq!(quantize_value(5.34999999999999), "5.35");
+        assert_eq!(quantize_value(6.75000000000001), "6.75");
+        // Relative grid: small magnitudes keep their 6 significant digits
+        // instead of being truncated by an absolute step.
+        assert_eq!(quantize_value(0.0001234567890123), "0.000123457");
+        assert_eq!(quantize_value(-9876.54321), "-9876.54");
+        assert_eq!(quantize_value(42.0), "42");
+        assert_eq!(quantize_value(1e-9), "0.000000001");
+    }
+
+    /// Zero (including negative zero and sub-noise magnitudes) and extremes
+    /// must canonicalize without panicking, and must stay idempotent — keys and
+    /// literals derive from the same string, so canonicalizing an already
+    /// canonicalized value must return it unchanged.
+    #[test]
+    fn test_quantize_value_zero_extremes_idempotent() {
+        assert_eq!(quantize_value(0.0), "0");
+        assert_eq!(quantize_value(-0.0), "0");
+        assert_eq!(quantize_value(-1e-10), "0");
+        for value in [1e300, -1e300, 1e-300, f64::MAX, f64::MIN_POSITIVE, f64::NAN] {
+            let repr = quantize_value(value);
+            if value.is_finite() {
+                let reparsed = repr.parse::<f64>().unwrap();
+                assert_eq!(quantize_value(reparsed), repr, "not idempotent: {repr}");
+            }
+        }
+    }
+
     #[test]
     fn test_stable_short_guid_token_is_deterministic() {
         let token_a = stable_short_guid_token("2O2Fr$t4X7Zf8NOew3FNtn");
@@ -3207,28 +3618,48 @@ mod tests {
         assert_eq!(token_a.len(), 16);
     }
 
+    /// Element identity must not depend on the IFC class.
+    ///
+    /// This replaces an earlier test that asserted the `buildingelement_<guid>`
+    /// prefix scheme. That scheme is gone deliberately: it made a reclassification
+    /// (wall → curtain wall) mint a new IRI for the same physical object, orphaning
+    /// its property and geometry history across revisions. The `ifcowl_<name>`
+    /// fallback was worse — the prefix moved when *this converter* learned a new
+    /// product type, so IRIs were not even stable across converter versions.
     #[test]
-    fn test_element_resource_iri_uses_java_style_proxy_prefix() {
-        let element = ifc_model::ElementNode {
-            id: 1,
-            guid: "3$3qM0qBX2JfSuV0oX6e4A".into(),
-            entity_name: "IFCBUILDINGELEMENTPROXY".into(),
-            name: None,
-            description: None,
-            object_type: None,
-            predefined_type: None,
-            tag: None,
-            overall_height: None,
-            overall_width: None,
-            number_of_risers: None,
-            number_of_treads: None,
-            riser_height: None,
-            tread_length: None,
-        };
+    fn element_iri_is_guid_only_and_ignores_entity_type() {
+        fn node(entity_name: &str) -> ifc_model::ElementNode {
+            ifc_model::ElementNode {
+                id: 1,
+                guid: "3$3qM0qBX2JfSuV0oX6e4A".into(),
+                entity_name: entity_name.into(),
+                name: None,
+                description: None,
+                object_type: None,
+                predefined_type: None,
+                tag: None,
+                overall_height: None,
+                overall_width: None,
+                number_of_risers: None,
+                number_of_treads: None,
+                riser_height: None,
+                tread_length: None,
+            }
+        }
 
-        let iri = element_resource_iri("https://example.test/base", &element);
-        assert!(iri.contains("/buildingelement_"));
-        assert!(!iri.contains("/buildingelementproxy_"));
+        let base = "https://example.test/base";
+        let proxy = element_resource_iri(base, &node("IFCBUILDINGELEMENTPROXY"));
+        let wall = element_resource_iri(base, &node("IFCWALL"));
+        let curtain = element_resource_iri(base, &node("IFCCURTAINWALL"));
+
+        // Reclassification must not change identity.
+        assert_eq!(proxy, wall);
+        assert_eq!(wall, curtain);
+
+        // No type segment survives, and `$` is still escaped rather than folded.
+        assert_eq!(wall, "https://example.test/base/3%243qM0qBX2JfSuV0oX6e4A");
+        assert!(!wall.contains("buildingelement"));
+        assert!(!wall.contains("wall"));
     }
 
     #[test]
@@ -3237,8 +3668,12 @@ mod tests {
             b"ISO-10303-21;\nHEADER;\nFILE_SCHEMA(('IFC2X3'));\nENDSEC;\nDATA;\n#1=IFCDIRECTION((1.,0.,0.));\nENDSEC;\n",
         )
         .unwrap();
-        let triples =
-            modules::ifcowl::convert_ifcowl(&step, "https://example.test/base", step.header.schema, IfcowlMode::Full);
+        let triples = modules::ifcowl::convert_ifcowl(
+            &step,
+            "https://example.test/base",
+            step.header.schema,
+            IfcowlMode::Full,
+        );
 
         assert!(triples.iter().any(|triple| {
             triple.subject.contains("/REAL_List_")
@@ -3254,8 +3689,12 @@ mod tests {
         )
         .unwrap();
         let namespace = ifcowl_namespace(step.header.schema);
-        let triples =
-            modules::ifcowl::convert_ifcowl(&step, "https://example.test/base", step.header.schema, IfcowlMode::Full);
+        let triples = modules::ifcowl::convert_ifcowl(
+            &step,
+            "https://example.test/base",
+            step.header.schema,
+            IfcowlMode::Full,
+        );
 
         assert!(!triples.iter().any(|triple| {
             triple.subject == "https://example.test/base/IfcSIUnit_1"
@@ -3284,6 +3723,7 @@ mod tests {
                 geometry_relations: None,
                 geometry_bounding_boxes: None,
                 geometry_wkts: None,
+                geometry_hashes: None,
                 geometry_tolerance: 1e-6,
                 low_memory_mode: false,
                 stream_batch_size: 8 * 1024,
@@ -3293,6 +3733,10 @@ mod tests {
                 bsdd_compact: false,
                 bsdd_include_standard_attrs: true,
                 bsdd_dedup_properties: false,
+                bsdd_opm_level: OpmLevel::L2,
+                props_opm_level: OpmLevel::L2,
+                omg_opm_level: OpmLevel::L2,
+                omg_emit_bounding_boxes: true,
             },
         );
 
@@ -3340,6 +3784,7 @@ mod tests {
                 geometry_relations: None,
                 geometry_bounding_boxes: None,
                 geometry_wkts: None,
+                geometry_hashes: None,
                 geometry_tolerance: 1e-6,
                 low_memory_mode: false,
                 stream_batch_size: 8 * 1024,
@@ -3349,6 +3794,10 @@ mod tests {
                 bsdd_compact: false,
                 bsdd_include_standard_attrs: true,
                 bsdd_dedup_properties: false,
+                bsdd_opm_level: OpmLevel::L2,
+                props_opm_level: OpmLevel::L2,
+                omg_opm_level: OpmLevel::L2,
+                omg_emit_bounding_boxes: true,
             },
         );
 
@@ -3376,6 +3825,7 @@ mod tests {
                 geometry_relations: None,
                 geometry_bounding_boxes: None,
                 geometry_wkts: None,
+                geometry_hashes: None,
                 geometry_tolerance: 1e-6,
                 low_memory_mode: false,
                 stream_batch_size: 8 * 1024,
@@ -3385,11 +3835,16 @@ mod tests {
                 bsdd_compact: false,
                 bsdd_include_standard_attrs: true,
                 bsdd_dedup_properties: false,
+                bsdd_opm_level: OpmLevel::L2,
+                props_opm_level: OpmLevel::L2,
+                omg_opm_level: OpmLevel::L2,
+                omg_emit_bounding_boxes: true,
             },
         );
-        assert!(result.triples.iter().any(|triple| {
-            triple.predicate == rdf_member() && triple.subject.contains("/ps_")
-        }));
+        assert!(result
+            .triples
+            .iter()
+            .any(|triple| { triple.predicate == rdf_member() && triple.subject.contains("/ps_") }));
     }
 
     #[test]
@@ -3488,6 +3943,7 @@ mod tests {
                 },
             )]))),
             geometry_wkts: None,
+            geometry_hashes: None,
             geometry_tolerance: 1e-6,
             low_memory_mode: false,
             stream_batch_size: 8 * 1024,
@@ -3496,12 +3952,20 @@ mod tests {
             bsdd_profile: None,
             bsdd_compact: false,
             bsdd_include_standard_attrs: true,
-                bsdd_dedup_properties: false,
+            bsdd_dedup_properties: false,
+            bsdd_opm_level: OpmLevel::L2,
+            props_opm_level: OpmLevel::L2,
+            omg_opm_level: OpmLevel::L2,
+            omg_emit_bounding_boxes: true,
         };
         let result = convert_step_and_model(&step, &model, &options);
         assert!(result.triples.iter().any(|triple| {
-            triple.predicate == lbd_has_bounding_box()
-                && matches!(&triple.object, Object::Iri(iri) if iri.contains("/geometry_"))
+            triple.predicate == geo_has_bounding_box()
+                && matches!(&triple.object, Object::Iri(iri) if iri.contains("/bbox_"))
+        }));
+        assert!(result.triples.iter().any(|triple| {
+            triple.predicate == rdf_type()
+                && matches!(&triple.object, Object::Iri(iri) if iri == &geo_feature())
         }));
         assert!(result.triples.iter().any(|triple| {
             triple.predicate == rdf_type()
@@ -3509,8 +3973,43 @@ mod tests {
         }));
         assert!(result.triples.iter().any(|triple| {
             triple.predicate == geo_as_wkt()
-                && matches!(&triple.object, Object::TypedLiteral { value, datatype } if value.starts_with("POLYHEDRALSURFACE Z") && datatype == &geo_wkt_literal())
+                && matches!(&triple.object, Object::TypedLiteral { value, datatype } if value.starts_with("<https://example.test/base/crs/model-local> POLYHEDRALSURFACE Z") && datatype == &geo_wkt_literal())
         }));
+
+        let mut omg_triples = Vec::new();
+        modules::omg_fog::emit_omg_fog(
+            &model,
+            &options,
+            "https://example.test/base",
+            &mut |triple| {
+                omg_triples.push(triple);
+                Ok::<(), std::convert::Infallible>(())
+            },
+        )
+        .unwrap();
+        assert!(omg_triples
+            .iter()
+            .any(|triple| triple.predicate == geo_has_bounding_box()));
+
+        let mut without_boxes = options.clone();
+        without_boxes.omg_emit_bounding_boxes = false;
+        let mut omg_without_boxes = Vec::new();
+        modules::omg_fog::emit_omg_fog(
+            &model,
+            &without_boxes,
+            "https://example.test/base",
+            &mut |triple| {
+                omg_without_boxes.push(triple);
+                Ok::<(), std::convert::Infallible>(())
+            },
+        )
+        .unwrap();
+        assert!(omg_without_boxes
+            .iter()
+            .all(|triple| triple.predicate != geo_has_bounding_box()));
+        assert!(omg_without_boxes
+            .iter()
+            .any(|triple| triple.predicate == omg_has_geometry()));
     }
 
     // ── Vocabulary correctness ───────────────────────────────────────────────
@@ -3580,7 +4079,10 @@ mod tests {
             beo_triples(b"#1=IFCRAILING('0railing00000000000000',$,'R',$,$,$,$,$,.NOTDEFINED.);\n");
         let types = emitted_types(&triples);
 
-        assert_eq!(types, vec!["https://pi.pauwel.be/voc/buildingelement#Railing"]);
+        assert_eq!(
+            types,
+            vec!["https://pi.pauwel.be/voc/buildingelement#Railing"]
+        );
         assert!(!types.iter().any(|iri| iri.contains("NOTDEFINED")));
     }
 
@@ -3653,8 +4155,7 @@ mod tests {
         );
     }
 
-    const PROJECT_AND_SITE: &[u8] =
-        b"#1=IFCPROJECT('0project00000000000000',$,'P',$,$,$,$,$,$);\n\
+    const PROJECT_AND_SITE: &[u8] = b"#1=IFCPROJECT('0project00000000000000',$,'P',$,$,$,$,$,$);\n\
           #2=IFCSITE('0site000000000000000000',$,'S',$,$,$,$,$,$,$,$,$,$,$);\n\
           #3=IFCRELAGGREGATES('0rel0000000000000000000',$,$,$,#1,(#2));\n";
 
@@ -3666,22 +4167,23 @@ mod tests {
         let triples = bot_triples(PROJECT_AND_SITE);
         let types = emitted_types(&triples);
 
-        assert!(types.contains(
-            &"https://w3id.org/digitalconstruction/0.5/Processes#ConstructionProject"
-        ));
-        assert!(!types.iter().any(|iri| iri.contains("linkedbuildingdata.org")));
+        assert!(types
+            .contains(&"https://w3id.org/digitalconstruction/0.5/Processes#ConstructionProject"));
+        assert!(!types
+            .iter()
+            .any(|iri| iri.contains("linkedbuildingdata.org")));
     }
 
-    /// §5 — BOT has no `hasSite` property. `bot:Site` is a `bot:Zone`, and zone
-    /// containment is `bot:containsZone`.
+    /// §5 — BOT has no `hasSite` property and IfcProject is not a bot:Zone, so
+    /// the IFC project aggregation must not be rewritten as zone containment.
     #[test]
-    fn project_to_site_link_uses_a_bot_property_that_exists() {
+    fn project_to_site_link_is_not_misrepresented_as_bot_zone_containment() {
         let triples = bot_triples(PROJECT_AND_SITE);
 
-        let project = spatial_resource_iri(TEST_BASE, SpatialType::Project, "0project00000000000000");
-        let site = spatial_resource_iri(TEST_BASE, SpatialType::Site, "0site000000000000000000");
+        let project = spatial_resource_iri(TEST_BASE, "0project00000000000000");
+        let site = spatial_resource_iri(TEST_BASE, "0site000000000000000000");
 
-        assert!(triples.iter().any(|triple| {
+        assert!(!triples.iter().any(|triple| {
             triple.subject == project
                 && triple.predicate == bot_contains_zone()
                 && matches!(&triple.object, Object::Iri(iri) if iri == &site)

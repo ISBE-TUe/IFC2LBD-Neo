@@ -311,9 +311,6 @@ function __wbg_get_imports(memory) {
                 wasm.__wbindgen_export4(deferred0_0, deferred0_1, 1);
             }
         },
-        __wbg_getRandomValues_3fa1b8b12822faf0: function() { return handleError(function (arg0) {
-            globalThis.crypto.getRandomValues(getObject(arg0));
-        }, arguments); },
         __wbg_get_c7eb1f358a7654df: function() { return handleError(function (arg0, arg1) {
             const ret = Reflect.get(getObject(arg0), getObject(arg1));
             return addHeapObject(ret);
@@ -400,10 +397,6 @@ function __wbg_get_imports(memory) {
             const ret = new Uint8Array(getArrayU8FromWasm0(arg0, arg1));
             return addHeapObject(ret);
         },
-        __wbg_new_with_length_e6785c33c8e4cce8: function(arg0) {
-            const ret = new Uint8Array(arg0 >>> 0);
-            return addHeapObject(ret);
-        },
         __wbg_next_6dbf2c0ac8cde20f: function(arg0) {
             const ret = getObject(arg0).next;
             return addHeapObject(ret);
@@ -456,10 +449,6 @@ function __wbg_get_imports(memory) {
             const ret = typeof window === 'undefined' ? null : window;
             return isLikeNone(ret) ? 0 : addHeapObject(ret);
         },
-        __wbg_subarray_3ed232c8a6baee09: function(arg0, arg1, arg2) {
-            const ret = getObject(arg0).subarray(arg1 >>> 0, arg2 >>> 0);
-            return addHeapObject(ret);
-        },
         __wbg_toISOString_706fbe321055ee58: function(arg0) {
             const ret = getObject(arg0).toISOString();
             return addHeapObject(ret);
@@ -490,7 +479,7 @@ function __wbg_get_imports(memory) {
         __wbindgen_object_drop_ref: function(arg0) {
             takeObject(arg0);
         },
-        memory: memory || new WebAssembly.Memory({initial:304,maximum:65535,shared:true}),
+        memory: memory || new WebAssembly.Memory({initial:305,maximum:65535,shared:true}),
     };
     return {
         __proto__: null,

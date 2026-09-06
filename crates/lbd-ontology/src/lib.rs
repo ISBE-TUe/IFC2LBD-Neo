@@ -26,12 +26,13 @@ pub const OMG: &str = "https://w3id.org/omg#";
 pub const GEO: &str = "http://www.opengis.net/ont/geosparql#";
 pub const SCHEMA: &str = "http://schema.org/";
 pub const PROV: &str = "http://www.w3.org/ns/prov#";
+pub const SEAS: &str = "https://w3id.org/seas#";
 pub const OWL: &str = "http://www.w3.org/2002/07/owl#";
 pub const RDF: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
 pub const RDFS: &str = "http://www.w3.org/2000/01/rdf-schema#";
 pub const XSD: &str = "http://www.w3.org/2001/XMLSchema#";
 
-pub const PREFIXES: [(&str, &str); 22] = [
+pub const PREFIXES: [(&str, &str); 23] = [
     ("bot", BOT),
     ("topo", TOPO),
     ("beo", BEO),
@@ -50,6 +51,7 @@ pub const PREFIXES: [(&str, &str); 22] = [
     ("geo", GEO),
     ("schema", SCHEMA),
     ("prov", PROV),
+    ("seas", SEAS),
     ("owl", OWL),
     ("rdf", RDF),
     ("rdfs", RDFS),
@@ -227,6 +229,14 @@ pub fn geo_has_geometry() -> String {
     format!("{GEO}hasGeometry")
 }
 
+pub fn geo_has_bounding_box() -> String {
+    format!("{GEO}hasBoundingBox")
+}
+
+pub fn geo_feature() -> String {
+    format!("{GEO}Feature")
+}
+
 pub fn geo_geometry() -> String {
     format!("{GEO}Geometry")
 }
@@ -237,6 +247,17 @@ pub fn geo_as_wkt() -> String {
 
 pub fn geo_wkt_literal() -> String {
     format!("{GEO}wktLiteral")
+}
+
+/// Base class for every property state, current or outdated.
+///
+/// `opm:CurrentPropertyState` and `opm:OutdatedPropertyState` are both declared
+/// `rdfs:subClassOf` this in the OPM vocabulary, so in a reasoning store it would
+/// be inferred. Consumers run Blazegraph namespaces with `axiomsClass=NoAxioms`
+/// and `truthMaintenance=false`, so nothing materialises the superclass — it has
+/// to be asserted explicitly or `?s a opm:PropertyState` matches nothing.
+pub fn opm_property_state() -> String {
+    format!("{OPM}PropertyState")
 }
 
 pub fn opm_current_property_state() -> String {
@@ -271,6 +292,14 @@ pub fn qudt_unit() -> String {
 
 pub fn prov_generated_at_time() -> String {
     format!("{PROV}generatedAtTime")
+}
+
+/// SEAS L2 `value` predicate — context-free evaluation of a property.
+///
+/// Replaces the three-hop `opm:hasPropertyState` → `schema:value` chain with a
+/// single `seas:value` assertion directly on the `opm:Property` node.
+pub fn seas_value() -> String {
+    format!("{SEAS}value")
 }
 
 pub fn list_has_contents() -> String {

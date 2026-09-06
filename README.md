@@ -137,10 +137,27 @@ Named graph IRIs are derived from `--base-uri`: `{base-uri}/{slug}`.
 
 | Option             | Values                       | Default     |
 | ------------------ | ---------------------------- | ----------- |
-| `chunking`         | `none`, `lines`, `bytes`     | `lines`     |
+| `chunking`         | `none`, `lines`, `bytes`, `cores` | `lines` |
 | `chunk_size_lines` | integer                      | `2000000`   |
 | `chunk_size_bytes` | integer                      | `268435456` |
 | `chunk_prefix`     | string                       | `out`       |
+| `partitioning`     | `mixed`, `producers`         | `mixed`     |
+
+With `lines` or `bytes`, the CLI streams producer batches into the serializer
+and atomically publishes each completed chunk while conversion is still
+running, provided no postprocessor is active. Consumers may watch for newly
+visible `*.nq` / `*.nq.gz` files and begin loading them immediately; hidden
+`.partial` files are never complete and must not be consumed. The manifest is
+published last and acts as the completion marker. `cores` keeps all target
+files open and therefore publishes them together at finalization rather than
+progressively.
+
+`partitioning=producers` creates independent chunk streams such as
+`out-bot.part-000.nq.gz` and `out-bsdd.part-000.nq.gz`. Each producer's final
+partial chunk is published when that producer finishes, while large producers
+still rotate according to `chunking=lines|bytes`. A final `out-lbd.manifest.json`
+indexes all producer manifests. Producer partitioning is not compatible with
+`chunking=cores` or a full-graph postprocessor.
 
 ### `neo-bsdd-producer`
 
@@ -150,6 +167,25 @@ Named graph IRIs are derived from `--base-uri`: `{base-uri}/{slug}`.
 | `compact`                | `true`, `false`                                     | `false` |
 | `include_standard_attrs` | `true`, `false`                                     | `true`  |
 | `dedup_properties`       | `true`, `false`                                     | `false` |
+| `opm_level`              | `l2`, `l3`                                          | `l2`    |
+
+### `neo-props-opm`
+
+| Option      | Values     | Default |
+| ----------- | ---------- | ------- |
+| `opm_level` | `l2`, `l3` | `l2`    |
+
+### `neo-omg-fog`
+
+| Option                | Values          | Default |
+| --------------------- | --------------- | ------- |
+| `opm_level`           | `l2`, `l3`      | `l2`    |
+| `emit_bounding_boxes` | `true`, `false` | `true`  |
+
+The OPM level is independent for each producer. L2 emits a direct `seas:value`;
+L3 emits the versioned OPM property-state chain. Disabling OMG-FOG bounding
+boxes keeps OMG geometry links and geometry hash states while omitting the
+GeoSPARQL bounding-box triples.
 
 ### `neo-geometry-preprocess`
 
@@ -247,7 +283,7 @@ For local testing with correct COOP/COEP headers (required for SharedArrayBuffer
 ```bash
 cd web/wasm-prototype
 docker compose up --build
-# served at http://localhost:3000
+# served at http://localhost:3001
 ```
 
 ---

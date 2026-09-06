@@ -1,6 +1,6 @@
 [package]
 name = "plugin-topology-full"
-description = "Full topology producer plugin execution for IFC2LBD-Neo"
+description = "Geometry-backed BOT topology preprocessing for IFC2LBD-Neo"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,6 +11,10 @@ anyhow = { workspace = true }
 ifc-step = { workspace = true }
 ifc-model = { workspace = true }
 lbd-geometry = { workspace = true }
+lbd-topology = { workspace = true }
+tessellated-model = { workspace = true }
+rstar = { workspace = true }
+rayon = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
